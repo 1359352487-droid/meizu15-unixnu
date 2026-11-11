@@ -88,7 +88,11 @@ jobs:
           set -eux
           cd edk2-msm
           chmod +x build.sh
-          ./build.sh -d meizu15 -r RELEASE --skip-rootfs-gen 2>&1 | tail -200
+          # --skip-rootfs-gen must NOT be used: SimpleInitRootFS.inf still lists
+          # build/rootfs.c as a source, so skipping its generation fails the build
+          # with "build/rootfs.c is not found in packages path". Generating it needs
+          # msgfmt (gettext), which the toolchain step installs.
+          ./build.sh -d meizu15 -r RELEASE 2>&1 | tail -250
         continue-on-error: true
 
       - name: Locate output
