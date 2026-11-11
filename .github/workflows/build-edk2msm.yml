@@ -34,6 +34,24 @@ jobs:
           clang --version | head -1
           aarch64-linux-gnu-gcc --version | head -1
 
+      - name: Pin GCC 12 for BaseTools
+        run: |
+          set -eux
+          # edk2-msm's vendored edk2 carries Pccts (antlr/dlg) sources written in
+          # pre-ANSI style. Newer GCC rejects them:
+          #   main.c:163: error: too many arguments to function 'p->process'
+          #   GNUmakefile:86: VfrCompile/VfrLexer.h Error 2
+          # BaseTools is a HOST tool, so an older host compiler is enough; the
+          # UEFI target code still goes through aarch64-linux-gnu-gcc.
+          if apt-cache policy gcc-12 2>/dev/null | grep -q Candidate; then
+            sudo apt-get install -y --no-install-recommends gcc-12 g++-12
+            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
+            sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
+          else
+            echo "::warning::gcc-12 unavailable, leaving the default compiler"
+          fi
+          gcc --version | head -1
+
       - name: Clone edk2-msm
         run: |
           set -eux
