@@ -116,7 +116,7 @@ jobs:
           cd "$EDK2_DIR"
           export WORKSPACE="$EDK2_DIR"
           export PACKAGES_PATH="$EDK2_DIR"
-          export GCC5_AARCH64_PREFIX=aarch64-linux-gnu-
+          export GCC_AARCH64_PREFIX=aarch64-linux-gnu-
           export EDK_TOOLS_PATH="$EDK2_DIR/BaseTools"
           # edksetup.sh reads $PYTHON_COMMAND while probing for Python; with `set -u`
           # an unset variable aborts the script ("PYTHON_COMMAND: unbound variable").
@@ -127,7 +127,7 @@ jobs:
           source ./edksetup.sh BaseTools
           set -u
           echo "python: $PYTHON_COMMAND"
-          build -a AARCH64 -t GCC5 -b RELEASE \
+          build -a AARCH64 -t GCC -b RELEASE \
                 -p Meizu15Pkg/Meizu15Pkg.dsc \
                 -n "$(nproc)"
 
