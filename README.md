@@ -20,9 +20,14 @@ re-pinned from this device.
 | `configs/meizu15_defconfig` | ✅ ARMv8.0-safe (PAN=n) |
 | `scripts/make-meizu15-adt.py` | ✅ **runs**: emits a 13984-byte ADT, all fields verified |
 | `package/unixnu.toml` | ✅ boot menu |
-| UEFI firmware (Meizu15Pkg) | 🟡 all inputs ready — 67 stock drivers extracted, needs the EDK2 package assembly |
+| UEFI firmware (Meizu15Pkg) | DONE - 67 stock drivers packed into a valid 5 MiB volume (`build-meizu15-uefi`) |
+| **Bootable UEFI image (edk2-msm)** | **DONE** - `artifacts/boot-meizu15.img`, 6,225,920 B, header matches stock field for field (`build-meizu15-edk2msm`) |
 | XNU kernel build | ❌ needs macOS + Xcode (or GitHub Actions) |
 | Native eMMC driver | ❌ **does not exist anywhere**, but only the XNU side needs it (`SdccDxe` covers UEFI) |
+
+> **Start here: [HANDOVER.md](HANDOVER.md)** -- complete state, the seven CI failures
+> and their causes, both firmware routes, and the exact test/recovery procedure.
+> `test-boot.ps1` runs the `fastboot boot` test without flashing anything.
 
 ## What differs from the Redmi Note 7 reference board
 
