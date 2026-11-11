@@ -35,6 +35,26 @@ SDM660_UEFI.fd      33,554,432 B   (32 MiB，EDK2 固件卷)
 GitHub → Actions → build-meizu15-edk2msm → 选最新绿色的 run → Artifacts → boot-meizu15
 ```
 
+### 镜像内部结构（实测解出来的，不是猜的）
+
+把 `artifacts/boot-meizu15.img` 的 kernel 段拆开，逐层验证：
+
+```
+kernel 段  6,218,804 B
+├── gzip      5,885,703 B  ->  解压 33,554,576 B
+│   ├── BootShim        144 B   开头 adr x1 / b，模式匹配确认
+│   └── outer FV 33,554,432 B   FvLength=0x2000000，valid_header=True，正好填满
+│        ├── PAD
+│        ├── PEI_CORE   PE32 42,912 B + DEPEX 344 B   GUID 139ff08a-c544-ec96-...
+│        └── FV_IMAGE   GUIDED section 5,831,512 B    GUID 93fd219e-729c-154c-...
+│             └── 压缩的 DXE 卷（DxeCore + 全部驱动）
+└── 尾随 DTB   333,101 B   totalsize 精确吻合，末尾对齐
+```
+
+这个层级和原厂 `xbl_a` 完全同构：外层放 PEI，DXE 装在嵌套压缩卷里。**所以启动链是完整的**——BootShim 搬运并跳转 → 外层 FV 的 PEI_CORE 初始化 → 解开内层 DXE → DxeCore 派发驱动 → BDS。
+
+`BootShim` 只有 144 字节，它只做两件事：把卷复制到 `FD_BASE`，然后跳过去。真正的初始化在 PEI_CORE 里。
+
 ### 加载地址已核对（`FD_BASE`）
 
 BootShim 会把固件卷复制到 `FD_BASE = 0xCE000000`，再跳过去。这个地址对本机是安全的，算过：
