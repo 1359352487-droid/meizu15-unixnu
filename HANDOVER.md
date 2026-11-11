@@ -35,6 +35,19 @@ SDM660_UEFI.fd      33,554,432 B   (32 MiB，EDK2 固件卷)
 GitHub → Actions → build-meizu15-edk2msm → 选最新绿色的 run → Artifacts → boot-meizu15
 ```
 
+### 加载地址已核对（`FD_BASE`）
+
+BootShim 会把固件卷复制到 `FD_BASE = 0xCE000000`，再跳过去。这个地址对本机是安全的，算过：
+
+```
+FD 区    0xCE000000 .. 0xD0000000   (32 MiB)
+bank0    0x80000000 .. 0x100000000  -> 完全落在 bank0 内
+最近保留区 pstore 结束于 0xA0000000  -> 间隙 736 MiB
+splash / adsp / modem / cdsp / pil_mba / wlan_msa / pstore 全部无重叠
+```
+
+这个值和 edk2-msm 给 whyred 等 SDM660 机型用的一样。如果实测发现 bootloader 自己占用了这段（表现是立刻重启、BootShim 都没跑完），备选地址按「避开 0x85000000-0xA0000000 的保留区、且留在 bank0」来挑，`0xB0000000` 或 `0xC0000000` 都可试，改 `configs/devices/meizu15.conf` 不够——`FD_BASE` 来自 `configs/sdm660.conf`，要在 overlay 里复制一份覆盖。
+
 ### 怎么测（需要插手机）
 
 ```powershell
