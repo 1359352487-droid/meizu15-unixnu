@@ -30,7 +30,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential uuid-dev iasl nasm python3 python3-pip \
-            gcc-aarch64-linux-gnu clang lld llvm gettext device-tree-compiler
+            gcc-aarch64-linux-gnu clang lld llvm gettext device-tree-compiler abootimg
           clang --version | head -1
           aarch64-linux-gnu-gcc --version | head -1
           # CLANG38 invokes llvm-ar as the archiver; without it every library
@@ -41,6 +41,10 @@ jobs:
             done
           fi
           llvm-ar --version | head -1
+          # Silicon/Qualcomm/sdm660/platform.sh.inc builds the boot image with
+          # abootimg; without it the build dies at the very last step:
+          #   platform.sh.inc: line 2: abootimg: command not found
+          abootimg --help >/dev/null 2>&1 && echo "abootimg present" || abootimg -h >/dev/null 2>&1 || true
 
       - name: Pin GCC 12 for BaseTools
         run: |
