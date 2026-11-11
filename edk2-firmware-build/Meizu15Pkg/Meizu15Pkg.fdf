@@ -39,87 +39,87 @@ READ_STATUS        = TRUE
 READ_LOCK_CAP      = TRUE
 READ_LOCK_STATUS   = TRUE
 
-FILE DXE_DRIVER = c2f9a4f5-f7b4-43e7-ba99-5ea804cc103a {
+FILE DRIVER = c2f9a4f5-f7b4-43e7-ba99-5ea804cc103a {
   SECTION PE32 = Meizu15Pkg/Drivers/ASN1X509Dxe/ASN1X509Dxe.efi
   SECTION UI = "ASN1X509Dxe"
 }
 
-FILE DXE_DRIVER = 5a5cb8ca-9382-4e0c-b383-77fb517cd9eb {
+FILE DRIVER = 5a5cb8ca-9382-4e0c-b383-77fb517cd9eb {
   SECTION PE32 = Meizu15Pkg/Drivers/AdcDxe/AdcDxe.efi
   SECTION UI = "AdcDxe"
 }
 
-FILE DXE_DRIVER = b8d9777e-d72a-451f-9bdb-bafb52a68415 {
+FILE DRIVER = b8d9777e-d72a-451f-9bdb-bafb52a68415 {
   SECTION PE32 = Meizu15Pkg/Drivers/ArmCpuDxe/ArmCpuDxe.efi
   SECTION UI = "ArmCpuDxe"
 }
 
-FILE DXE_DRIVER = de371f7c-dec4-4d21-adf1-593abcc15882 {
+FILE DRIVER = de371f7c-dec4-4d21-adf1-593abcc15882 {
   SECTION PE32 = Meizu15Pkg/Drivers/ArmGicDxe/ArmGicDxe.efi
   SECTION UI = "ArmGicDxe"
 }
 
-FILE DXE_DRIVER = 49ea041e-6752-42ca-b0b1-7344fe2546b7 {
+FILE DRIVER = 49ea041e-6752-42ca-b0b1-7344fe2546b7 {
   SECTION PE32 = Meizu15Pkg/Drivers/ArmTimerDxe/ArmTimerDxe.efi
   SECTION UI = "ArmTimerDxe"
 }
 
-FILE DXE_DRIVER = 5bd181db-0487-4f1a-ae73-820e165611b3 {
+FILE DRIVER = 5bd181db-0487-4f1a-ae73-820e165611b3 {
   SECTION PE32 = Meizu15Pkg/Drivers/ButtonsDxe/ButtonsDxe.efi
   SECTION UI = "ButtonsDxe"
 }
 
-FILE DXE_DRIVER = 42857f0a-13f2-4b21-8a23-53d3f714b840 {
+FILE DRIVER = 42857f0a-13f2-4b21-8a23-53d3f714b840 {
   SECTION PE32 = Meizu15Pkg/Drivers/CapsuleRuntimeDxe/CapsuleRuntimeDxe.efi
   SECTION UI = "CapsuleRuntimeDxe"
 }
 
-FILE DXE_DRIVER = 2e3042f3-2bb9-463f-8866-56d75b7c4ab0 {
+FILE DRIVER = 2e3042f3-2bb9-463f-8866-56d75b7c4ab0 {
   SECTION PE32 = Meizu15Pkg/Drivers/ChargerExDxe/ChargerExDxe.efi
   SECTION UI = "ChargerExDxe"
 }
 
-FILE DXE_DRIVER = 10e193df-9966-44e7-b17c-59dd831e20fc {
+FILE DRIVER = 10e193df-9966-44e7-b17c-59dd831e20fc {
   SECTION PE32 = Meizu15Pkg/Drivers/ChipInfo/ChipInfo.efi
   SECTION UI = "ChipInfo"
 }
 
-FILE DXE_DRIVER = 4db5dea6-5302-4d1a-8a82-677a683b0d29 {
+FILE DRIVER = 4db5dea6-5302-4d1a-8a82-677a683b0d29 {
   SECTION PE32 = Meizu15Pkg/Drivers/ClockDxe/ClockDxe.efi
   SECTION UI = "ClockDxe"
 }
 
-FILE DXE_DRIVER = 51ccf399-4fdf-4e55-a45b-e123f84d456a {
+FILE DRIVER = 51ccf399-4fdf-4e55-a45b-e123f84d456a {
   SECTION PE32 = Meizu15Pkg/Drivers/ConPlatformDxe/ConPlatformDxe.efi
   SECTION UI = "ConPlatformDxe"
 }
 
-FILE DXE_DRIVER = 408edcec-cf6d-477c-a5a8-b4844e3de281 {
+FILE DRIVER = 408edcec-cf6d-477c-a5a8-b4844e3de281 {
   SECTION PE32 = Meizu15Pkg/Drivers/ConSplitterDxe/ConSplitterDxe.efi
   SECTION UI = "ConSplitterDxe"
 }
 
-FILE DXE_DRIVER = 8e9bd160-b184-11df-94e2-0800200c9a66 {
+FILE DRIVER = 8e9bd160-b184-11df-94e2-0800200c9a66 {
   SECTION PE32 = Meizu15Pkg/Drivers/DALSys/DALSys.efi
   SECTION UI = "DALSys"
 }
 
-FILE DXE_DRIVER = 8681cc5a-0df6-441e-b4b8-e915c538f067 {
+FILE DRIVER = 8681cc5a-0df6-441e-b4b8-e915c538f067 {
   SECTION PE32 = Meizu15Pkg/Drivers/DALTLMM/DALTLMM.efi
   SECTION UI = "DALTLMM"
 }
 
-FILE DXE_DRIVER = 9b680fce-ad6b-4f3a-b60b-f59899003443 {
+FILE DRIVER = 9b680fce-ad6b-4f3a-b60b-f59899003443 {
   SECTION PE32 = Meizu15Pkg/Drivers/DevicePathDxe/DevicePathDxe.efi
   SECTION UI = "DevicePathDxe"
 }
 
-FILE DXE_DRIVER = 6b38f7b4-ad98-40e9-9093-aca2b5a253c4 {
+FILE DRIVER = 6b38f7b4-ad98-40e9-9093-aca2b5a253c4 {
   SECTION PE32 = Meizu15Pkg/Drivers/DiskIoDxe/DiskIoDxe.efi
   SECTION UI = "DiskIoDxe"
 }
 
-FILE DXE_DRIVER = 4138022f-06c7-4f79-9c94-7e33b511a4e7 {
+FILE DRIVER = 4138022f-06c7-4f79-9c94-7e33b511a4e7 {
   SECTION PE32 = Meizu15Pkg/Drivers/DisplayDxe/DisplayDxe.efi
   SECTION UI = "DisplayDxe"
 }
@@ -129,117 +129,117 @@ FILE DXE_CORE = d6a2cb7f-6a18-4e2f-b43b-9920a733700a {
   SECTION UI = "DxeCore"
 }
 
-FILE DXE_DRIVER = 37795ba0-e1cf-4ed5-bd8b-16df6bcb1e1a {
+FILE DRIVER = 37795ba0-e1cf-4ed5-bd8b-16df6bcb1e1a {
   SECTION PE32 = Meizu15Pkg/Drivers/EmbeddedMonotonicCounter/EmbeddedMonotonicCounter.efi
   SECTION UI = "EmbeddedMonotonicCounter"
 }
 
-FILE DXE_DRIVER = 02b01ad5-7e59-43e8-a6d8-238180613a5a {
+FILE DRIVER = 02b01ad5-7e59-43e8-a6d8-238180613a5a {
   SECTION PE32 = Meizu15Pkg/Drivers/EmuVariableRuntimeDxe/EmuVariableRuntimeDxe.efi
   SECTION UI = "EmuVariableRuntimeDxe"
 }
 
-FILE DXE_DRIVER = cd3bafb6-50fb-4fe8-8e4e-ab74d2c1a600 {
+FILE DRIVER = cd3bafb6-50fb-4fe8-8e4e-ab74d2c1a600 {
   SECTION PE32 = Meizu15Pkg/Drivers/EnglishDxe/EnglishDxe.efi
   SECTION UI = "EnglishDxe"
 }
 
-FILE DXE_DRIVER = 90a49afd-422f-08ae-9611-e788d3804845 {
+FILE DRIVER = 90a49afd-422f-08ae-9611-e788d3804845 {
   SECTION PE32 = Meizu15Pkg/Drivers/EnvDxe/EnvDxe.efi
   SECTION UI = "EnvDxe"
 }
 
-FILE DXE_DRIVER = 961578fe-b6b7-44c3-af35-6bc705cd2b1f {
+FILE DRIVER = 961578fe-b6b7-44c3-af35-6bc705cd2b1f {
   SECTION PE32 = Meizu15Pkg/Drivers/Fat/Fat.efi
   SECTION UI = "Fat"
 }
 
-FILE DXE_DRIVER = ed15ffd5-bc96-4107-9118-95366600188e {
+FILE DRIVER = ed15ffd5-bc96-4107-9118-95366600188e {
   SECTION PE32 = Meizu15Pkg/Drivers/FontDxe/FontDxe.efi
   SECTION UI = "FontDxe"
 }
 
-FILE DXE_DRIVER = 907125c0-a5f1-11e3-a3fe-a3198b49350c {
+FILE DRIVER = 907125c0-a5f1-11e3-a3fe-a3198b49350c {
   SECTION PE32 = Meizu15Pkg/Drivers/FvSimpleFileSystem/FvSimpleFileSystem.efi
   SECTION UI = "FvSimpleFileSystem"
 }
 
-FILE DXE_DRIVER = 7942a7eb-b7d5-4e2e-b908-831e4de55b58 {
+FILE DRIVER = 7942a7eb-b7d5-4e2e-b908-831e4de55b58 {
   SECTION PE32 = Meizu15Pkg/Drivers/GlinkDxe/GlinkDxe.efi
   SECTION UI = "GlinkDxe"
 }
 
-FILE DXE_DRIVER = cccb0c28-4b24-11d5-9a5a-0090273fc14d {
+FILE DRIVER = cccb0c28-4b24-11d5-9a5a-0090273fc14d {
   SECTION PE32 = Meizu15Pkg/Drivers/GraphicsConsoleDxe/GraphicsConsoleDxe.efi
   SECTION UI = "GraphicsConsoleDxe"
 }
 
-FILE DXE_DRIVER = af9763a2-033b-4109-8e17-56a98d380c92 {
+FILE DRIVER = af9763a2-033b-4109-8e17-56a98d380c92 {
   SECTION PE32 = Meizu15Pkg/Drivers/HWIODxeDriver/HWIODxeDriver.efi
   SECTION UI = "HWIODxeDriver"
 }
 
-FILE DXE_DRIVER = 3adf8dda-1850-44c5-8c63-bb991849bc6f {
+FILE DRIVER = 3adf8dda-1850-44c5-8c63-bb991849bc6f {
   SECTION PE32 = Meizu15Pkg/Drivers/HashDxe/HashDxe.efi
   SECTION UI = "HashDxe"
 }
 
-FILE DXE_DRIVER = 348c4d62-bfbd-4882-9ece-c80bb1c4783b {
+FILE DRIVER = 348c4d62-bfbd-4882-9ece-c80bb1c4783b {
   SECTION PE32 = Meizu15Pkg/Drivers/HiiDatabase/HiiDatabase.efi
   SECTION UI = "HiiDatabase"
 }
 
-FILE DXE_DRIVER = 04de8591-d2b3-4077-bbbe-b12070094eb6 {
+FILE DRIVER = 04de8591-d2b3-4077-bbbe-b12070094eb6 {
   SECTION PE32 = Meizu15Pkg/Drivers/I2C/I2C.efi
   SECTION UI = "I2C"
 }
 
-FILE DXE_DRIVER = f09ad92e-4e91-490f-ab99-e69939b840b2 {
+FILE DRIVER = f09ad92e-4e91-490f-ab99-e69939b840b2 {
   SECTION PE32 = Meizu15Pkg/Drivers/LimitsDxe/LimitsDxe.efi
   SECTION UI = "LimitsDxe"
 }
 
-FILE DXE_DRIVER = 409d636e-8dbb-46df-ae8f-d8d69f0a5a2f {
+FILE DRIVER = 409d636e-8dbb-46df-ae8f-d8d69f0a5a2f {
   SECTION PE32 = Meizu15Pkg/Drivers/MdtpDxe/MdtpDxe.efi
   SECTION UI = "MdtpDxe"
 }
 
-FILE DXE_DRIVER = 4c6e0267-c77d-410d-8100-1495911a989d {
+FILE DRIVER = 4c6e0267-c77d-410d-8100-1495911a989d {
   SECTION PE32 = Meizu15Pkg/Drivers/MetronomeDxe/MetronomeDxe.efi
   SECTION UI = "MetronomeDxe"
 }
 
-FILE DXE_DRIVER = 88abf42e-efa7-4d72-a9c8-8b29acdcf64f {
+FILE DRIVER = 88abf42e-efa7-4d72-a9c8-8b29acdcf64f {
   SECTION PE32 = Meizu15Pkg/Drivers/MpPowerDxe/MpPowerDxe.efi
   SECTION UI = "MpPowerDxe"
 }
 
-FILE DXE_DRIVER = cb29f4d1-7f37-4692-a416-93e82e219711 {
+FILE DRIVER = cb29f4d1-7f37-4692-a416-93e82e219711 {
   SECTION PE32 = Meizu15Pkg/Drivers/NpaDxe/NpaDxe.efi
   SECTION UI = "NpaDxe"
 }
 
-FILE DXE_DRIVER = 1fa1f39e-feff-4aae-bd7b-38a070a3b609 {
+FILE DRIVER = 1fa1f39e-feff-4aae-bd7b-38a070a3b609 {
   SECTION PE32 = Meizu15Pkg/Drivers/PartitionDxe/PartitionDxe.efi
   SECTION UI = "PartitionDxe"
 }
 
-FILE DXE_DRIVER = b105211b-bbbd-4add-a3b0-d1cf4a52154c {
+FILE DRIVER = b105211b-bbbd-4add-a3b0-d1cf4a52154c {
   SECTION PE32 = Meizu15Pkg/Drivers/PlatformInfoDxeDriver/PlatformInfoDxeDriver.efi
   SECTION UI = "PlatformInfoDxeDriver"
 }
 
-FILE DXE_DRIVER = 5776232e-082d-4b75-9a0e-fe1d13f7a5d9 {
+FILE DRIVER = 5776232e-082d-4b75-9a0e-fe1d13f7a5d9 {
   SECTION PE32 = Meizu15Pkg/Drivers/PmicDxe/PmicDxe.efi
   SECTION UI = "PmicDxe"
 }
 
-FILE DXE_DRIVER = 79e4a61c-ed73-4312-94fe-e3e7563362a9 {
+FILE DRIVER = 79e4a61c-ed73-4312-94fe-e3e7563362a9 {
   SECTION PE32 = Meizu15Pkg/Drivers/PrintDxe/PrintDxe.efi
   SECTION UI = "PrintDxe"
 }
 
-FILE DXE_DRIVER = 5a50aa81-c3ae-4608-a0e3-41a2e69baf94 {
+FILE DRIVER = 5a50aa81-c3ae-4608-a0e3-41a2e69baf94 {
   SECTION PE32 = Meizu15Pkg/Drivers/QcomBds/QcomBds.efi
   SECTION UI = "QcomBds"
 }
@@ -249,127 +249,127 @@ FILE APPLICATION = eee9c2b1-16ca-4f34-87ea-2e6d1e160cc4 {
   SECTION UI = "QcomChargerApp"
 }
 
-FILE DXE_DRIVER = 4bce7f36-428e-4393-99e3-7e0844404dba {
+FILE DRIVER = 4bce7f36-428e-4393-99e3-7e0844404dba {
   SECTION PE32 = Meizu15Pkg/Drivers/QcomChargerDxeLA/QcomChargerDxeLA.efi
   SECTION UI = "QcomChargerDxeLA"
 }
 
-FILE DXE_DRIVER = b003d837-44cc-b38b-7811-deb5ebbd74d8 {
+FILE DRIVER = b003d837-44cc-b38b-7811-deb5ebbd74d8 {
   SECTION PE32 = Meizu15Pkg/Drivers/QdssDxe/QdssDxe.efi
   SECTION UI = "QdssDxe"
 }
 
-FILE DXE_DRIVER = b336f62d-4135-4a55-ae4e-4971bbf0885d {
+FILE DRIVER = b336f62d-4135-4a55-ae4e-4971bbf0885d {
   SECTION PE32 = Meizu15Pkg/Drivers/RealTimeClock/RealTimeClock.efi
   SECTION UI = "RealTimeClock"
 }
 
-FILE DXE_DRIVER = d93ce3d8-a7eb-4730-8c8e-cc466a9ecc3c {
+FILE DRIVER = d93ce3d8-a7eb-4730-8c8e-cc466a9ecc3c {
   SECTION PE32 = Meizu15Pkg/Drivers/ReportStatusCodeRouterRuntimeDxe/ReportStatusCodeRouterRuntimeDxe.efi
   SECTION UI = "ReportStatusCodeRouterRuntimeDxe"
 }
 
-FILE DXE_DRIVER = 3ae17db7-3cc5-4b89-9304-9549211057ef {
+FILE DRIVER = 3ae17db7-3cc5-4b89-9304-9549211057ef {
   SECTION PE32 = Meizu15Pkg/Drivers/ResetRuntimeDxe/ResetRuntimeDxe.efi
   SECTION UI = "ResetRuntimeDxe"
 }
 
-FILE DXE_DRIVER = b0d3689e-11f8-43c6-8ece-023a29cec35b {
+FILE DRIVER = b0d3689e-11f8-43c6-8ece-023a29cec35b {
   SECTION PE32 = Meizu15Pkg/Drivers/RngDxe/RngDxe.efi
   SECTION UI = "RngDxe"
 }
 
-FILE DXE_DRIVER = b601f8c4-43b7-4784-95b1-f4226cb40cee {
+FILE DRIVER = b601f8c4-43b7-4784-95b1-f4226cb40cee {
   SECTION PE32 = Meizu15Pkg/Drivers/RuntimeDxe/RuntimeDxe.efi
   SECTION UI = "RuntimeDxe"
 }
 
-FILE DXE_DRIVER = 7a32bd23-f735-4f57-aa1a-447d2fe3be0d {
+FILE DRIVER = 7a32bd23-f735-4f57-aa1a-447d2fe3be0d {
   SECTION PE32 = Meizu15Pkg/Drivers/SPI/SPI.efi
   SECTION UI = "SPI"
 }
 
-FILE DXE_DRIVER = 2a7b4bef-80cd-49e1-b473-374ba4d673fc {
+FILE DRIVER = 2a7b4bef-80cd-49e1-b473-374ba4d673fc {
   SECTION PE32 = Meizu15Pkg/Drivers/SPMI/SPMI.efi
   SECTION UI = "SPMI"
 }
 
-FILE DXE_DRIVER = f10f76db-42c1-533f-34a8-69be24653110 {
+FILE DRIVER = f10f76db-42c1-533f-34a8-69be24653110 {
   SECTION PE32 = Meizu15Pkg/Drivers/SdccDxe/SdccDxe.efi
   SECTION UI = "SdccDxe"
 }
 
-FILE DXE_DRIVER = 32c71e68-83a8-46ed-aed1-094e71b12057 {
+FILE DRIVER = 32c71e68-83a8-46ed-aed1-094e71b12057 {
   SECTION PE32 = Meizu15Pkg/Drivers/SecRSADxe/SecRSADxe.efi
   SECTION UI = "SecRSADxe"
 }
 
-FILE DXE_DRIVER = 5e0eae60-eaed-4d75-b8bf-edbbaabc3f09 {
+FILE DRIVER = 5e0eae60-eaed-4d75-b8bf-edbbaabc3f09 {
   SECTION PE32 = Meizu15Pkg/Drivers/SecurityDxe/SecurityDxe.efi
   SECTION UI = "SecurityDxe"
 }
 
-FILE DXE_DRIVER = 857a8741-0eec-43bd-9482-27d14ed47d72 {
+FILE DRIVER = 857a8741-0eec-43bd-9482-27d14ed47d72 {
   SECTION PE32 = Meizu15Pkg/Drivers/SimpleTextInOutSerial/SimpleTextInOutSerial.efi
   SECTION UI = "SimpleTextInOutSerial"
 }
 
-FILE DXE_DRIVER = f541d663-4a48-40aa-aabf-ff158ccae34c {
+FILE DRIVER = f541d663-4a48-40aa-aabf-ff158ccae34c {
   SECTION PE32 = Meizu15Pkg/Drivers/SmemDxe/SmemDxe.efi
   SECTION UI = "SmemDxe"
 }
 
-FILE DXE_DRIVER = 6c2004ef-4e0e-4be4-b14c-340eb4aa5891 {
+FILE DRIVER = 6c2004ef-4e0e-4be4-b14c-340eb4aa5891 {
   SECTION PE32 = Meizu15Pkg/Drivers/StatusCodeHandlerRuntimeDxe/StatusCodeHandlerRuntimeDxe.efi
   SECTION UI = "StatusCodeHandlerRuntimeDxe"
 }
 
-FILE DXE_DRIVER = f09ad92e-485c-9cdb-3e05-3385c38f94cc {
+FILE DRIVER = f09ad92e-485c-9cdb-3e05-3385c38f94cc {
   SECTION PE32 = Meizu15Pkg/Drivers/TsensDxe/TsensDxe.efi
   SECTION UI = "TsensDxe"
 }
 
-FILE DXE_DRIVER = 6925fad3-e243-4b69-ad61-3f978c8abc60 {
+FILE DRIVER = 6925fad3-e243-4b69-ad61-3f978c8abc60 {
   SECTION PE32 = Meizu15Pkg/Drivers/TzDxe/TzDxe.efi
   SECTION UI = "TzDxe"
 }
 
-FILE DXE_DRIVER = 0d35cd8e-97ea-4f9a-96af-0f0d89f76567 {
+FILE DRIVER = 0d35cd8e-97ea-4f9a-96af-0f0d89f76567 {
   SECTION PE32 = Meizu15Pkg/Drivers/UFSDxe/UFSDxe.efi
   SECTION UI = "UFSDxe"
 }
 
-FILE DXE_DRIVER = e43128a8-8692-42b6-8afa-676158578d18 {
+FILE DRIVER = e43128a8-8692-42b6-8afa-676158578d18 {
   SECTION PE32 = Meizu15Pkg/Drivers/ULogDxe/ULogDxe.efi
   SECTION UI = "ULogDxe"
 }
 
-FILE DXE_DRIVER = cd823a4d-7dec-4531-ae5d-4134fa4127b8 {
+FILE DRIVER = cd823a4d-7dec-4531-ae5d-4134fa4127b8 {
   SECTION PE32 = Meizu15Pkg/Drivers/UsbConfigDxe/UsbConfigDxe.efi
   SECTION UI = "UsbConfigDxe"
 }
 
-FILE DXE_DRIVER = 3299a266-15f0-4346-8318-716336736d3e {
+FILE DRIVER = 3299a266-15f0-4346-8318-716336736d3e {
   SECTION PE32 = Meizu15Pkg/Drivers/UsbDeviceDxe/UsbDeviceDxe.efi
   SECTION UI = "UsbDeviceDxe"
 }
 
-FILE DXE_DRIVER = 5af77f10-90df-4e7e-8325-a17ec09d5443 {
+FILE DRIVER = 5af77f10-90df-4e7e-8325-a17ec09d5443 {
   SECTION PE32 = Meizu15Pkg/Drivers/UsbMsdDxe/UsbMsdDxe.efi
   SECTION UI = "UsbMsdDxe"
 }
 
-FILE DXE_DRIVER = 94f8a6a7-dc34-4101-88c1-99179cceae83 {
+FILE DRIVER = 94f8a6a7-dc34-4101-88c1-99179cceae83 {
   SECTION PE32 = Meizu15Pkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.efi
   SECTION UI = "UsbfnDwc3Dxe"
 }
 
-FILE DXE_DRIVER = a25f5839-4d55-428f-8f0b-5ce1d565f53e {
+FILE DRIVER = a25f5839-4d55-428f-8f0b-5ce1d565f53e {
   SECTION PE32 = Meizu15Pkg/Drivers/VerifiedBootDxe/VerifiedBootDxe.efi
   SECTION UI = "VerifiedBootDxe"
 }
 
-FILE DXE_DRIVER = f099d67f-71ae-4c36-b2a3-dceb0eb2b7d8 {
+FILE DRIVER = f099d67f-71ae-4c36-b2a3-dceb0eb2b7d8 {
   SECTION PE32 = Meizu15Pkg/Drivers/WatchdogTimer/WatchdogTimer.efi
   SECTION UI = "WatchdogTimer"
 }

@@ -39,8 +39,10 @@ INF_MODULE_TYPE = {
 }
 
 # FFS file type used when embedding the PE32 straight through the FDF
+# FDF file-type keywords, i.e. the keys of GenFds' FdfFvFileTypeToFileType map.
+# NOTE: the FDF spelling for a DXE driver is DRIVER, not DXE_DRIVER.
 FFS_TYPE = {
-    "DXE_DRIVER": "DXE_DRIVER",
+    "DXE_DRIVER": "DRIVER",
     "DXE_CORE": "DXE_CORE",
     "UEFI_APPLICATION": "APPLICATION",
 }
