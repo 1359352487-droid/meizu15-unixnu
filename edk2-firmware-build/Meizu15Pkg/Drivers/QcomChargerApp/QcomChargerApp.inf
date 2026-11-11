@@ -1,0 +1,17 @@
+## @file
+#  QcomChargerApp - prebuilt UEFI module carved from the Meizu 15 (M1881, SDM660) XBL.
+#
+#  Origin: xbl_a (mmcblk0p1) -> ELF LOAD #11 @0x7e380 -> FFS2 volume
+#          -> gzip FV_IMAGE @0x0a70d0 -> this module.
+#  The FILE_GUID below is the GUID this module was published under in the stock
+#  volume; it is not invented.
+#
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = QcomChargerApp
+  FILE_GUID                      = eee9c2b1-16ca-4f34-87ea-2e6d1e160cc4
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 1.0
+
+[Binaries]
+  PE32|QcomChargerApp.efi|DEBUG

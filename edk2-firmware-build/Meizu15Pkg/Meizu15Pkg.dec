@@ -1,0 +1,10 @@
+## @file
+#  Meizu15Pkg - UEFI firmware package for the Meizu 15 (M8810, SDM660).
+#  Assembled from prebuilt DXE modules carved out of this phone's own XBL,
+#  on top of an open EDK2 core. See docs/dxe-drivers.md.
+#
+[Defines]
+  DEC_SPECIFICATION              = 0x00010005
+  PACKAGE_NAME                   = Meizu15Pkg
+  PACKAGE_GUID                   = a7bcbc90-a0ee-59b1-8a11-a390a9a2c5ab
+  PACKAGE_VERSION                = 0.1

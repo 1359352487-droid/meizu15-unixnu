@@ -1,0 +1,17 @@
+## @file
+#  ClockDxe - prebuilt UEFI module carved from the Meizu 15 (M1881, SDM660) XBL.
+#
+#  Origin: xbl_a (mmcblk0p1) -> ELF LOAD #11 @0x7e380 -> FFS2 volume
+#          -> gzip FV_IMAGE @0x0a70d0 -> this module.
+#  The FILE_GUID below is the GUID this module was published under in the stock
+#  volume; it is not invented.
+#
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = ClockDxe
+  FILE_GUID                      = 4db5dea6-5302-4d1a-8a82-677a683b0d29
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+
+[Binaries]
+  PE32|ClockDxe.efi|DEBUG

@@ -1,0 +1,38 @@
+# Raw dumps of this phone's own firmware. Never commit these.
+# A partition image contains the device serial, the chip id and vendor binaries.
+dump/*.img
+dump/*.bin
+
+# Intermediate volume files rebuilt by scripts/extract-xbl-dxe.py
+dump/xbl_dxe_fv.bin
+dump/xbl_dxe_fvimg.bin
+
+# The extracted PE binaries are duplicated under
+# edk2-firmware-build/Meizu15Pkg/Drivers/ (that is what gets committed).
+dump/dxe/
+
+# The manifest IS worth keeping: it is the machine-readable record of what was
+# extracted and under which GUIDs.
+!dump/dxe_manifest.json
+
+# Generated artifacts
+out/
+*.adt
+
+# Python
+__pycache__/
+*.pyc
+
+# EDK2 working tree and build products
+edk2/
+edk2-firmware-build/edk2/
+edk2-firmware-build/edk2-platforms/
+edk2-firmware-build/Build/
+Build/
+
+# Upstream reference copy of another project's generator, kept locally only
+scripts/_lavender-adt-ref.py
+
+# Scratch scripts used during bring-up
+_*.py
+

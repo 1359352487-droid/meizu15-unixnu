@@ -1,0 +1,67 @@
+# Kernel configuration of the meizu15 image.
+# CONFIG_XNU_<NAME> becomes XNU_<NAME> for the kernel build.
+#
+# Seeded from lavender_defconfig (the only SDM660 XNU configuration in existence),
+# with the board realities swapped:
+#   - SDM660 cores are Kryo 260 = Cortex-A73/A53 = ARMv8.0. The PAN/LSE rule below
+#     is a hard SoC fact and MUST NOT be flipped.
+#   - eMMC (qcom,sdhci-msm-v5 @ 0xc0c4000) instead of UFS. No NativeEmmc driver
+#     exists anywhere yet, so the first boots run on XNU_NATIVE_RAM_BLOCK=y.
+#   - Adreno 512 is an A5xx part; A5xx bring-up is its own milestone.
+#   - Meizu 15 panel is 1080x1920 AMOLED over MDSS DSI, not the NT36672A 1080x2340.
+#   - No sheng PMGR: SDM660 uses the RPM-era PM660/PM660A PMIC pair.
+
+CONFIG_XNU_SOURCE_CORECRYPTO14=y
+CONFIG_XNU_SOURCE_PTHREAD=y
+CONFIG_XNU_ARM_DT_PLATFORM=y
+CONFIG_XNU_ARMCPU=y
+CONFIG_XNU_NATIVE_AES=n
+CONFIG_XNU_TRUST_CACHE_RUNTIME=y
+CONFIG_XNU_SOURCE_MOCKFS=n
+CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
+CONFIG_XNU_VERIFIED_ROOT_PROBE=n
+CONFIG_XNU_OWNER_ROOT_AUDIT=n
+CONFIG_XNU_OWNER_ROOT_TRUST=n
+CONFIG_XNU_OWNER_CACHE_MOUNT=n
+CONFIG_XNU_OWNER_CACHE_STARTUP=n
+CONFIG_XNU_OWNER_BOOT_MANIFEST=n
+CONFIG_XNU_OWNER_DATA_MOUNT=n
+CONFIG_XNU_OWNER_UNION_SYSTEMOS=n
+CONFIG_XNU_BOOT_PROGRESS=n
+CONFIG_XNU_DT_PANIC_REGION=y
+CONFIG_XNU_ZONE_PGZ_ALIGNMENT_PROBE=y
+
+# ARCH_TIMER needs the ArmCpu interrupt provider.
+CONFIG_XNU_NATIVE_ARCH_TIMER=y
+
+# ---------------------------------------------------------------------------
+# SDM660 cores (Kryo 260 = Cortex-A73/A53) are ARMv8.0: no PAN, no LSE.
+# XNU_NATIVE_PAN=y would compile `msr PAN` (ARMv8.1-only) into copyin/copyout/pcb;
+# that traps as an undefined instruction on the phone. QEMU (cortex-a76) has PAN,
+# so QEMU would never catch this - it was verified on real hardware by the
+# ios-topaz bring-up on identical Kryo 260 cores (patch 0081 'no LSE, no PAN').
+# DO NOT SET THIS TO y.
+CONFIG_XNU_NATIVE_PAN=n
+# ---------------------------------------------------------------------------
+
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=n
+CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
+CONFIG_XNU_OWNER_DATA_VOLUME_UUID="18AB5557-DC2D-469B-8758-855E60F5B0DF"
+CONFIG_XNU_NATIVE_VIRTIO_BLOCK_ARCHIVE=""
+CONFIG_XNU_VERIFIED_ROOT_ARCHIVE="{tree}/build/verified-root-os-xnu-bundle/libVerifiedRootProbe.a"
+CONFIG_XNU_EXTRA_LD_ARCHIVES=""
+CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
+CONFIG_XNU_NATIVE_ADRENO=n
+CONFIG_XNU_NATIVE_UFS=n
+CONFIG_XNU_ARMVIRT_PLATFORM=n
+
+# ---------------------------------------------------------------------------
+# [meizu15] Storage.
+# The phone's internal storage is eMMC (Samsung DV6DMB, mmcblk0, 128 GB) behind
+# the qcom,sdhci-msm-v5 host controller at 0xc0c4000/0x1000.
+# NativeEmmc does not exist yet (lavender's roadmap lists it as an open task),
+# so until it lands the root comes from RAM_BLOCK.
+# Lavender ships RAM_BLOCK=n because it never got past the console stage;
+# here it is y so the kernel has a root at all.
+# ---------------------------------------------------------------------------
+CONFIG_XNU_NATIVE_RAM_BLOCK=y

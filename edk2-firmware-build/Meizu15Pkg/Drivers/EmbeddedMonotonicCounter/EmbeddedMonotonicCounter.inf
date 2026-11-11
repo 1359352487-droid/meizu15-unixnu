@@ -1,0 +1,17 @@
+## @file
+#  EmbeddedMonotonicCounter - prebuilt UEFI module carved from the Meizu 15 (M1881, SDM660) XBL.
+#
+#  Origin: xbl_a (mmcblk0p1) -> ELF LOAD #11 @0x7e380 -> FFS2 volume
+#          -> gzip FV_IMAGE @0x0a70d0 -> this module.
+#  The FILE_GUID below is the GUID this module was published under in the stock
+#  volume; it is not invented.
+#
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = EmbeddedMonotonicCounter
+  FILE_GUID                      = 37795ba0-e1cf-4ed5-bd8b-16df6bcb1e1a
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+
+[Binaries]
+  PE32|EmbeddedMonotonicCounter.efi|DEBUG

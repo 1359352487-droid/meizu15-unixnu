@@ -1,0 +1,109 @@
+## @file
+#  Meizu15Pkg firmware volume description.
+#
+#  Size is 5 MiB: the 67 extracted modules total 3.73 MiB of PE32, plus FFS and
+#  section headers. The stock volume was 1.75 MiB only because its inner
+#  FV_IMAGE was gzip-compressed; we ship it uncompressed into the boot image,
+#  which has 64 MiB of room.
+#
+[Defines]
+  DEFINE BLOCK_SIZE        = 0x00010000
+
+[FD.MEIZU15_UEFI]
+BaseAddress   = 0x8000
+Size          = 0x00500000
+ErasePolarity = 1
+BlockSize     = $(BLOCK_SIZE)
+NumBlocks     = 0x50
+
+0x00000000|0x00500000
+FV = MEIZU15_FV
+
+[FV.MEIZU15_FV]
+FvNameGuid         = 7152edf4-ac2b-51d3-8f22-c48618d74e9a
+BlockSize          = $(BLOCK_SIZE)
+NumBlocks          = 0x50
+FvAlignment        = 16
+ERASE_POLARITY     = 1
+MEMORY_MAPPED      = TRUE
+STICKY_WRITE       = TRUE
+LOCK_CAP           = TRUE
+LOCK_STATUS        = TRUE
+WRITE_DISABLED_CAP = TRUE
+WRITE_ENABLED_CAP  = TRUE
+WRITE_STATUS       = TRUE
+WRITE_LOCK_CAP     = TRUE
+WRITE_LOCK_STATUS  = TRUE
+READ_DISABLED_CAP  = TRUE
+READ_ENABLED_CAP   = TRUE
+READ_STATUS        = TRUE
+READ_LOCK_CAP      = TRUE
+READ_LOCK_STATUS   = TRUE
+
+INF Meizu15Pkg/Drivers/DxeCore/DxeCore.inf
+INF Meizu15Pkg/Drivers/ArmCpuDxe/ArmCpuDxe.inf
+INF Meizu15Pkg/Drivers/RuntimeDxe/RuntimeDxe.inf
+INF Meizu15Pkg/Drivers/SecurityDxe/SecurityDxe.inf
+INF Meizu15Pkg/Drivers/SecRSADxe/SecRSADxe.inf
+INF Meizu15Pkg/Drivers/ASN1X509Dxe/ASN1X509Dxe.inf
+INF Meizu15Pkg/Drivers/VerifiedBootDxe/VerifiedBootDxe.inf
+INF Meizu15Pkg/Drivers/TzDxe/TzDxe.inf
+INF Meizu15Pkg/Drivers/MdtpDxe/MdtpDxe.inf
+INF Meizu15Pkg/Drivers/WatchdogTimer/WatchdogTimer.inf
+INF Meizu15Pkg/Drivers/CapsuleRuntimeDxe/CapsuleRuntimeDxe.inf
+INF Meizu15Pkg/Drivers/ReportStatusCodeRouterRuntimeDxe/ReportStatusCodeRouterRuntimeDxe.inf
+INF Meizu15Pkg/Drivers/StatusCodeHandlerRuntimeDxe/StatusCodeHandlerRuntimeDxe.inf
+INF Meizu15Pkg/Drivers/EmuVariableRuntimeDxe/EmuVariableRuntimeDxe.inf
+INF Meizu15Pkg/Drivers/EmbeddedMonotonicCounter/EmbeddedMonotonicCounter.inf
+INF Meizu15Pkg/Drivers/SimpleTextInOutSerial/SimpleTextInOutSerial.inf
+INF Meizu15Pkg/Drivers/ResetRuntimeDxe/ResetRuntimeDxe.inf
+INF Meizu15Pkg/Drivers/RealTimeClock/RealTimeClock.inf
+INF Meizu15Pkg/Drivers/MetronomeDxe/MetronomeDxe.inf
+INF Meizu15Pkg/Drivers/PrintDxe/PrintDxe.inf
+INF Meizu15Pkg/Drivers/DevicePathDxe/DevicePathDxe.inf
+INF Meizu15Pkg/Drivers/ConPlatformDxe/ConPlatformDxe.inf
+INF Meizu15Pkg/Drivers/ConSplitterDxe/ConSplitterDxe.inf
+INF Meizu15Pkg/Drivers/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
+INF Meizu15Pkg/Drivers/HiiDatabase/HiiDatabase.inf
+INF Meizu15Pkg/Drivers/FontDxe/FontDxe.inf
+INF Meizu15Pkg/Drivers/EnvDxe/EnvDxe.inf
+INF Meizu15Pkg/Drivers/ArmGicDxe/ArmGicDxe.inf
+INF Meizu15Pkg/Drivers/ArmTimerDxe/ArmTimerDxe.inf
+INF Meizu15Pkg/Drivers/ChipInfo/ChipInfo.inf
+INF Meizu15Pkg/Drivers/GlinkDxe/GlinkDxe.inf
+INF Meizu15Pkg/Drivers/SmemDxe/SmemDxe.inf
+INF Meizu15Pkg/Drivers/ULogDxe/ULogDxe.inf
+INF Meizu15Pkg/Drivers/NpaDxe/NpaDxe.inf
+INF Meizu15Pkg/Drivers/DiskIoDxe/DiskIoDxe.inf
+INF Meizu15Pkg/Drivers/PartitionDxe/PartitionDxe.inf
+INF Meizu15Pkg/Drivers/Fat/Fat.inf
+INF Meizu15Pkg/Drivers/EnglishDxe/EnglishDxe.inf
+INF Meizu15Pkg/Drivers/FvSimpleFileSystem/FvSimpleFileSystem.inf
+INF Meizu15Pkg/Drivers/DALSys/DALSys.inf
+INF Meizu15Pkg/Drivers/ClockDxe/ClockDxe.inf
+INF Meizu15Pkg/Drivers/HWIODxeDriver/HWIODxeDriver.inf
+INF Meizu15Pkg/Drivers/I2C/I2C.inf
+INF Meizu15Pkg/Drivers/SPI/SPI.inf
+INF Meizu15Pkg/Drivers/SPMI/SPMI.inf
+INF Meizu15Pkg/Drivers/SdccDxe/SdccDxe.inf
+INF Meizu15Pkg/Drivers/UFSDxe/UFSDxe.inf
+INF Meizu15Pkg/Drivers/DALTLMM/DALTLMM.inf
+INF Meizu15Pkg/Drivers/DisplayDxe/DisplayDxe.inf
+INF Meizu15Pkg/Drivers/PlatformInfoDxeDriver/PlatformInfoDxeDriver.inf
+INF Meizu15Pkg/Drivers/ButtonsDxe/ButtonsDxe.inf
+INF Meizu15Pkg/Drivers/PmicDxe/PmicDxe.inf
+INF Meizu15Pkg/Drivers/ChargerExDxe/ChargerExDxe.inf
+INF Meizu15Pkg/Drivers/QcomChargerDxeLA/QcomChargerDxeLA.inf
+INF Meizu15Pkg/Drivers/AdcDxe/AdcDxe.inf
+INF Meizu15Pkg/Drivers/TsensDxe/TsensDxe.inf
+INF Meizu15Pkg/Drivers/LimitsDxe/LimitsDxe.inf
+INF Meizu15Pkg/Drivers/MpPowerDxe/MpPowerDxe.inf
+INF Meizu15Pkg/Drivers/UsbfnDwc3Dxe/UsbfnDwc3Dxe.inf
+INF Meizu15Pkg/Drivers/UsbMsdDxe/UsbMsdDxe.inf
+INF Meizu15Pkg/Drivers/UsbDeviceDxe/UsbDeviceDxe.inf
+INF Meizu15Pkg/Drivers/UsbConfigDxe/UsbConfigDxe.inf
+INF Meizu15Pkg/Drivers/HashDxe/HashDxe.inf
+INF Meizu15Pkg/Drivers/RngDxe/RngDxe.inf
+INF Meizu15Pkg/Drivers/QcomBds/QcomBds.inf
+INF Meizu15Pkg/Drivers/QdssDxe/QdssDxe.inf
+INF Meizu15Pkg/Drivers/QcomChargerApp/QcomChargerApp.inf
