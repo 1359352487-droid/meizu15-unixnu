@@ -6,7 +6,59 @@
 
 ## 0. 一句话状态
 
-在 Meizu 15 上跑 XNU 的**前置工程已完成 8 成**：硬件摸清、引导链验证通过、原厂固件拆解完毕、DXE 卷已能自建。**卡在"把固件做成能启动的镜像"这一步**，正在用 edk2-msm 的现成 SDM660 框架攻关。
+在 Meizu 15 上跑 XNU 的**前置工程已完成**：硬件摸清、引导链验证通过、原厂固件拆解完毕、**并且已经构建出一个 `fastboot boot` 可加载的 UEFI 镜像**（`boot-meizu15.img`，6,225,920 字节，头部字段与原厂完全一致）。
+
+剩下的只有一步：**插上手机实测**。
+
+---
+
+## 0.1 最终产物（可启动镜像）
+
+工作流 `build-meizu15-edk2msm` 的最新成功产物（run `43087541204`）：
+
+```
+boot-meizu15.img     6,225,920 B
+  magic        ANDROID!
+  kernel_size  6,218,804
+  ramdisk_size 0
+  page_size    4096        <- 与原厂 dump/boot.img 一致
+  hdr_version  0           <- 与原厂一致
+  kernel       位于 0x1000（第 1 页），内容是 gzip（与原厂一致）
+SDM660_UEFI.fd      33,554,432 B   (32 MiB，EDK2 固件卷)
+```
+
+这份头部的每一项都对着原厂 `boot.img` 核过，不是猜的。`kernel` 段里是 `BootShim.bin + SDM660_UEFI.fd` 再 gzip，开机时 bootloader 解压 → 跳到 BootShim → BootShim 把卷复制到 `FD_BASE=0xCE000000` → 跳进 UEFI。
+
+### 怎么拿到它
+
+```
+GitHub → Actions → build-meizu15-edk2msm → 选最新绿色的 run → Artifacts → boot-meizu15
+```
+
+### 怎么测（需要插手机）
+
+```powershell
+# 1. 手机进 fastboot
+adb reboot bootloader
+# 2. 确认状态
+fastboot devices
+fastboot oem device-info       # 要看到 Device unlocked: true
+# 3. 只加载不写盘（变砖风险为零，重启即恢复）
+fastboot boot boot-meizu15.img
+```
+
+**预期**：`Sending 'boot.img' OKAY` → 屏幕亮起，出现 UEFI 字符界面 / SimpleInit 菜单 / 乌屏后自动重启（三种都算"固件跑起来了"）。
+
+**恢复**：按住电源键 10 秒强制重启，回到 Flyme。因为 `fastboot boot` 只写内存，任何情况下分区都没动。
+
+**判读**：
+
+| 现象 | 含义 |
+|---|---|
+| 屏幕出现文字/菜单 | 固件完全跑通 —— 直接进 Phase 4 |
+| 屏幕亮起但全黑，几秒后重启 | UEFI 启动了，卡在显示初始化（`DisplayDxe`/面板时序） |
+| 完全无反应，立刻重启 | BootShim 或 FD 加载失败（地址/页大小/重定位） |
+| 停在 fastboot 界面不动 | bootloader 拒绝了镜像头 |
 
 ---
 
