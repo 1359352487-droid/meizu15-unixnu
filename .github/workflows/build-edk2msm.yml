@@ -79,9 +79,12 @@ jobs:
           set -eux
           cp edk2-msm-overlay/configs/devices/meizu15.conf edk2-msm/configs/devices/
           mkdir -p edk2-msm/Platform/Meizu/sdm660
-          cp edk2-msm-overlay/Platform/Meizu/sdm660/meizu15.dsc      edk2-msm/Platform/Meizu/sdm660/
-          cp edk2-msm-overlay/Platform/Meizu/sdm660/meizu15.fdf.inc  edk2-msm/Platform/Meizu/sdm660/
-          ls -la edk2-msm/Platform/Meizu/sdm660/
+          # Copy the whole device dir, including FdtBlob_compat/meizu15.dtb.
+          # The sdm660 platform hook concatenates
+          #   Platform/<vendor>/sdm660/FdtBlob_compat/<device>.dtb
+          # onto the FD when it builds the boot image, and aborts if it is absent.
+          cp -r edk2-msm-overlay/Platform/Meizu/sdm660/. edk2-msm/Platform/Meizu/sdm660/
+          find edk2-msm/Platform/Meizu -type f -printf '%p  %s bytes\n'
           cat edk2-msm/configs/devices/meizu15.conf
 
       - name: Show what sdm660 provides
