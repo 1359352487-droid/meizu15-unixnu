@@ -14,6 +14,7 @@
   SUPPORTED_ARCHITECTURES        = AARCH64
   BUILD_TARGETS                  = DEBUG|RELEASE
   SKUID_IDENTIFIER               = DEFAULT
+  FLASH_DEFINITION               = Meizu15Pkg/Meizu15Pkg.fdf
 
 [LibraryClasses]
 

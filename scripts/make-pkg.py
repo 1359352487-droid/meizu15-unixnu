@@ -78,6 +78,7 @@ DSC_TEMPLATE = """## @file
   SUPPORTED_ARCHITECTURES        = AARCH64
   BUILD_TARGETS                  = DEBUG|RELEASE
   SKUID_IDENTIFIER               = DEFAULT
+  FLASH_DEFINITION               = {name}/{name}.fdf
 
 [LibraryClasses]
 
