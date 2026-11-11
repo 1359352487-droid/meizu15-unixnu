@@ -225,7 +225,7 @@ def main() -> int:
         path = f"{args.name}/Drivers/{m['base']}/{m['base']}.efi"
         entries.append(
             f"FILE {ftype} = {m['guid']} {{\n"
-            f"  PE32 PE32 {path}\n"
+            f"  PE32 {path}\n"
             f"}}\n")
     infs = "\n".join(entries)
     size = args.size_mib * 1024 * 1024
