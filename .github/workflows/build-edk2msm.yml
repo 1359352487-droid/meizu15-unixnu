@@ -30,9 +30,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential uuid-dev iasl nasm python3 python3-pip \
-            gcc-aarch64-linux-gnu clang lld gettext device-tree-compiler
+            gcc-aarch64-linux-gnu clang lld llvm gettext device-tree-compiler
           clang --version | head -1
           aarch64-linux-gnu-gcc --version | head -1
+          # CLANG38 invokes llvm-ar as the archiver; without it every library
+          # fails with "/bin/sh: 1: llvm-ar: not found" (Error 127).
+          if ! command -v llvm-ar >/dev/null; then
+            for c in /usr/lib/llvm-*/bin/llvm-ar; do
+              [ -x "$c" ] && sudo ln -sf "$c" /usr/local/bin/llvm-ar && break
+            done
+          fi
+          llvm-ar --version | head -1
 
       - name: Pin GCC 12 for BaseTools
         run: |
