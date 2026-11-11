@@ -73,8 +73,16 @@ jobs:
           set -eux
           cd "$EDK2_DIR"
           if [ -f pip-requirements.txt ]; then
-            python3 -m pip install --break-system-packages -r pip-requirements.txt
+            # pylibfdt is excluded on purpose: its C extension still calls
+            # PyInt_AsLong / PyString_FromString, which were removed long before
+            # Python 3.14 (the current runner default), so the wheel fails to
+            # build. It is only used by the DeviceTree helper we never run.
+            grep -viE '^\s*pylibfdt' pip-requirements.txt > /tmp/req.txt || true
+            cat /tmp/req.txt
+            python3 -m pip install --break-system-packages -r /tmp/req.txt
           fi
+          python3 -c "import antlr4; print('antlr4', antlr4.__file__)" || \
+            python3 -m pip install --break-system-packages antlr4-python3-runtime==4.13.2
 
       - name: Build BaseTools
         run: |
