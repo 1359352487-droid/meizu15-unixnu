@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 60
 
     env:
-      EDK2_TAG: edk2-stable202408
+      EDK2_TAG: edk2-stable202608
       EDK2_DIR: ${{ github.workspace }}/edk2
 
     steps:
@@ -68,11 +68,19 @@ jobs:
             echo "Brotli submodule missing"; exit 1; }
           echo "Brotli submodule present"
 
+      - name: BaseTools python deps
+        run: |
+          set -eux
+          cd "$EDK2_DIR"
+          if [ -f pip-requirements.txt ]; then
+            python3 -m pip install --break-system-packages -r pip-requirements.txt
+          fi
+
       - name: Build BaseTools
         run: |
           set -eux
           cd "$EDK2_DIR"
-          make -C BaseTools -j"$(nproc)" 2>&1 | tail -40
+          make -C BaseTools -j"$(nproc)" 2>&1 | tail -60
           test -x BaseTools/Source/C/bin/GenFw || { echo "GenFw missing"; exit 1; }
 
       - name: Install package
