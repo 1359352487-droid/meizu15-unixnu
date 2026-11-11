@@ -52,13 +52,21 @@ jobs:
         run: |
           set -eux
           cd "$EDK2_DIR"
-          # --depth 1 on submodules is known to fail for some edk2 submodules
-          # ("fatal: reference is not a tree"); fall back to a full clone.
-          if ! git submodule update --init --recursive --depth 1; then
-            echo "::warning::shallow submodule fetch failed, retrying full"
-            git submodule update --init --recursive
-          fi
-          git submodule status --recursive | head -20
+          # Only the Brotli submodules are needed: BaseTools compiles BrotliCompress
+          # to pack the firmware volume. Everything else (openssl, googletest,
+          # subhook, jansson, softfloat) belongs to modules we never build, because
+          # every component of Meizu15Pkg is a prebuilt binary.
+          #
+          # A full `--recursive` update FAILS here: UnitTestFrameworkPkg points at
+          # https://github.com/Zeex/subhook.git, which is gone, and GitHub answers
+          # an anonymous clone of a dead repository with an auth prompt rather than
+          # a 404 ("fatal: could not read Username for 'https://github.com'").
+          git submodule update --init --depth 1 \
+            BaseTools/Source/C/BrotliCompress/brotli \
+            MdeModulePkg/Library/BrotliCustomDecompressLib/brotli
+          test -d BaseTools/Source/C/BrotliCompress/brotli || {
+            echo "Brotli submodule missing"; exit 1; }
+          echo "Brotli submodule present"
 
       - name: Build BaseTools
         run: |
