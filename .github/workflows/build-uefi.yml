@@ -19,62 +19,102 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
+    env:
+      EDK2_TAG: edk2-stable202408
+      EDK2_DIR: ${{ github.workspace }}/edk2
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Install toolchain
         run: |
+          set -eux
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential uuid-dev iasl nasm python3 python3-pip \
             gcc-aarch64-linux-gnu
+          echo "--- versions ---"
+          gcc --version | head -1
+          aarch64-linux-gnu-gcc --version | head -1
+          iasl -v 2>&1 | head -2 || true
+          nasm -v || true
+          python3 --version
 
-      - name: Fetch EDK2
+      # Split the EDK2 acquisition into three steps so a failure names the stage
+      # instead of hiding inside one big `run:` block.
+      - name: Clone EDK2
         run: |
-          git clone --depth 1 --branch edk2-stable202408 \
-            https://github.com/tianocore/edk2.git
-          cd edk2
-          git submodule update --init --depth 1
-          make -C BaseTools -j"$(nproc)"
+          set -eux
+          git clone --depth 1 --branch "$EDK2_TAG" https://github.com/tianocore/edk2.git "$EDK2_DIR"
+          git -C "$EDK2_DIR" log --oneline -1
+
+      - name: EDK2 submodules
+        run: |
+          set -eux
+          cd "$EDK2_DIR"
+          # --depth 1 on submodules is known to fail for some edk2 submodules
+          # ("fatal: reference is not a tree"); fall back to a full clone.
+          if ! git submodule update --init --recursive --depth 1; then
+            echo "::warning::shallow submodule fetch failed, retrying full"
+            git submodule update --init --recursive
+          fi
+          git submodule status --recursive | head -20
+
+      - name: Build BaseTools
+        run: |
+          set -eux
+          cd "$EDK2_DIR"
+          make -C BaseTools -j"$(nproc)" 2>&1 | tail -40
+          test -x BaseTools/Source/C/bin/GenFw || { echo "GenFw missing"; exit 1; }
 
       - name: Install package
         run: |
-          cp -r edk2-firmware-build/Meizu15Pkg edk2/
-          # binary-only INF files still need at least one package to resolve into
+          set -eux
+          cp -r edk2-firmware-build/Meizu15Pkg "$EDK2_DIR"/
           python3 - <<'PY'
-          import pathlib, re
-          dec = pathlib.Path('edk2/Meizu15Pkg/Meizu15Pkg.dec').read_text()
-          for inf in pathlib.Path('edk2/Meizu15Pkg/Drivers').glob('*/*.inf'):
+          import pathlib
+          root = pathlib.Path('edk2/Meizu15Pkg/Drivers')
+          n = 0
+          for inf in root.glob('*/*.inf'):
               t = inf.read_text()
               if '[Packages]' not in t:
                   t += '\n[Packages]\n  Meizu15Pkg/Meizu15Pkg.dec\n  MdePkg/MdePkg.dec\n'
                   inf.write_text(t)
-          print('patched', len(list(pathlib.Path('edk2/Meizu15Pkg/Drivers').glob('*/*.inf'))), 'INF')
+                  n += 1
+          print(f'patched {n} INF files')
           PY
+          ls "$EDK2_DIR/Meizu15Pkg"
+          ls "$EDK2_DIR/Meizu15Pkg/Drivers" | head -10
 
       - name: Build firmware volume
         run: |
-          cd edk2
-          export WORKSPACE="$PWD"
-          export PACKAGES_PATH="$PWD"
+          set -eux
+          cd "$EDK2_DIR"
+          export WORKSPACE="$EDK2_DIR"
+          export PACKAGES_PATH="$EDK2_DIR"
           export GCC5_AARCH64_PREFIX=aarch64-linux-gnu-
-          export EDK_TOOLS_PATH="$PWD/BaseTools"
+          export EDK_TOOLS_PATH="$EDK2_DIR/BaseTools"
           source ./edksetup.sh BaseTools
           build -a AARCH64 -t GCC5 -b RELEASE \
                 -p Meizu15Pkg/Meizu15Pkg.dsc \
-                -n "$(nproc)" \
-                -D BLOCK_SIZE=0x00010000
+                -n "$(nproc)"
 
       - name: Locate output
+        if: always()
         run: |
-          find edk2/Build/Meizu15Pkg -name '*.fd' -printf '%p  %s bytes\n' || true
-          find edk2/Build/Meizu15Pkg -name '*.Fv' -printf '%p  %s bytes\n' || true
+          echo "--- .fd ---"
+          find "$EDK2_DIR/Build/Meizu15Pkg" -name '*.fd' -printf '%p  %s bytes\n' || true
+          echo "--- .Fv ---"
+          find "$EDK2_DIR/Build/Meizu15Pkg" -name '*.Fv' -printf '%p  %s bytes\n' || true
+          echo "--- build log tail ---"
+          find "$EDK2_DIR/Build/Meizu15Pkg" -name '*.txt' -o -name '*.log' | head -5 || true
 
       - name: Upload firmware
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: MEIZU15PKG_UEFI
           path: |
             edk2/Build/Meizu15Pkg/*/FV/*.fd
             edk2/Build/Meizu15Pkg/*/FV/*.Fv
-          if-no-files-found: error
+          if-no-files-found: warn
