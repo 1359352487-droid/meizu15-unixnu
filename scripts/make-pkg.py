@@ -28,10 +28,21 @@ import shutil
 import sys
 import uuid
 
+# manifest carries either the short (DRIVER/APPDXE) or the long
+# (DXE_DRIVER/UEFI_APPLICATION) spelling depending on the extractor version.
 INF_MODULE_TYPE = {
     "DRIVER": "DXE_DRIVER",
+    "DXE_DRIVER": "DXE_DRIVER",
     "DXE_CORE": "DXE_CORE",
     "APPDXE": "UEFI_APPLICATION",
+    "UEFI_APPLICATION": "UEFI_APPLICATION",
+}
+
+# FFS file type used when embedding the PE32 straight through the FDF
+FFS_TYPE = {
+    "DXE_DRIVER": "DXE_DRIVER",
+    "DXE_CORE": "DXE_CORE",
+    "UEFI_APPLICATION": "APPLICATION",
 }
 
 INF_TEMPLATE = """## @file
@@ -127,7 +138,7 @@ READ_STATUS        = TRUE
 READ_LOCK_CAP      = TRUE
 READ_LOCK_STATUS   = TRUE
 
-{infs}
+{file_entries}
 """
 
 
@@ -200,18 +211,30 @@ def main() -> int:
     with open(os.path.join(pkg, f"{args.name}.dec"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(DEC_TEMPLATE.format(name=args.name, guid=dec_guid))
 
-    comps = "\n".join(f"  {args.name}/Drivers/{m['base']}/{m['base']}.inf" for m in mods)
+    # [Components] stays empty on purpose. Every module is a prebuilt PE32 that is
+    # embedded through the FDF; declaring binary-only INFs here makes EDK2 try to
+    # apply a build rule to them, which fails for DXE_CORE:
+    #   error F003: Don't Find common rule RULE.COMMON.DXE_CORE
+    comps = "  # (intentionally empty: all modules are embedded via the FDF)"
     with open(os.path.join(pkg, f"{args.name}.dsc"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(DSC_TEMPLATE.format(name=args.name, guid=plat_guid, components=comps))
 
-    infs = "\n".join(f"INF {args.name}/Drivers/{m['base']}/{m['base']}.inf" for m in mods)
+    entries = []
+    for m in mods:
+        ftype = FFS_TYPE.get(m["modtype"], "FREEFORM")
+        path = f"{args.name}/Drivers/{m['base']}/{m['base']}.efi"
+        entries.append(
+            f"FILE {ftype} = {m['guid']} {{\n"
+            f"  PE32 PE32 {path}\n"
+            f"}}\n")
+    infs = "\n".join(entries)
     size = args.size_mib * 1024 * 1024
     num_blocks = size // 0x10000
     with open(os.path.join(pkg, f"{args.name}.fdf"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(FDF_TEMPLATE.format(
             name=args.name, name_upper=args.name.upper(), size=size, size_mib=args.size_mib,
             num_blocks=num_blocks, fv_name=args.name.upper() + "_FV",
-            fv_guid=fv_guid, infs=infs))
+            fv_guid=fv_guid, file_entries=infs))
 
     print(f"{args.name}: {copied} modules, {size_mib if False else args.size_mib} MiB volume")
     print(f"  {pkg}")
