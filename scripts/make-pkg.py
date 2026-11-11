@@ -226,6 +226,7 @@ def main() -> int:
         entries.append(
             f"FILE {ftype} = {m['guid']} {{\n"
             f"  SECTION PE32 = {path}\n"
+            f"  SECTION UI = \"{m['base']}\"\n"
             f"}}\n")
     infs = "\n".join(entries)
     size = args.size_mib * 1024 * 1024
