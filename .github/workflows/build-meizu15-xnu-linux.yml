@@ -1,0 +1,106 @@
+name: build-meizu15-xnu-linux
+
+# Build XNU 8796 on Linux with UniXNU's own Linux toolchain.
+#
+# Why the October tree (7b52e796, 2026-10-19):
+#   * it predates schema 2, so its kernel step applies patches/xnu/*.patch directly
+#     instead of resolving an arch/soc/os profile chain (which needs an SDM660 SoC
+#     repository that does not exist);
+#   * its patches/xnu/ is the classic series (native-4k-*, native-arm-pan,
+#     architectural-timer-entry, apple-only-cpu-tunables, ...), which is the set the
+#     SDM660-class ports were built on;
+#   * its feeds.toml pins xnu-10063 (iOS 17), but our device feeds.toml overrides
+#     xnu with xnu-8796.141.3 -- the iOS 16 generation.
+#
+# Why Linux: GitHub's macOS runners were cancelled three times in a row while
+# queued ("not acquired by Runner of type hosted"). scripts/linux/setup-toolchain.py
+# builds clang with __builtin_xnu_type_*, cctools-port's ld64, mig, iig and lzfse,
+# so the kernel step runs on ubuntu-latest.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-meizu15-xnu-linux.yml'
+
+jobs:
+  kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout device repository
+        uses: actions/checkout@v4
+        with:
+          path: device
+
+      - name: Clone UniXNU at the October revision
+        run: |
+          set -eux
+          git init -q unixnu
+          cd unixnu
+          git remote add origin https://github.com/UniXNU/UniXNU.git
+          git fetch -q --depth 1 origin 7b52e7968c76453cdc18b5aa174fc368d5293b91
+          git checkout -q FETCH_HEAD
+          git log -1 --format='%H %ad %s'
+          ls scripts/linux/
+
+      - name: Host dependencies
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential pkg-config ninja-build python3 python3-dev \
+            xz-utils libssl-dev zlib1g-dev libbsd-dev uuid-dev llvm-dev libclang-dev \
+            device-tree-compiler git curl wget ca-certificates tcsh unifdef cmake mtools \
+            flex bison bzip2 cpio rsync
+
+      - name: Install the Linux kernel toolchain (clang + cctools + mig + lzfse)
+        run: |
+          set -eux
+          cd unixnu
+          sudo python3 scripts/linux/setup-toolchain.py /opt/unixnu-linux 2>&1 | tail -60
+          ls /opt/unixnu-linux || true
+        continue-on-error: true
+
+      - name: Select defconfig
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu defconfig meizu15_defconfig -D ../device
+
+      - name: Fetch sources and IPSW members
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu fetch 2>&1 | tail -40
+          ./unixnu ipsw fetch 2>&1 | tail -20
+        continue-on-error: true
+
+      - name: Build kernel
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu build kernel 2>&1 | tail -500
+        continue-on-error: true
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=== kernel artefacts ==="
+          find unixnu/out -name 'kernel.macho' -o -name 'mach.development*' 2>/dev/null | head -10 || true
+          echo "=== logs ==="
+          find unixnu -name '*.log' -newermt '-6 hours' 2>/dev/null | head -10 | while read f; do
+            echo "--- $f ---"; tail -40 "$f"
+          done || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meizu15-xnu-linux
+          path: |
+            unixnu/out/**/kernel.macho
+            unixnu/out/**/mach.development*
+            unixnu/logs/**
+          if-no-files-found: warn
