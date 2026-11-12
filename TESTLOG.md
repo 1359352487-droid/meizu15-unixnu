@@ -219,3 +219,51 @@ Shell>
 菜单里没有可启动项（预期，ESP 上还没有 UniXNU 载荷），所以倒计时后进 Shell。
 
 **Phase 3 收官。** 下一步是 Phase 4：把 XNU kernel.macho + ADT + DarwinBoot 放进 userdata 的 FAT 卷，让菜单能列出并启动它。
+
+## 2026-11-13 02:00 — Phase 4 调研：UniXNU 版本与 iOS 16 的错位
+
+### 事实（全部来自 CI 日志与仓库）
+
+| 事实 | 证据 |
+|---|---|
+| device repo 被 unixnu 接受 | `status --json` 全字段解析，`configured: true` |
+| IPSW 身份正确 | `ipsw info` 列出 d21ap 全套组件 |
+| kernelcache 可取可解 | 51,019,776 B，sha256 `ae36144e…` |
+| **补丁解析为 0** | `release --check` → `check done: 0 patches, configuration None, OS out` |
+| schema 1 不支持补丁 | `patches.plan()` 只在 `schema_version == 2` 时调用 |
+| 最新 UniXNU 无 20H392 profile | `profiles/os/` 只有 ipados-17.7.11 / 26.5.2 / 27.0.1 / macos-27.3 |
+| 2026-10-19 的 UniXNU 也没有 profiles/os | 该版本 ls 只到 `patches/`，且 xnu pin 仍是 d8b80295 |
+| `profiles/soc/` 为空 | 没有 sdm660 profile |
+| `profiles/arch/arm64/` 有 series | `patches/xnu/series` 存在 |
+| lavender 的 lock 里 xnu = 1b191cb5 | 与 UniXNU 任何 feeds.toml 版本都不同 → 该 device repo 自己覆盖过 |
+
+### 结论
+
+要拿到可用的内核，必须**自己补一个 iOS 16.7.16 (20H392) 的 OS profile**，结构照
+`profiles/os/ipados-17.7.11-21H461/profile.toml`，把其中的 ipsw / kernel.prelink /
+darwin 换成我们实测的值：
+
+```toml
+["os"]
+name       = "ios-16.7.16-20H392"
+darwin     = "22.6.0"
+xnu_version = "8796.…"          # 待确认（iOS 16 = xnu-8796 系列）
+["ipsw"]
+product    = "iPhone10,2"
+device_class = "d21ap"
+chip_id    = 32789               # 0x8015
+board_id   = 4                   # 0x04, measured
+["kernel"."prelink"]
+kernelcache_sha256 = "ae36144edbd1aebce562b662ed0c19053c95026d0950eeab5c9e695fe72e2f71"
+slide = "-0x1000000"
+roots  = <31 项，与 board.toml 一致>
+```
+
+之后 board.toml 升到 `schema_version = 2`，用
+`patch_series = ["arch:patches/xnu/series", "device:patches/xnu/series"]`（soc 层暂缺）。
+
+### 未决
+
+- iOS 16 对应的 XNU tag/commit（`xnu-8796.101.5`? `xnu-8796.141.3`?）—— 待查
+  apple-oss-distributions/xnu 的 tag 与 UniXNU 历史里的对应关系。
+- 该 XNU 版本能否套用 UniXNU 现有的 arch/device 补丁（版本跨度大，可能 patch 全部失败）。
