@@ -47,8 +47,19 @@ jobs:
           ./unixnu fetch 2>&1 | tail -80
         continue-on-error: true
 
-      - name: Resolve patch series
+      - name: Build lzfse (the kernelcache is LZFSE-compressed)
         run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake build-essential
+          git clone --depth 1 https://github.com/lzfse/lzfse.git /tmp/lzfse
+          cmake -S /tmp/lzfse -B /tmp/lzfse/build -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
+          cmake --build /tmp/lzfse/build -j"$(nproc)" >/dev/null
+          sudo cp /tmp/lzfse/build/lzfse /usr/local/bin/lzfse
+          lzfse -h 2>&1 | head -2 || true
+
+      - name: Resolve patch series        run: |
           set -eux
           cd unixnu
           ./unixnu release --check 2>&1 | tail -200
