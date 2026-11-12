@@ -1,0 +1,129 @@
+name: build-meizu15-fix
+
+# The real fix build: RELEASE firmware with SimpleInit's free(NULL) made safe,
+# and the stock boot-image header transplanted so the result is directly
+# comparable with the image that already reached BDS on the device.
+#
+# Evidence chain:
+#   device: data abort, ESR 0x25 / ISS 0x4 (translation fault, level 0)
+#   FAR = 0xFFFFFFFFFFFFFFF0  => NULL - 0x10
+#   ELR = SimpleInitMain+0xB5D0C => `ldur w3, [x19, #-0x10]`
+#   that instruction is `Head->Signature` in libs/compatible/malloc.c free(),
+#   reached with Ptr == NULL because the early return is missing.
+#
+# scripts/ci/patch_simpleinit_free.py inserts the guard and is idempotent,
+# scripts/ci/retarget_header.py swaps the stock 1632-byte header back in.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'edk2-msm-overlay/**'
+      - 'scripts/ci/**'
+      - '.github/workflows/build-meizu15-fix.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential uuid-dev iasl nasm python3 python3-pip \
+            gcc-aarch64-linux-gnu clang lld llvm gettext device-tree-compiler abootimg
+          if ! command -v llvm-ar >/dev/null; then
+            for c in /usr/lib/llvm-*/bin/llvm-ar; do
+              [ -x "$c" ] && sudo ln -sf "$c" /usr/local/bin/llvm-ar && break
+            done
+          fi
+          llvm-ar --version | head -1
+
+      - name: Pin GCC 12 for BaseTools
+        run: |
+          set -eux
+          if apt-cache policy gcc-12 2>/dev/null | grep -q Candidate; then
+            sudo apt-get install -y --no-install-recommends gcc-12 g++-12
+            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
+            sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
+          fi
+          gcc --version | head -1
+
+      - name: Clone edk2-msm
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/edk2-porting/edk2-msm.git
+          cd edk2-msm
+          git submodule update --init --depth 1 || git submodule update --init
+          cd Common/edk2 && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../Common/edk2-platforms && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../GPLDrivers/Library/SimpleInit && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../../
+          echo "SimpleInit pinned at: $(git -C GPLDrivers/Library/SimpleInit rev-parse --short HEAD)"
+          df -h . | tail -1
+
+      - name: Apply Meizu 15 overlay
+        run: |
+          set -eux
+          cp edk2-msm-overlay/configs/devices/meizu15.conf edk2-msm/configs/devices/
+          mkdir -p edk2-msm/Platform/Meizu/sdm660
+          cp -r edk2-msm-overlay/Platform/Meizu/sdm660/. edk2-msm/Platform/Meizu/sdm660/
+          find edk2-msm/Platform/Meizu -type f -printf '%p  %s bytes\n'
+
+      - name: Patch SimpleInit free(NULL)
+        run: |
+          set -eux
+          python3 scripts/ci/patch_simpleinit_free.py edk2-msm
+          echo "--- resulting free() ---"
+          sed -n '/^free(void \*Ptr)/,/^}/p' edk2-msm/GPLDrivers/Library/SimpleInit/libs/compatible/malloc.c
+
+      - name: Build (RELEASE)
+        run: |
+          set -eux
+          cd edk2-msm
+          chmod +x build.sh
+          ./build.sh -d meizu15 -r RELEASE 2>&1 | tail -300
+        continue-on-error: true
+
+      - name: Retarget to the stock header
+        if: always()
+        run: |
+          set -eux
+          if [ -f edk2-msm/boot-meizu15.img ]; then
+            python3 scripts/ci/retarget_header.py \
+              edk2-msm/boot-meizu15.img \
+              edk2-msm-overlay/boot-header-1632.bin \
+              edk2-msm/boot-meizu15-stockhdr.img
+          else
+            echo "::warning::no boot-meizu15.img produced"
+          fi
+
+      - name: Locate output
+        if: always()
+        run: |
+          find edk2-msm -maxdepth 2 -name 'boot-*.img' -printf '%p  %s bytes\n' 2>/dev/null || true
+          find edk2-msm -name '*.fd' -printf '%p  %s bytes\n' 2>/dev/null | head -5 || true
+
+      - name: Upload boot image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-meizu15-fix
+          path: |
+            edk2-msm/boot-meizu15-stockhdr.img
+            edk2-msm/boot-meizu15.img
+          if-no-files-found: warn
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-fix
+          path: |
+            edk2-msm/workspace/Build/meizu15/**/*.txt
+          if-no-files-found: warn

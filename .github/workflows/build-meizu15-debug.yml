@@ -13,10 +13,6 @@ name: build-meizu15-debug
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'edk2-msm-overlay/**'
-      - '.github/workflows/build-meizu15-debug.yml'
 
 jobs:
   build:

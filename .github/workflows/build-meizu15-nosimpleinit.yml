@@ -15,10 +15,6 @@ name: build-meizu15-nosimpleinit
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'edk2-msm-overlay/**'
-      - '.github/workflows/build-meizu15-nosimpleinit.yml'
 
 jobs:
   build:

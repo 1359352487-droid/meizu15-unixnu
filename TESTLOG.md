@@ -136,3 +136,55 @@ FP  0x00000009FFCE250
 这也解释了官方构建为什么一定要压缩。
 
 结论：改 SimpleInit 必须解决 LZMA 重压的兼容性，或者走 CI 重新编译。
+
+## 2026-11-13 00:12 — DEBUG 镜像：根因确认（free(NULL)）
+
+`fastboot boot boot-meizu15-debug-hdrfix.img`（原厂头 + DEBUG payload，6,279,168 B）：
+屏幕出 `Initialize SimpleInit GUI...`，随后异常。关键寄存器：
+
+```
+PC  0xC482FEFC  (0xC482E000 + 0x1EFC)      -- 不可信（cbnz，不访存）
+ELR 0xC48E3D0C  (0xC482E000 + 0xB5D0C)     -- 真凶
+FAR 0xFFFFFFFFFFFFFFF0                     -- == NULL - 0x10
+ESR 0x25 / ISS 0x4                         -- translation fault, level 0
+```
+
+DEBUG 版 `SimpleInitMain` 在 0xB5D0C 的指令是：
+
+```
+0B5CE4  mov  x19, x0                     ; Ptr
+0B5CE8  sub  x20, x0, #0x20              ; Head = Ptr - 0x20
+0B5D08  bl   #0x14c0                     ; DEBUG("free(%p): Head: %p\n", Ptr, Head)
+0B5D0C  ldur w3, [x19, #-0x10]           ; ★ Head->Signature，x19 = 0
+0B5D10  cmp  w3, w21                     ; w21 = 0x64687043 = "Cphd"
+```
+
+### 源码
+
+`BigfootACA/simple-init` → `libs/compatible/malloc.c`
+
+```c
+#define CPOOL_HEAD_SIGNATURE   SIGNATURE_32('C','p','h','d')
+
+weak_decl void free(void *Ptr)
+{
+	CPOOL_HEAD   *Head;
+	Head = BASE_CR(Ptr, CPOOL_HEAD, Data);   // NULL - 0x20，不是 NULL
+	assert(Head != NULL);                    // 恒为真，拦不住
+	DEBUG((DEBUG_POOL, "free(%p): Head: %p\n", Ptr, Head));
+	if(Ptr != NULL) {
+		if (Head->Signature == CPOOL_HEAD_SIGNATURE) { ... }
+```
+
+NULL 判断放在指针运算**之后**，编译器把 `Head->Signature` 的读取提前了，于是 `free(NULL)` 直接读 `0xFFFFFFFFFFFFFFF0`。
+
+### 修复（已提交）
+
+- `scripts/ci/patch_simpleinit_free.py`：在 `free()` 里 `BASE_CR` 之前插入 `if (Ptr == NULL) return;`，幂等、打印 diff、找不到就 fail。
+- `scripts/ci/retarget_header.py`：把 CI 产出的镜像换成原厂 1632 字节头（`edk2-msm-overlay/boot-header-1632.bin`）。
+- `.github/workflows/build-meizu15-fix.yml`：RELEASE + patch + 移植头部，一条龙。
+
+另外 `build-meizu15-nosimpleinit` 的失败原因已定位并修掉：
+runner 的 Clang 21 把 `-Wnull-dereference` 变成错误，EDK2 全程 `-Werror`，
+第一个倒下的是 `QcomPkg/.../FdtParserLib.h:46`（`MemoryInitPeiLib`），与本移植无关。
+`meizu15.dsc` 已加 `-Wno-null-dereference`。
