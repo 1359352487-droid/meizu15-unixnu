@@ -188,3 +188,34 @@ NULL 判断放在指针运算**之后**，编译器把 `Head->Signature` 的读�
 runner 的 Clang 21 把 `-Wnull-dereference` 变成错误，EDK2 全程 `-Werror`，
 第一个倒下的是 `QcomPkg/.../FdtParserLib.h:46`（`MemoryInitPeiLib`），与本移植无关。
 `meizu15.dsc` 已加 `-Wno-null-dereference`。
+
+## 2026-11-13 00:35 — Phase 3 完成：真机进 SimpleInit 菜单 + UEFI Shell
+
+镜像：`boot-meizu15-stockhdr.img`（CI run 43257940331，patch 过 `free(NULL)`）
+`fastboot boot` 后屏幕依次出现：
+
+1. **SimpleInit 启动菜单**（带倒计时）；
+2. 倒计时结束 → 落到 **UEFI Shell**：
+
+```
+VenHw(B615F1F5-5088-43CD-809C-A16E52487D00)/HD(50.GPT.A5D24706-15F6-1595-7DE3-AFC0CC1F3EB5,0x120000,0x20000)
+BLK49: Alias(s):
+... BLK50 / BLK51 / BLK52 / BLK53 / BLK54 / BLK55 ...
+Press ESC in 1 seconds to skip startup.nsh or any other key to continue.
+Shell>
+```
+
+`BLK49..BLK55` 就是本机的 50..57 号 GPT 分区（boot/recovery/system/.../userdata），说明：
+
+| 环节 | 状态 |
+|---|---|
+| BootShim → PEI → DXE → BDS | ✅ |
+| GOP + 1080×1920 面板 | ✅ |
+| SimpleInit GUI + 启动菜单 | ✅ |
+| eMMC（qcom,sdhci-msm-v5）驱动 | ✅ 分区枚举成功 |
+| GPT 分区表解析 | ✅ |
+| UEFI Shell | ✅ |
+
+菜单里没有可启动项（预期，ESP 上还没有 UniXNU 载荷），所以倒计时后进 Shell。
+
+**Phase 3 收官。** 下一步是 Phase 4：把 XNU kernel.macho + ADT + DarwinBoot 放进 userdata 的 FAT 卷，让菜单能列出并启动它。
