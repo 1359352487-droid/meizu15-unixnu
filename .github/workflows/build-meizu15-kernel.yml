@@ -1,0 +1,110 @@
+name: build-meizu15-kernel
+
+# Compile the UniXNU kernel for the Meizu 15 (SDM660 / d21ap identity).
+#
+# This is the macOS-only step: XNU is built against the iphoneos SDK with
+#   SDKROOT=iphoneos ARCH_CONFIGS=ARM64 MACHINE_CONFIGS=BCM2837
+# and then prelinked against the d21ap iOS 16.7.16 (20H392) kernelcache whose
+# sha256 is pinned in board.toml (ae36144e…, 51,019,776 B).
+#
+# Everything before this step is already proven in CI:
+#   check-meizu15-device  -> unixnu accepts board.toml / defconfig (configured: true)
+#   probe-meizu15-ipsw    -> ApBoardID 0x04, kernelcache downloaded and hashed
+#
+# Expect this to fail a few times on patches or symbols; the logs/ directory of
+# the build tree is uploaded either way.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'board.toml'
+      - 'configs/**'
+      - 'patches/**'
+      - 'feeds.toml'
+      - '.github/workflows/build-meizu15-kernel.yml'
+
+jobs:
+  kernel:
+    runs-on: macos-latest
+    timeout-minutes: 340
+
+    steps:
+      - name: Checkout device repository
+        uses: actions/checkout@v4
+        with:
+          path: device
+
+      - name: Toolchain sanity
+        run: |
+          set -eux
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          python3 --version
+          sw_vers
+
+      - name: Clone UniXNU
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/UniXNU/UniXNU.git unixnu
+          ls unixnu | head
+
+      - name: Select defconfig
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu defconfig meizu15_defconfig -D ../device
+
+      - name: Fetch sources
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu fetch 2>&1 | tail -80
+        continue-on-error: true
+
+      - name: Fetch IPSW members (kernelcache, device tree, trust caches)
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu ipsw fetch 2>&1 | tail -60
+        continue-on-error: true
+
+      - name: Build kernel
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu build kernel 2>&1 | tail -400
+        continue-on-error: true
+
+      - name: Report
+        if: always()
+        run: |
+          set -eux
+          echo "--- kernel output ---"
+          find unixnu/out -name 'kernel.macho' -o -name 'mach.development*' -printf '%p  %s bytes\n' 2>/dev/null | head -10 || true
+          echo "--- logs ---"
+          find unixnu/out unixnu/logs -name '*.log' -printf '%p  %s bytes\n' 2>/dev/null | head -20 || true
+          echo "--- failures ---"
+          for f in $(find unixnu/logs -name '*.log' 2>/dev/null | head -5); do
+            echo "=== $f ==="; tail -40 "$f"
+          done || true
+
+      - name: Upload kernel
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meizu15-kernel
+          path: |
+            unixnu/out/**/kernel.macho
+            unixnu/out/**/mach.development*
+          if-no-files-found: warn
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meizu15-kernel-logs
+          path: |
+            unixnu/logs/**
+            unixnu/out/**/*.log
+          if-no-files-found: warn
