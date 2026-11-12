@@ -352,3 +352,50 @@ ios-sweet 的补丁集（节选）正好覆盖我们要的东西：
 
 已加 `.github/workflows/build-meizu15-xnu-sweet.yml`（照 raphael 的 kernel job 写，
 产物 kernel.macho 上传）。等 macOS runner 排到即可验证能否编出 XNU 8796。
+
+## 2026-11-13 03:10 — 决定性发现：HakiOS 在 Linux 上编 XNU 8796，且用 BCM2837（ARMv8.0）
+
+三个参考项目对比：
+
+| 项目 | 内核怎么来 | 平台配置 | 宿主要求 |
+|---|---|---|---|
+| 红米 K20 Pro (raphael) | ios-sweet + darwin-xnu-build | `MACHINE_CONFIG=SWEET`（ARMv8.2） | macOS + Xcode 15 |
+| 红米 Note 7 (lavender) | 未公开 kernel 步骤（board.toml 是 schema 1） | 未知 | 未知 |
+| **HakiOS** | **自带 xnu-deps + xnu-build.sh** | **`MACHINE_CONFIGS=BCM2837`（Cortex-A53，ARMv8.0）** | **Linux 即可** |
+
+HakiOS 的关键文件：
+
+```
+xnu-env.sh        XNU_SRC 默认 = xnu-src/xnu-8796.121.2   ← iOS 16！
+                  THEOS = ~/theos（Linux toolchain + iPhoneOS16.5.SDK）
+xnu-deps/setup.sh 拉 Apple 开源（AvailabilityVersions/libdispatch/libpthread）+
+                  mig/unifdef/tcsh + MacOSX13.3.sdk 的 Kernel.framework + SDK 拼装
+xnu-build.sh      make SDKROOT=iphoneos ARCH_CONFIGS=ARM64
+                       MACHINE_CONFIGS=BCM2837 KERNEL_CONFIGS=DEVELOPMENT
+                       BUILD_WERROR=0 BUILD_LTO=0 DO_CTFMERGE=0
+                       CC=xnu-clang CXX=xnu-clang++
+                  Linux 上用 xnu-deps/hostinc/hostcompat.h 兼容层编 SETUP 工具
+```
+
+**BCM2837 = 树莓派 3 = Cortex-A53 = ARMv8.0**，与 SDM660 的 Kryo 260（A73/A53）
+同一代 ISA，没有 PAN/LSE —— 这正好解释了为什么 UniXNU 的 kernel 产物路径是
+`DEVELOPMENT_ARM64_BCM2837`。
+
+### 为什么这条路线能绕开前面所有阻塞
+
+| 前面的阻塞 | 被绕开的方式 |
+|---|---|
+| UniXNU 没有 20H392 的 OS profile | 不用它的 kernel 步骤 |
+| UniXNU schema 2 要 SDM660 SoC 仓库（不存在） | 同上 |
+| macOS runner 三次 queued→cancelled | **HakiOS 在 Linux 上编** |
+| ARMv8.0（无 PAN/LSE） | BCM2837 就是 ARMv8.0 配置 |
+
+### 下一步
+
+ubuntu runner：
+1. `~/theos`（Linux toolchain + iPhoneOS16.5.sdk）
+2. HakiOS 的 `xnu-deps/setup.sh`
+3. `xnu-8796.121.2` + ios-sweet 的 84 个平台补丁
+4. `xnu-build.sh`（MACHINE_CONFIGS=BCM2837）→ mach.development.bcm2837.unstripped
+
+产物再交给我们的 payload 打包（kernel.macho + meizu15 ADT + ESP）与已跑通的 edk2-msm 固件。
