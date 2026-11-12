@@ -13,6 +13,9 @@ name: probe-meizu15-ipsw
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/probe-meizu15-ipsw.yml'
 
 jobs:
   probe:
