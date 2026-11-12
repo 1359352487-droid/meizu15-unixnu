@@ -62,39 +62,41 @@ jobs:
           find unixnu/out -path '*ipsw*' -type f -size +1M -print0 2>/dev/null \
             | xargs -0r sha256sum | head -20 || true
 
-      - name: Board id straight from BuildManifest
+      - name: BuildManifest straight off the remote IPSW
         run: |
           set -eux
           python3 - <<'PY' 2>&1 | tee /tmp/boardid.txt
-          import sys, os, glob
+          import sys, plistlib, zipfile, traceback
           sys.path.insert(0, 'unixnu/scripts')
+          URL = ("https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-76738/"
+                 "B6C604B4-548E-401F-BBFF-916E3FFDF235/iPhone_5.5_P3_16.7.16_20H392_Restore.ipsw")
           try:
-              from unixnu import ipsw as unixnu_ipsw
-              print("ipsw module:", os.path.dirname(unixnu_ipsw.__file__))
-          except Exception as e:
-              print("import failed:", e)
-              sys.exit(0)
-          cands = glob.glob('unixnu/out/**/BuildManifest.plist', recursive=True)
-          print("BuildManifest candidates:", cands)
-          if not cands:
-              print("no BuildManifest on disk; checking whether unixnu can expose it")
-          import plistlib
-          for c in cands:
-              try:
-                  d = plistlib.load(open(c, 'rb'))
-              except Exception as e:
-                  print("parse failed", c, e); continue
-              for prod, idents in d.get('BuildIdentities', {}).items():
-                  info = idents.get('Info', {}) if isinstance(idents, dict) else {}
-                  if info.get('ProductType') in ('iPhone10,2', 'iPhone10,5'):
-                      print("identity:", prod)
-                      print("  ProductType :", info.get('ProductType'))
-                      print("  ApBoardID   :", info.get('ApBoardID'), hex(info.get('ApBoardID', 0)))
-                      print("  ApChipID    :", info.get('ApChipID'), hex(info.get('ApChipID', 0)))
-                      print("  BuildNumber :", info.get('BuildNumber'))
+              from unixnu.ipsw import RemoteFile
+          except Exception:
+              traceback.print_exc(); sys.exit(0)
+          try:
+              with RemoteFile(URL) as fh:
+                  z = zipfile.ZipFile(fh)
+                  names = [n for n in z.namelist() if n.endswith('BuildManifest.plist')]
+                  print("manifest members:", names)
+                  blob = z.read(names[0])
+              m = plistlib.loads(blob)
+          except Exception:
+              traceback.print_exc(); sys.exit(0)
+          print("ProductVersion :", m.get("ProductVersion"))
+          print("ProductBuild   :", m.get("ProductBuildVersion"))
+          print("Supported      :", m.get("SupportedProductTypes"))
+          print()
+          print("%-3s %-14s %-8s %-10s %-12s %s" % ("#", "ProductType", "DeviceClass", "ApBoardID", "Restore", "ManifestName"))
+          for i, ident in enumerate(m.get("BuildIdentities", [])):
+              info = ident.get("Info", {})
+              bid = info.get("ApBoardID")
+              print("%-3d %-14s %-8s %-10s %-12s %s" % (
+                  i, info.get("ProductType"), info.get("DeviceClass"),
+                  ("0x%X" % bid) if isinstance(bid, int) else bid,
+                  info.get("RestoreBehavior"), ident.get("ManifestName")))
           PY
         continue-on-error: true
-
       - name: Upload probe output
         if: always()
         uses: actions/upload-artifact@v4
