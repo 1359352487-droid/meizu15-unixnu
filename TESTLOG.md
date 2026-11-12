@@ -308,3 +308,47 @@ board.toml 回滚到 schema 1（`board.v1.toml` 保留 schema-2 草稿）。
    （那版的 `patches/` 只有 `libpthread`，XNU 补丁可能由 `scripts/` 里的脚本应用）。
 2. 按那版的约定把补丁挂上，xnu pin 覆盖成 1b191cb5。
 3. 只有补丁能落地，macOS 编译才有意义。
+
+## 2026-11-13 02:50 — 路线修正：照 SM8150/SM7150 的公开做法编 XNU 8796
+
+用户提示看 HakiOS、红米 Note 7、红米 K20 Pro 三个项目。K20 Pro（raphael）的
+`.github/workflows/build-raphael.yml` 给出了完整答案：
+
+```
+job kernel:  runs-on macos-14
+  env: MACOS_VERSION=13.5  MACHINE_CONFIG=SWEET  KERNEL_CONFIG=DEVELOPMENT
+  1. dipa-studio/ios-sweet              XNU 8796 构建脚本 + 平台补丁（36+ 个）
+  2. blacktop/darwin-xnu-build @6639065  macOS 构建驱动
+  3. 把 ios-sweet/xnu/patches/*.patch 覆盖进 dxb/patches/
+  4. brew install jq gum bash cmake ninja; stub xcodes
+  5. bash build.sh
+  6. 从产物里挑 magic = cffaedfe 的 Mach-O 当 kernel.macho
+```
+
+关键点：**它们不经过 UniXNU 的 kernel 步骤**。raphael 的 board.toml 注释写得很直白：
+"raphael reuses guacamole's exact kernel build → NO per-device kernel defconfig is required."
+
+ios-sweet 的补丁集（节选）正好覆盖我们要的东西：
+
+| 补丁 | 作用 |
+|---|---|
+| 0005 non-pac-build-fixes | 非 PAC 构建（ARMv8.0 设备需要） |
+| 0006 open-source-asm-pmap | 开源 asm pmap |
+| 0016 device-tree-platform-expert | 设备树平台专家 |
+| 0018 boot-cpu-driver | 启动 CPU |
+| 0019 builtin-pthread | 内置 pthread |
+| 0020 portable-aes-cbc | 便携 AES（无 Apple 硬件） |
+| 0026 builtin-hfs | HFS 支持 |
+| 0028 ufs-root-device | **UFS 根设备**（我们是 eMMC，缺这个） |
+| 0035 amfi-entitlements-platform-binaries | AMFI 放行平台二进制 |
+
+### 对新路线的影响
+
+- UniXNU 的 schema 2 / SoC 模块问题**绕过去了**：kernel 用 ios-sweet 编，
+  固件继续用我们已跑通的 edk2-msm（Phase 3），payload 我们自己打包。
+- 新增两个必须解决的差异：
+  1. **ARMv8.0**（Kryo 260 无 PAN/LSE），SWEET 面向 ARMv8.2，需补 no-LSE/no-PAN；
+  2. **eMMC**：ios-sweet 只有 UFS 根设备驱动，我们没有对应实现。
+
+已加 `.github/workflows/build-meizu15-xnu-sweet.yml`（照 raphael 的 kernel job 写，
+产物 kernel.macho 上传）。等 macOS runner 排到即可验证能否编出 XNU 8796。

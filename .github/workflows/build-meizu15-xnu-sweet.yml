@@ -1,0 +1,118 @@
+name: build-meizu15-xnu-sweet
+
+# Compile XNU 8796 (the iOS 16 generation) the way the public SM8150 / SM7150 ports
+# do, instead of through UniXNU's kernel step.
+#
+# Provenance: JohnLeeeeeee678/UniXNU-raphael (.github/workflows/build-raphael.yml,
+# job "kernel") builds its kernel exactly like this -- dipa-studio/ios-sweet for the
+# XNU patches and blacktop/darwin-xnu-build for the macOS build driver, with
+# MACHINE_CONFIG=SWEET and MACOS_VERSION=13.5 (13.5 == xnu-8796 == iOS 16).
+# No private defconfig is involved; everything below is public.
+#
+# What is still ours to solve, and why this run is worth doing anyway:
+#   * SDM660 (Kryo 260 = A73/A53) is ARMv8.0: no PAN, no LSE.  SWEET targets
+#     ARMv8.2-class silicon.  The build itself may succeed and still trap on the
+#     phone; patch 0005 (non-pac) and 0006 (open-source asm pmap) are the relevant
+#     ones to audit afterwards.
+#   * storage: ios-sweet carries a UFS root device (0028).  This phone is eMMC,
+#     so root comes from RAM_BLOCK until an eMMC driver exists.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-meizu15-xnu-sweet.yml'
+
+jobs:
+  kernel:
+    # XNU 8796 needs Xcode 15 (iig ABI) -> macos-14, same as ios-sweet itself.
+    runs-on: macos-14
+    timeout-minutes: 240
+
+    env:
+      # Without MACOS_VERSION build.sh pops an interactive gum menu and dies.
+      MACOS_VERSION: "13.5"
+      MACHINE_CONFIG: SWEET
+      KERNEL_CONFIG: DEVELOPMENT
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: meizu15
+
+      - name: Checkout ios-sweet (XNU 8796 build scripts + platform patches)
+        uses: actions/checkout@v4
+        with:
+          repository: dipa-studio/ios-sweet
+          path: ios-sweet
+
+      - name: Fetch darwin-xnu-build at the pinned commit ios-sweet uses
+        env:
+          DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
+        run: |
+          set -eux
+          git init -q dxb
+          git -C dxb fetch -q --depth 1 "https://github.com/blacktop/darwin-xnu-build" "$DXB_SHA"
+          git -C dxb checkout -q FETCH_HEAD
+          cp ios-sweet/xnu/patches/*.patch ios-sweet/xnu/patches/*.sh dxb/patches/ 2>/dev/null || true
+          ls dxb/patches/ | head -20
+
+      - name: Host dependencies
+        run: |
+          set -eux
+          brew install jq gum bash cmake ninja || true
+          printf '#!/bin/sh\nexit 0\n' | sudo tee /usr/local/bin/xcodes >/dev/null
+          sudo chmod +x /usr/local/bin/xcodes
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | head -1)
+          echo "DEVELOPER_DIR=$XC/Contents/Developer" >> "$GITHUB_ENV"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          xcrun --find iig || true
+
+      - name: Build XNU 8796 (SWEET platform, arm64)
+        working-directory: dxb
+        env:
+          MAKEFLAGS: '-k'
+        run: |
+          set -eux
+          bash build.sh 2>&1 | tail -300
+        continue-on-error: true
+
+      - name: Stage the kernel as kernel.macho
+        run: |
+          set -eux
+          mkdir -p meizu15/inputs/meizu15
+          find dxb -type f -name 'kernel*' 2>/dev/null > /tmp/cands.txt || true
+          echo "=== kernel* candidates ==="
+          while IFS= read -r f; do echo "  $(wc -c < "$f" | tr -d ' ') $f"; done < /tmp/cands.txt
+          K=""
+          while IFS= read -r f; do
+            sz=$(wc -c < "$f" | tr -d ' ')
+            [ "$sz" -gt 2000000 ] || continue
+            magic=$(od -An -tx1 -N4 "$f" | tr -d ' \n')
+            if [ "$magic" = "cffaedfe" ]; then K="$f"; break; fi
+          done < /tmp/cands.txt
+          if [ -z "$K" ]; then echo "no Mach-O kernel found"; exit 1; fi
+          echo "picked kernel: $K"
+          cp "$K" meizu15/inputs/meizu15/kernel.macho
+          ls -la meizu15/inputs/meizu15/kernel.macho
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=== kernel.macho ==="
+          ls -la meizu15/inputs/meizu15/ 2>/dev/null || true
+          echo "=== build logs ==="
+          ls -la dxb/*.log dxb/build 2>/dev/null | head -30 || true
+          echo "=== ARMv8.0 relevant strings ==="
+          strings -a meizu15/inputs/meizu15/kernel.macho 2>/dev/null | grep -i -m10 'Sweet\|IOS16\|8796' || true
+
+      - name: Upload kernel and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meizu15-xnu-sweet
+          path: |
+            meizu15/inputs/meizu15/kernel.macho
+            dxb/*.log
+          if-no-files-found: warn
