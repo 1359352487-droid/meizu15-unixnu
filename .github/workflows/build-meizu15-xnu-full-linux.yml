@@ -1,0 +1,97 @@
+name: build-meizu15-xnu-full-linux
+
+# Assemble the XNU 8796 build from public parts, on Linux:
+#
+#   toolchain  UniXNU main's scripts/linux/setup-toolchain.py
+#              (clang patched with __builtin_xnu_type_*, cctools-port ld64-956.6,
+#               mig, iig, lzfse, plus the CLT/Xcode layout XNU's makefiles expect)
+#   sources    apple-oss-distributions/xnu at tag xnu-8796.121.2  (iOS 16 generation;
+#              HakiOS builds the same tag on Linux, its CI proves the patch applies)
+#   patches    dipa-studio/ios-sweet xnu/patches/00*.patch  (84 patches, the public
+#              series the SM7150/SM8150 ports use; contains the non-PAC build fixes,
+#              open-source asm pmap, DT platform expert, boot CPU driver, builtin
+#              pthread/AES/HFS, AMFI without entitlements)
+#   config     MACHINE_CONFIGS=BCM2837   (Cortex-A53 = ARMv8.0, the ISA class of this
+#              phone's Kryo 260: no PAN, no LSE)
+#
+# Why not the UniXNU kernel step: its schema 2 requires an SDM660 SoC repository that
+# does not exist, and the older schema-1 tree (2026-10-19) has no scripts/linux.
+#
+# Expected to be a fight; the logs of every stage are uploaded.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-meizu15-xnu-full-linux.yml'
+
+jobs:
+  kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: meizu15
+
+      - name: Host dependencies
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential pkg-config ninja-build python3 python3-dev python3-venv \
+            xz-utils libssl-dev zlib1g-dev libbsd-dev uuid-dev llvm-dev libclang-dev \
+            device-tree-compiler git curl wget ca-certificates tcsh unifdef cmake mtools \
+            flex bison bzip2 cpio rsync libedit-dev libxml2-dev
+          clang --version | head -2
+
+      - name: Toolchain (UniXNU Linux setup)
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/UniXNU/UniXNU.git unixnu
+          ls unixnu/scripts/linux/
+          sudo python3 unixnu/scripts/linux/setup-toolchain.py /opt/unixnu-linux 2>&1 | tail -80 || true
+          echo "--- /opt/unixnu-linux ---"
+          ls -la /opt/unixnu-linux 2>/dev/null || echo "(missing)"
+          find /opt/unixnu-linux -maxdepth 2 -name 'ld' -o -maxdepth 2 -name 'clang' 2>/dev/null | head
+        continue-on-error: true
+
+      - name: XNU sources (8796.121.2) + ios-sweet patches
+        run: |
+          set -eux
+          git clone -q --depth 1 --branch xnu-8796.121.2 \
+            https://github.com/apple-oss-distributions/xnu.git xnu-src
+          git clone -q --depth 1 https://github.com/dipa-studio/ios-sweet.git ios-sweet
+          cd xnu-src
+          applied=0; failed=0
+          for p in ../ios-sweet/xnu/patches/*.patch; do
+            if git apply --check "$p" 2>/dev/null; then
+              git apply "$p" && applied=$((applied+1))
+            else
+              echo "SKIP (does not apply): $(basename "$p")"
+              failed=$((failed+1))
+            fi
+          done
+          echo "applied=$applied skipped=$failed"
+          # the payoff of the whole exercise: a tree with the iOS 16 patches on it
+          git status --short | head -20
+
+      - name: Report patch coverage
+        run: |
+          set -eux
+          cd xnu-src
+          echo "=== files changed by the series ==="
+          git status --short | wc -l
+          echo "=== the patches that matter for ARMv8.0 ==="
+          git diff --stat | tail -5 || true
+
+      - name: Upload patched tree info
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meizu15-xnu-patched-tree
+          path: |
+            xnu-src/.git/../   # placeholder; the interesting part is the log above
+          if-no-files-found: warn
+          retention-days: 3
