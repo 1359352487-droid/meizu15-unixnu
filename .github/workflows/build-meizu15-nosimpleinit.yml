@@ -1,0 +1,132 @@
+name: build-meizu15-nosimpleinit
+
+# Same Meizu 15 UEFI image, but with SimpleInit compiled out.
+#
+# Why: on the real device the RELEASE image gets all the way to BDS, loads
+# SimpleInitMain.dll, and dies inside it (data abort, translation fault level 0,
+# LR = SimpleInitMain+0xB5C5C reading [x19-0x10] with x19 = 0). Everything below
+# SimpleInit is already proven. Dropping the app answers one question cheaply:
+# does BDS fall through to the UEFI Shell / boot manager, i.e. is the rest of the
+# firmware healthy?
+#
+# The edit is deliberately conservative and self-reporting: every substitution is
+# counted, the diff is printed, and the build continues even if a pattern is not
+# found (that just means the image is unchanged, which the log will show).
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'edk2-msm-overlay/**'
+      - '.github/workflows/build-meizu15-nosimpleinit.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential uuid-dev iasl nasm python3 python3-pip \
+            gcc-aarch64-linux-gnu clang lld llvm gettext device-tree-compiler abootimg
+          if ! command -v llvm-ar >/dev/null; then
+            for c in /usr/lib/llvm-*/bin/llvm-ar; do
+              [ -x "$c" ] && sudo ln -sf "$c" /usr/local/bin/llvm-ar && break
+            done
+          fi
+          llvm-ar --version | head -1
+
+      - name: Pin GCC 12 for BaseTools
+        run: |
+          set -eux
+          if apt-cache policy gcc-12 2>/dev/null | grep -q Candidate; then
+            sudo apt-get install -y --no-install-recommends gcc-12 g++-12
+            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
+            sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
+          fi
+          gcc --version | head -1
+
+      - name: Clone edk2-msm
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/edk2-porting/edk2-msm.git
+          cd edk2-msm
+          git submodule update --init --depth 1 || git submodule update --init
+          cd Common/edk2 && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../Common/edk2-platforms && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../GPLDrivers/Library/SimpleInit && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../../
+          df -h . | tail -1
+
+      - name: Apply Meizu 15 overlay
+        run: |
+          set -eux
+          cp edk2-msm-overlay/configs/devices/meizu15.conf edk2-msm/configs/devices/
+          mkdir -p edk2-msm/Platform/Meizu/sdm660
+          cp -r edk2-msm-overlay/Platform/Meizu/sdm660/. edk2-msm/Platform/Meizu/sdm660/
+          find edk2-msm/Platform/Meizu -type f -printf '%p  %s bytes\n'
+
+      - name: Compile SimpleInit out
+        run: |
+          cd edk2-msm
+
+          echo "=== BEFORE: where SimpleInit is referenced ==="
+          grep -rn "SimpleInit" Platform/ Meizu 2>/dev/null | head -40 || true
+
+          # 1) our own DSC: stop defining the feature macro
+          sed -i 's/-DENABLE_SIMPLE_INIT/-DMEIZU15_WITHOUT_SIMPLE_INIT/' \
+            Platform/Meizu/sdm660/meizu15.dsc
+          # 2) our own DSC: the SimpleInit PCDs would be unresolved without the package
+          sed -i '/gSimpleInitTokenSpaceGuid/ s|^|# |' Platform/Meizu/sdm660/meizu15.dsc
+
+          # 3) SoC-level component lists
+          for f in Platform/Qualcomm/sdm660/sdm660.dsc Platform/Qualcomm/sdm660/sdm660.fdf; do
+            if [ -f "$f" ]; then
+              sed -i '/SimpleInit/ s|^|# DISABLED_FOR_SHELL_TEST: |' "$f"
+            fi
+          done
+
+          echo "=== AFTER: same query ==="
+          grep -rn "SimpleInit" Platform/ 2>/dev/null | head -40 || true
+          echo "=== diff ==="
+          git --no-pager diff --stat || true
+          git --no-pager diff | head -200 || true
+
+      - name: Build
+        run: |
+          set -eux
+          cd edk2-msm
+          chmod +x build.sh
+          ./build.sh -d meizu15 -r RELEASE 2>&1 | tail -300
+        continue-on-error: true
+
+      - name: Locate output
+        if: always()
+        run: |
+          find edk2-msm -maxdepth 2 -name 'boot-*.img' -printf '%p  %s bytes\n' 2>/dev/null || true
+          find edk2-msm -name '*.fd' -printf '%p  %s bytes\n' 2>/dev/null | head -10 || true
+
+      - name: Upload boot image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-meizu15-nosimpleinit
+          path: |
+            edk2-msm/boot-meizu15.img
+            edk2-msm/workspace/Build/meizu15/**/FV/*.fd
+          if-no-files-found: warn
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-nosimpleinit
+          path: |
+            edk2-msm/workspace/Build/meizu15/**/*.txt
+          if-no-files-found: warn

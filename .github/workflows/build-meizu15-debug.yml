@@ -1,0 +1,125 @@
+name: build-meizu15-debug
+
+# DEBUG build of the same Meizu 15 UEFI image.
+#
+# Why: the RELEASE image reaches BDS and loads SimpleInitMain, then dies with a
+# data abort inside SimpleInitMain (ESR EC=0x25, ISS=0x4 -> translation fault,
+# level 0). RELEASE only prints the module name; a DEBUG build prints
+# "file:line" for ASSERT()/exception reports, which pins the fault to a source
+# line instead of an RVA.
+#
+# It also uploads the full SimpleInit source tree, so the exact free() wrapper
+# behind RVA 0xB5C24 can be patched offline instead of guessed at.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'edk2-msm-overlay/**'
+      - '.github/workflows/build-meizu15-debug.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential uuid-dev iasl nasm python3 python3-pip \
+            gcc-aarch64-linux-gnu clang lld llvm gettext device-tree-compiler abootimg
+          if ! command -v llvm-ar >/dev/null; then
+            for c in /usr/lib/llvm-*/bin/llvm-ar; do
+              [ -x "$c" ] && sudo ln -sf "$c" /usr/local/bin/llvm-ar && break
+            done
+          fi
+          llvm-ar --version | head -1
+
+      - name: Pin GCC 12 for BaseTools
+        run: |
+          set -eux
+          if apt-cache policy gcc-12 2>/dev/null | grep -q Candidate; then
+            sudo apt-get install -y --no-install-recommends gcc-12 g++-12
+            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
+            sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
+          fi
+          gcc --version | head -1
+
+      - name: Clone edk2-msm
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/edk2-porting/edk2-msm.git
+          cd edk2-msm
+          git submodule update --init --depth 1 || git submodule update --init
+          cd Common/edk2 && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../Common/edk2-platforms && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../GPLDrivers/Library/SimpleInit && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../../
+          df -h . | tail -1
+
+      - name: Apply Meizu 15 overlay
+        run: |
+          set -eux
+          cp edk2-msm-overlay/configs/devices/meizu15.conf edk2-msm/configs/devices/
+          mkdir -p edk2-msm/Platform/Meizu/sdm660
+          cp -r edk2-msm-overlay/Platform/Meizu/sdm660/. edk2-msm/Platform/Meizu/sdm660/
+          find edk2-msm/Platform/Meizu -type f -printf '%p  %s bytes\n'
+
+      - name: Record SimpleInit layout (helps patching later)
+        run: |
+          set -eux
+          cd edk2-msm
+          echo "=== SimpleInit tree ==="
+          find GPLDrivers/Library/SimpleInit -maxdepth 3 -type d | head -40
+          echo "=== files mentioning FreePool / magic ==="
+          grep -rn "FreePool" GPLDrivers/Library/SimpleInit/src 2>/dev/null | head -40 || true
+          grep -rn "0x64687043\|Cphd\|magic" GPLDrivers/Library/SimpleInit/src 2>/dev/null | head -20 || true
+          echo "=== dsc/fdf references ==="
+          grep -rn "SimpleInit" Platform/Qualcomm/sdm660/*.dsc Platform/Qualcomm/sdm660/*.fdf 2>/dev/null | head -40 || true
+
+      - name: Build (DEBUG)
+        run: |
+          set -eux
+          cd edk2-msm
+          chmod +x build.sh
+          ./build.sh -d meizu15 -r DEBUG 2>&1 | tail -300
+        continue-on-error: true
+
+      - name: Locate output
+        if: always()
+        run: |
+          find edk2-msm -maxdepth 2 -name 'boot-*.img' -printf '%p  %s bytes\n' 2>/dev/null || true
+          find edk2-msm -name '*.fd' -printf '%p  %s bytes\n' 2>/dev/null | head -10 || true
+
+      - name: Upload boot image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-meizu15-debug
+          path: |
+            edk2-msm/boot-meizu15.img
+            edk2-msm/workspace/Build/meizu15/**/FV/*.fd
+          if-no-files-found: warn
+
+      - name: Upload SimpleInit source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simpleinit-src
+          path: |
+            edk2-msm/GPLDrivers/Library/SimpleInit
+          if-no-files-found: warn
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-debug
+          path: |
+            edk2-msm/workspace/Build/meizu15/**/*.txt
+          if-no-files-found: warn
