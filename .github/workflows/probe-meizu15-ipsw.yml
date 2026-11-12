@@ -58,7 +58,8 @@ jobs:
           sudo cp /tmp/lzfse/build/lzfse /usr/local/bin/lzfse
           lzfse -h 2>&1 | head -3 || true
 
-      - name: IPSW fetch (small members + kernelcache)        run: |
+      - name: IPSW fetch (small members + kernelcache)
+        run: |
           set -eux
           cd unixnu
           ./unixnu ipsw fetch 2>&1 | tail -60
