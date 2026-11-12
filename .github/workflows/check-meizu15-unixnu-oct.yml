@@ -1,0 +1,95 @@
+name: check-meizu15-unixnu-oct
+
+# The current UniXNU main no longer carries an iOS 16.7.16 (20H392) OS profile:
+# profiles/os now starts at iPadOS 17.7.11. The Redmi Note 7 port (lavender) that
+# does run 20H392 pins a different XNU (unixnu.lock: 1b191cb5…) than main's
+# feeds.toml (d8b80295…), i.e. it was built against an earlier UniXNU tree.
+#
+# This workflow checks the October tree (2026-10-19, 7b52e796) instead:
+#   * does it accept our schema-1 board.toml?
+#   * which xnu commit does IT pin?
+#   * does release --check resolve a non-zero patch series for it?
+#
+# All three answers come from one cheap Linux run.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/check-meizu15-unixnu-oct.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout device repository
+        uses: actions/checkout@v4
+        with:
+          path: device
+
+      - name: Clone UniXNU at the October revision
+        run: |
+          set -eux
+          git init -q unixnu
+          cd unixnu
+          git remote add origin https://github.com/UniXNU/UniXNU.git
+          git fetch -q --depth 1 origin 7b52e7968c76453cdc18b5aa174fc368d5293b91
+          git checkout -q FETCH_HEAD
+          git log -1 --format='%H %ad %s'
+
+      - name: What does that tree look like
+        run: |
+          set -eux
+          cd unixnu
+          ls
+          echo "--- xnu pin ---"
+          grep -A6 'name = "xnu"' feeds.toml || true
+          echo "--- profiles/os ---"
+          ls profiles/os 2>/dev/null || echo "(no profiles/os)"
+          echo "--- patches ---"
+          ls patches 2>/dev/null | head || echo "(no patches)"
+          echo "--- does it know schema 2? ---"
+          grep -n "schema_version" scripts/unixnu/config.py | head -5 || true
+
+      - name: Select defconfig
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu defconfig meizu15_defconfig -D ../device 2>&1 | tail -20
+        continue-on-error: true
+
+      - name: Status
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu status --json 2>&1 | tee /tmp/status-oct.json | head -60
+        continue-on-error: true
+
+      - name: Build lzfse
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake build-essential
+          git clone --depth 1 https://github.com/lzfse/lzfse.git /tmp/lzfse
+          cmake -S /tmp/lzfse -B /tmp/lzfse/build -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
+          cmake --build /tmp/lzfse/build -j"$(nproc)" >/dev/null
+          sudo cp /tmp/lzfse/build/lzfse /usr/local/bin/lzfse
+        continue-on-error: true
+
+      - name: Patch resolution
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu release --check 2>&1 | tail -120
+        continue-on-error: true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oct-check
+          path: /tmp/status-oct.json
+          if-no-files-found: warn
