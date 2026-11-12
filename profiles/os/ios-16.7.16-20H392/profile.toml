@@ -1,0 +1,79 @@
+# OS profile: iPhone 8 Plus (iPhone10,2 / D21AP) on iOS 16.7.16 (20H392).
+#
+# UniXNU ships profiles/os/ipados-17.7.11-21H461 (iPad7,1 / J120AP, Darwin 23.6.0)
+# but nothing for this OS, so the Meizu 15 port carries its own. Values below are
+# measured, not copied:
+#   board_id           0x04          - BuildManifest.plist, d21ap Erase identity
+#   kernelcache sha256 ae36144e…     - 51,019,776 B decompressed, fetched over ranges
+#   xnu_revision       1b191cb5…     - apple-oss-distributions/xnu tag xnu-8796.141.3
+#
+# Everything the payload/package steps need (ADT overrides, dyld text fixups,
+# trust-cache hashes, os_volume_uuid) is intentionally left out for now: the
+# kernel step does not read those, and filling them from guesses would only
+# produce a payload that boots wrongly.
+
+["os"]
+"name" = "ios-16.7.16-20H392"
+"darwin" = "22.6.0"
+"xnu_version" = "8796.141.3"
+"xnu_revision" = "1b191cb58250d0705d8a51287127505aa4bc0789"
+# The trust cache format was frozen at this tag; UniXNU's own iOS 17 profile reuses it.
+"trustcache_tag" = "xnu-8796.101.5"
+# driverkit_tag is only needed by kexts that include DriverKit headers; this port
+# builds none yet. Left unset on purpose.
+
+["ipsw"]
+"url" = "https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-76738/B6C604B4-548E-401F-BBFF-916E3FFDF235/iPhone_5.5_P3_16.7.16_20H392_Restore.ipsw"
+"product" = "iPhone10,2"
+"version" = "16.7.16"
+"build" = "20H392"
+"device_class" = "d21ap"
+"chip_id" = 32789
+"board_id" = 4
+"fetch" = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]
+
+["kernel"]
+
+["kernel"."prelink"]
+"tool" = "kits/XnuPrelink/emit_prelink.py"
+"kernel" = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf"
+"kernelcache_sha256" = "ae36144edbd1aebce562b662ed0c19053c95026d0950eeab5c9e695fe72e2f71"
+"slide" = "-0x1000000"
+"roots" = [
+  "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
+  "com.apple.driver.AppleARMPlatform",
+  "com.apple.driver.AppleARMWatchdogTimer",
+  "com.apple.driver.AppleAudioClockLibs",
+  "com.apple.driver.AppleEffaceableStorage",
+  "com.apple.driver.AppleIISController",
+  "com.apple.driver.AppleM2ScalerCSCDriver",
+  "com.apple.driver.AppleMobileFileIntegrity",
+  "com.apple.driver.ApplePMGR",
+  "com.apple.driver.IODARTFamily",
+  "com.apple.filesystems.apfs",
+  "com.apple.iokit.CoreAnalyticsFamily",
+  "com.apple.iokit.IOAVFamily",
+  "com.apple.iokit.IOAudio2Family",
+  "com.apple.iokit.IOCECFamily",
+  "com.apple.iokit.IOCryptoAcceleratorFamily",
+  "com.apple.iokit.IOGPUFamily",
+  "com.apple.iokit.IOHDCPFamily",
+  "com.apple.iokit.IOMobileGraphicsFamily",
+  "com.apple.iokit.IOReportFamily",
+  "com.apple.iokit.IOSlowAdaptiveClockingFamily",
+  "com.apple.iokit.IOStorageFamily",
+  "com.apple.iokit.IOSurface",
+  "com.apple.kec.Libm",
+  "com.apple.kec.corecrypto",
+  "com.apple.kext.AppleMatch",
+  "com.apple.kext.CoreTrust",
+  "com.apple.security.AppleImage4",
+  "com.apple.security.sandbox",
+  "com.apple.iokit.IOHIDFamily",
+  "com.apple.iokit.IOHIDEventDriver",
+]
+
+# TODO(payload): text_fixups / trust_cache_sha256 / adt overrides / root.os_volume_uuid
+# belong here once the payload step is reached. They are 20H392-specific (the dyld
+# shared cache offsets differ from 21H461), so they must be derived from this IPSW,
+# not copied from the iPadOS profile.
