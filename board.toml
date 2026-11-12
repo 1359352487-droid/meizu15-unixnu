@@ -64,10 +64,13 @@ darwin_version = "22.6.0"         # Must match the iOS 16.7.16 (20H392) kernelca
 [kernel.prelink]
 tool = "kits/NativePrelink/emit_prelink.py"
 kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped"
-# UNVERIFIED: this is the iPhone X (d22ap) kernelcache hash. The 8 Plus ships its
-# own KernelCache inside the d21ap IPSW above and the hash WILL differ. Recompute
-# with:  sha256(out/ipsw/20H392-d21ap/kernelcache.decompressed)
-kernelcache_sha256 = "2ec297bac95bcba01046fd0148e97e7e5885c05a6c18827f39f534ba375c1221"
+# MEASURED, not copied: the d21ap (iPhone 8 Plus) 20H392 kernelcache, fetched with
+# HTTP range requests and decompressed with lzfse by
+# .github/workflows/probe-meizu15-ipsw.yml (run 43266633975):
+#   out/ipsw/20H392/kernelcache.decompressed   51,019,776 bytes
+#   sha256 ae36144edbd1aebce562b662ed0c19053c95026d0950eeab5c9e695fe72e2f71
+# (The lavender pin 2ec297ba… is the iPhone X / d22ap image and does NOT apply here.)
+kernelcache_sha256 = "ae36144edbd1aebce562b662ed0c19053c95026d0950eeab5c9e695fe72e2f71"
 slide = "-0x1000000"
 # early_security_init: derive from the fetched
 # out/ipsw/20H392/kernelcache.decompressed before the kext-loading stage.
