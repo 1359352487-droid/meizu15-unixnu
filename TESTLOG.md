@@ -267,3 +267,44 @@ roots  = <31 项，与 board.toml 一致>
 - iOS 16 对应的 XNU tag/commit（`xnu-8796.101.5`? `xnu-8796.141.3`?）—— 待查
   apple-oss-distributions/xnu 的 tag 与 UniXNU 历史里的对应关系。
 - 该 XNU 版本能否套用 UniXNU 现有的 arch/device 补丁（版本跨度大，可能 patch 全部失败）。
+
+## 2026-11-13 02:45 — schema 2 也不通：没有 sdm660 的 SoC 模块
+
+顺着 schema 2 试下去，`unixnu defconfig` 一步步要东西：
+
+```
+schema_version = 2 requires [board] soc_source and os_profile
+  -> 加了 soc_source = "sdm660"
+feeds.toml needs a source with kind = "soc" and name = "sdm660"
+```
+
+而 UniXNU 组织里只有 `UniXNU-sm8550-common`（SM8550 / sheng）：
+
+```
+UniXNU-sdm660-common  404
+UniXNU-sdm845-common  404
+```
+
+也就是说 **schema 2 的路线要求存在一个 SDM660 的 SoC 仓库**（configs + patches +
+drivers），而 UniXNU 从来没有做过 SDM660 的 SoC 模块 —— 现有 SDM660 作品（lavender）
+是 schema 1 时代的产物。
+
+### 结论
+
+| 路线 | 状态 |
+|---|---|
+| 最新 UniXNU + 我们的 board.toml | ❌ 没有 20H392 的 OS profile |
+| 最新 UniXNU + 自造 OS profile | ❌ 还缺 SDM660 的 SoC 仓库（schema 2 硬性要求） |
+| 2026-10 的 UniXNU（schema 1） | 可行方向：与 lavender 同代，xnu pin 可指向 8796.141.3 |
+
+已把 iOS 16.7.16 的 OS profile 写好留在
+`profiles/os/ios-16.7.16-20H392/profile.toml`（含实测 board_id 0x04、kernelcache
+sha256、31 个 prelink roots、xnu_revision 1b191cb5 = tag xnu-8796.141.3），
+board.toml 回滚到 schema 1（`board.v1.toml` 保留 schema-2 草稿）。
+
+### 下一步
+
+1. 用 2026-10 版 UniXNU（7b52e796）跑 `status` 和 `release --check`，看它的补丁机制
+   （那版的 `patches/` 只有 `libpthread`，XNU 补丁可能由 `scripts/` 里的脚本应用）。
+2. 按那版的约定把补丁挂上，xnu pin 覆盖成 1b191cb5。
+3. 只有补丁能落地，macOS 编译才有意义。

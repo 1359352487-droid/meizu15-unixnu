@@ -1,46 +1,182 @@
-# Board description of the Meizu 15 (M8810, SDM660), schema 2.
+# Board description of the Meizu 15 (M8810, SDM660), read by the unixnu build driver.
 #
-# Schema 1 (kept as board.v1.toml) is accepted by unixnu but never resolves a
-# patch series: `patches.plan()` is only called when schema_version == 2, so the
-# kernel step would compile XNU with zero UniXNU patches. This file is the
-# schema-2 form, pointing at the OS profile this repository carries itself
-# (profiles/os/ios-16.7.16-20H392) because UniXNU's own profiles stop at iPadOS 17.
+# Every physical value below is pinned from THIS phone, not copied from lavender:
+#   - /proc/device-tree (readable without root) and /sys/firmware/fdt (334305 bytes)
+#   - /sys/class/block/mmcblk0p*/{start,size} for the GPT geometry
+#   - /dev/block/platform/soc/*/by-name/ for the partition names
+# Where a value MATCHES lavender it is marked "[same as SDM660 ref]"; those are SoC
+# facts and are shared by every SDM660 board. Where it differs it is marked "[meizu15]".
 #
-# Physical values are pinned from this phone: docs/hardware.md and TESTLOG.md.
-
-schema_version = 2
+# Provenance table: docs/hardware.md
 
 [board]
 name = "meizu15"
 soc = "SDM660"
-soc_source = "sdm660"
-os_profile = "ios-16.7.16-20H392"
 description = "Meizu 15 (M8810, eMMC, 4 GB DRAM, 1080x1920 AMOLED panel)"
 kit = "meizu15"
 
-# The kernel-side pieces this port links. ArmDTPlatform/ArmCpu give the Apple
-# device-tree platform expert and the GIC/timer plumbing; SoftwareAES is the
-# fallback crypto (SDM660 has no usable inline AES path for XNU yet);
-# XnuPrelink is the prelink kit; DarwinBoot is the handover driver.
-[components]
-include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot"]
+# [meizu15] Target OS image: iPhone 8 Plus (iPhone10,2 / D21AP, A11), iOS 16.7.16.
+#
+# WHY THE 8 PLUS AND NOT THE iPHONE X
+#   iPhone 8 Plus native panel : 1080x1920 @3x = 414x736 pt, 16:9
+#   Meizu 15 native panel      : 1080x1920, 480 dpi, 16:9
+#   -> identical native resolution, identical scale factor, identical ratio.
+#   The iPhone X is 1125x2436 (19.5:9), which this panel would letterbox.
+#   The 8 Plus also has a mechanical Home button, and this phone has one too
+#   (Goodix GF52xx behind a pressable mBack key, input device "fp-keys").
+#   Build 20H392 is the same build the iPhone X ships, so the kernel generation
+#   is unchanged -- only the identity, panel geometry and button set differ.
+#
+# IPSW sha256: b3882291a92ecf8763239a026813b3bafae66b7e317dee67011d90c202ccafef
+[ipsw]
+url = "https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-76738/B6C604B4-548E-401F-BBFF-916E3FFDF235/iPhone_5.5_P3_16.7.16_20H392_Restore.ipsw"
+product = "iPhone10,2"
+version = "16.7.16"
+build = "20H392"
+device_class = "d21ap"
+chip_id = 0x8015                  # A11 / t8015 (same silicon generation as the iPhone X)
+board_id = 0x04                   # MEASURED from this IPSW's BuildManifest.plist:
+                                  #   d21ap  (iPhone 8 Plus) ApBoardID 0x04  <- this board
+                                  #   d211ap (iPhone 8)      ApBoardID 0x0C
+                                  #   ApChipID 0x8015 for both.
+                                  # Read over HTTP range requests by
+                                  # .github/workflows/probe-meizu15-ipsw.yml (run log 2026-11-13).
+fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]
+
+# [meizu15] The raw image for the userdata partition.
+#   sysfs: mmcblk0p57  start=13369344  size=230907871  (512-byte LBA)
+#   first_lba = 13369344 = 0xCC0000
+#   last_lba  = 13369344 + 230907871 - 1 = 244277214 = 0xE8F5FDE
+#   device total = 244277248 sectors (33 sectors of backup GPT follow userdata)
+[userdata]
+first_lba = 0xCC0000
+last_lba = 0xE8F5FDE
+lba_bytes = 512
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
 
 [kernel]
 defconfig = "meizu15_defconfig"
-# arch and device series only: UniXNU has no profiles/soc profile for SDM660,
-# so there is no soc-level series to include yet.
-config_fragments = ["arch:configs/common.config"]
-patch_series = ["arch:patches/xnu/series", "device:patches/xnu/series"]
+darwin_version = "22.6.0"         # Must match the iOS 16.7.16 (20H392) kernelcache ABI.
 
-# The stock bootloader expects the splash region in the device tree or it powers
-# the panel off. Pinned from this phone's own FDT (reg 0x9d400000/0x02400000).
-[[bootimg.dtb_node]]
-path = "/reserved-memory/splash_region@9d400000"
-props = [
-  { name = "label", type = "s", value = "cont_splash_mem" },
-  { name = "reg", type = "x", value = ["0x0", "0x9d400000", "0x0", "0x2400000"] },
+[kernel.prelink]
+tool = "kits/NativePrelink/emit_prelink.py"
+kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped"
+# MEASURED, not copied: the d21ap (iPhone 8 Plus) 20H392 kernelcache, fetched with
+# HTTP range requests and decompressed with lzfse by
+# .github/workflows/probe-meizu15-ipsw.yml (run 43266633975):
+#   out/ipsw/20H392/kernelcache.decompressed   51,019,776 bytes
+#   sha256 ae36144edbd1aebce562b662ed0c19053c95026d0950eeab5c9e695fe72e2f71
+# (The lavender pin 2ec297ba… is the iPhone X / d22ap image and does NOT apply here.)
+kernelcache_sha256 = "ae36144edbd1aebce562b662ed0c19053c95026d0950eeab5c9e695fe72e2f71"
+slide = "-0x1000000"
+# early_security_init: derive from the fetched
+# out/ipsw/20H392/kernelcache.decompressed before the kext-loading stage.
+# The lavender 21H461 value does not land on an instruction boundary in 20H392.
+roots = [
+  "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
+  "com.apple.driver.AppleARMPlatform",
+  "com.apple.driver.AppleARMWatchdogTimer",
+  "com.apple.driver.AppleAudioClockLibs",
+  "com.apple.driver.AppleEffaceableStorage",
+  "com.apple.driver.AppleIISController",
+  "com.apple.driver.AppleM2ScalerCSCDriver",
+  "com.apple.driver.AppleMobileFileIntegrity",
+  "com.apple.driver.ApplePMGR",
+  "com.apple.driver.IODARTFamily",
+  "com.apple.filesystems.apfs",
+  "com.apple.iokit.CoreAnalyticsFamily",
+  "com.apple.iokit.IOAVFamily",
+  "com.apple.iokit.IOAudio2Family",
+  "com.apple.iokit.IOCECFamily",
+  "com.apple.iokit.IOCryptoAcceleratorFamily",
+  "com.apple.iokit.IOGPUFamily",
+  "com.apple.iokit.IOHDCPFamily",
+  "com.apple.iokit.IOMobileGraphicsFamily",
+  "com.apple.iokit.IOReportFamily",
+  "com.apple.iokit.IOSlowAdaptiveClockingFamily",
+  "com.apple.iokit.IOStorageFamily",
+  "com.apple.iokit.IOSurface",
+  "com.apple.kec.Libm",
+  "com.apple.kec.corecrypto",
+  "com.apple.kext.AppleMatch",
+  "com.apple.kext.CoreTrust",
+  "com.apple.security.AppleImage4",
+  "com.apple.security.sandbox",
+  "com.apple.iokit.IOHIDFamily",
+  "com.apple.iokit.IOHIDEventDriver",
 ]
 
+# [meizu15] Firmware: our own Meizu15Pkg. The stock XBL drivers are carved from
+# THIS phone's xbl_a (mmcblk0p1, start=131072, 7168 sectors = 3.5 MiB).
+# The lavender port carves from xbl.elf of the Redmi Note 7; the carving method
+# is the same, the source bytes are not.
+# NOTE: unixnu's own firmware step is NOT used for this board. The bootable
+# firmware is built by .github/workflows/build-meizu15-fix.yml on top of
+# edk2-porting/edk2-msm and proven on the device (see TESTLOG.md, Phase 3).
+# The Meizu15Pkg referenced below is the self-assembled DXE-only volume and has
+# no SEC/PrePI entry, i.e. it cannot boot -- kept only as material for the day
+# this port needs the stock XCL drivers wired back in.
+[firmware]
+config = "meizu15"
+dsc = "Meizu15Pkg/Meizu15Pkg.dsc"
+fd = "Build/Meizu15Pkg/{target}_GCC5/FV/MEIZU15PKG_UEFI.fd"
+preflight = []                    # firmware bring-up not yet proven on this phone
+submodules = []
+patches = []
+packages = [
+  "{tree}/edk2-firmware-build/edk2",
+  "{tree}/edk2-firmware-build/edk2-platforms",
+  "{tree}/edk2-firmware-build/Meizu15Pkg",
+]
+
+[firmware.defines]
+DEVICE_MODEL = "meizu15"
+
+# The ramdisk of the boot image: a FAT volume with the UniXNU config, the
+# kernel, its Apple device tree and the optional trust cache and Data seed.
+[payload]
+volume = "MEIZU15ESP"
+size_mib = 192
+loader = "payload"
+title = "meizu15 first boot: source 4K XNU to console"
+# [meizu15] FDT memory span, bank0 0x80000000+0x80000000 and
+# bank1 0x100000000+0x4c7e0000  ->  end 0x14c7e0000
+#   dram_size = 0x14c7e0000 - 0x80000000 = 0xCC7E0000  (~3.19 GiB, 4 GB SKU)
+# The lavender value 0xfe4c0000 is a 6 GB SKU and is WRONG here.
+dram_size = "0xCC7E0000"
+panic_screen = false
+panic_recovery = true
+trust_cache_sha256 = [
+  "63e01c03b31e1532a5581a24865490673f0b5c297b0199fe0095637c6100ef4b",
+  "9cc478fe3525e2683b5b9ea1eea0851eaebebdab21d206556233400e59d2e361",
+]
+kernel_args = [
+  "-v",
+  "serial=3",
+  "debug=0x14e",
+  "kt_fixed_zones=120",
+  "-no_slto_panic",
+  "offline-legacy-gop=1",
+  "offline-hid-input=1",
+]
+
+[payload.adt]
+tool = "scripts/make-meizu15-adt.py"
+chip_id = "0x8015"                 # A11, what the iPhone X userland expects
+owned_memory_size = "0x30000000"   # 768 MB contiguous DarwinBoot window (fits in 3.19 GiB)
+# [same as SDM660 ref] stock FDT /cpus: 4x A53 at Aff1=0 (0x0..0x3) and
+# 4x A73 at Aff1=1 (0x100..0x103); the running boot CPU comes first.
+cpu_regs = "0,0x1,0x2,0x3,0x100,0x101,0x102,0x103"
+psci_method = "smc"                # stock FDT: enable-method = "psci", method = "smc"
+packed_data_ramdisk = false
+iphone_identity = true
+unique_chip_id = "required"        # the platform seed is not stored in any repository
+# root_match_volume_uuid omitted for bring-up: only exists after userdata seeding.
+
+# [same as SDM660 ref] Image parameters: AOSP v0 header.
 [bootimg.image]
 base = 0x0
 kernel_offset = 0x8000
@@ -50,11 +186,15 @@ tags_offset = 0x100
 pagesize = 4096
 header_version = 0
 
-# NOT used for this board: the bootable UEFI firmware comes from
-# .github/workflows/build-meizu15-fix.yml on top of edk2-porting/edk2-msm and is
-# already proven on the device (SimpleInit menu + UEFI Shell, see TESTLOG.md).
-# Kept out of the way so `unixnu build firmware` is simply not run.
-[firmware]
-config = "meizu15"
-dsc = "Meizu15Pkg/Meizu15Pkg.dsc"
-fd = "Build/Meizu15Pkg/{target}_GCC5/FV/MEIZU15PKG_UEFI.fd"
+# [meizu15] The stock bootloader expects the splash region in the device tree or
+# it powers the panel off. Pinned from this phone's own FDT:
+#   /proc/device-tree/reserved-memory/splash_region@9d400000
+#   reg = 0x9d400000, 0x02400000    label = "cont_splash_mem"
+# The address matches lavender exactly; the size is 1080x1920 vs 1080x2340,
+# hence 0x2400000 here instead of 0x2300000.
+[[bootimg.dtb_node]]
+path = "/reserved-memory/splash_region@9d400000"
+props = [
+  { name = "label", type = "s", value = "cont_splash_mem" },
+  { name = "reg", type = "x", value = ["0x0", "0x9d400000", "0x0", "0x2400000"] },
+]
