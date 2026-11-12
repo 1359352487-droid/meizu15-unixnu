@@ -66,16 +66,17 @@ jobs:
         run: |
           set -eux
           python3 - <<'PY' 2>&1 | tee /tmp/boardid.txt
-          import sys, plistlib, zipfile, traceback
+          import sys, io, plistlib, zipfile, traceback
           sys.path.insert(0, 'unixnu/scripts')
           URL = ("https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-76738/"
                  "B6C604B4-548E-401F-BBFF-916E3FFDF235/iPhone_5.5_P3_16.7.16_20H392_Restore.ipsw")
           try:
-              from unixnu.ipsw import RemoteFile
+              from unixnu.ipsw import RangeFile
           except Exception:
               traceback.print_exc(); sys.exit(0)
           try:
-              with RemoteFile(URL) as fh:
+              with RangeFile(URL) as raw:
+                  fh = io.BufferedReader(raw)
                   z = zipfile.ZipFile(fh)
                   names = [n for n in z.namelist() if n.endswith('BuildManifest.plist')]
                   print("manifest members:", names)
