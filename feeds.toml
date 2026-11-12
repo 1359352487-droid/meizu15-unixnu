@@ -32,3 +32,17 @@ kind = "refer"
 git = "https://github.com/apple-oss-distributions/libpthread.git"
 ref = "rel/libpthread-519"
 commit = "c0e60fb5ecfc54cf379c261d3f9572cc22ded891"
+
+# The XNU the Meizu 15 prelinks against: iOS 16.7.16 ships xnu-8796.141.3, and
+# this commit is exactly what the Redmi Note 7 (lavender) port pins in its
+# unixnu.lock. UniXNU's own feeds.toml pins xnu-10063.141.1 (iOS 17 / Darwin
+# 23.6.0) instead, which cannot drive an iOS 16 kernelcache. A device feeds.toml
+# overrides the base source of the same name.
+[[source]]
+name = "xnu"
+kind = "refer"
+git = "https://github.com/apple-oss-distributions/xnu.git"
+ref = "xnu-8796.141.3"
+commit = "1b191cb58250d0705d8a51287127505aa4bc0789"
+darwin = "22.6.0"
+version = "8796.141.3"
