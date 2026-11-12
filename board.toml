@@ -13,6 +13,7 @@ schema_version = 2
 [board]
 name = "meizu15"
 soc = "SDM660"
+soc_source = "sdm660"
 os_profile = "ios-16.7.16-20H392"
 description = "Meizu 15 (M8810, eMMC, 4 GB DRAM, 1080x1920 AMOLED panel)"
 kit = "meizu15"
