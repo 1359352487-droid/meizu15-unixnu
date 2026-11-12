@@ -62,6 +62,7 @@ jobs:
         run: |
           set -eux
           cd unixnu
+          sed -i 's/^kernelcache_sha256 = .*/# &  # unpinned for this probe/' ../device/board.toml
           ./unixnu ipsw fetch 2>&1 | tail -60
         continue-on-error: true
 
