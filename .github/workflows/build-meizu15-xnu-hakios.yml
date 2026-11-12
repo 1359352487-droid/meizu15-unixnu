@@ -1,0 +1,97 @@
+name: build-meizu15-xnu-hakios
+
+# Build XNU 8796 on Linux, the way HakiOS does it.
+#
+# Why this route (see TESTLOG.md 2026-11-13 03:10):
+#   * GitHub's macOS runners were starved three times in a row
+#     ("The job was not acquired by Runner of type hosted" -> cancelled),
+#     so the ios-sweet / darwin-xnu-build path is not reliable here.
+#   * HakiOS (oosexgang/hakios-xnu-kernel) builds the same XNU generation on a
+#     plain Linux host with theos' cctools and an iPhoneOS 16.5 SDK, and it
+#     targets MACHINE_CONFIGS=BCM2837 -- Cortex-A53, i.e. ARMv8.0, exactly the
+#     ISA class of this phone's Kryo 260 (A73/A53, no PAN, no LSE).
+#
+# `make kernel` runs xnu/apply.sh (once), xnu-deps/setup.sh (once), then XNU's
+# own make.  The kernel lands as hakios-kernel at the repository root; inside the
+# build tree it is BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-meizu15-xnu-hakios.yml'
+
+jobs:
+  kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: meizu15
+
+      - name: Host dependencies
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            git curl tar xz-utils make gcc g++ clang flex bison m4 perl \
+            python3 python3-pip autoconf automake libssl-dev zlib1g-dev \
+            libbz2-dev libxml2-dev libncurses-dev pkg-config cmake ninja-build \
+            unifdef tcsh rsync cpio unzip
+          clang --version | head -2
+
+      - name: Clone HakiOS
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/oosexgang/hakios-xnu-kernel.git hakios
+          ls hakios | head -30
+
+      - name: Install theos (Linux cctools + iPhoneOS SDK)
+        run: |
+          set -eux
+          export THEOS="$HOME/theos"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          git clone -q --recursive https://github.com/theos/theos.git "$THEOS"
+          mkdir -p "$THEOS/toolchain" "$THEOS/sdks"
+          # the prebuilt Linux toolchain theos publishes
+          curl -fsSL -o /tmp/toolchain.tar.gz \
+            "https://github.com/theos/toolchain/releases/latest/download/linux-x86_64.tar.gz"
+          tar xzf /tmp/toolchain.tar.gz -C "$THEOS/toolchain"
+          ls "$THEOS/toolchain"
+          # the SDKs (HakiOS wants iPhoneOS16.5.sdk)
+          git clone -q --depth 1 https://github.com/theos/sdks.git /tmp/sdks
+          cp -r /tmp/sdks/*.sdk "$THEOS/sdks/" 2>/dev/null || true
+          ls "$THEOS/sdks" | head
+          find "$THEOS/toolchain" -maxdepth 3 -name 'ld64' -o -maxdepth 3 -name 'ld' | head
+
+      - name: Configure
+        working-directory: hakios
+        run: |
+          set -eux
+          export THEOS="$HOME/theos"
+          make redwood_defconfig 2>&1 | tail -20 || echo "(no redwood_defconfig; continuing without)"
+
+      - name: Build kernel (xnu/apply.sh + xnu-deps/setup.sh + make)
+        working-directory: hakios
+        env:
+          JOBS: "4"
+        run: |
+          set -eux
+          export THEOS="$HOME/theos"
+          bash -c 'make kernel' 2>&1 | tail -400 || true
+          echo "=== result ==="
+          ls -la hakios-kernel 2>/dev/null || echo "no hakios-kernel at root"
+          find . -name 'mach.development*' -o -name 'hakios-kernel' 2>/dev/null | head -10
+
+      - name: Upload kernel and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meizu15-xnu-hakios
+          path: |
+            hakios/hakios-kernel
+            hakios/**/mach.development*
+            hakios/*.log
+          if-no-files-found: warn
