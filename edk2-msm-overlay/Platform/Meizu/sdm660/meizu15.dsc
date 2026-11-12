@@ -14,7 +14,14 @@
 !include Platform/Qualcomm/sdm660/sdm660.dsc
 
 [BuildOptions.common]
-  GCC:*_*_AARCH64_CC_FLAGS = -DENABLE_SIMPLE_INIT
+  # -Wno-null-dereference: the ubuntu-latest runner now ships Clang 21, which
+  # promotes "indirection of non-volatile null pointer will be deleted, not
+  # trap" to a warning, and EDK2 builds every module with -Werror. The first
+  # casualty is QcomPkg/Include/Library/FdtParserLib.h:46 inside
+  # MemoryInitPeiLib, which has nothing to do with this port:
+  #   error: indirection of non-volatile null pointer will be deleted,
+  #          not trap [-Werror,-Wnull-dereference]
+  GCC:*_*_AARCH64_CC_FLAGS = -DENABLE_SIMPLE_INIT -Wno-null-dereference
 
 [PcdsFixedAtBuild.common]
   # Meizu 15 panel: 1080x1920 (16:9, AMOLED, 480 dpi).
