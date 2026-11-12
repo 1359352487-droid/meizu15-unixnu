@@ -59,7 +59,8 @@ jobs:
           sudo cp /tmp/lzfse/build/lzfse /usr/local/bin/lzfse
           lzfse -h 2>&1 | head -2 || true
 
-      - name: Resolve patch series        run: |
+      - name: Resolve patch series
+        run: |
           set -eux
           cd unixnu
           ./unixnu release --check 2>&1 | tail -200
