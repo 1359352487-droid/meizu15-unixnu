@@ -26,8 +26,10 @@ on:
 
 jobs:
   kernel:
-    runs-on: macos-latest
-    timeout-minutes: 340
+    # macos-latest (arm64) is capacity-starved: the first attempt sat queued for 15 min and was
+    # cancelled with "The job was not acquired by Runner of type hosted". macos-13 (x86_64)
+    # still ships Xcode 15.x with the iphoneos 17 SDK and usually gets a runner quickly.
+    runs-on: macos-13    timeout-minutes: 340
 
     steps:
       - name: Checkout device repository
