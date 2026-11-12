@@ -47,8 +47,18 @@ jobs:
           ./unixnu ipsw info 2>&1 | tee /tmp/ipsw-info.txt | head -80
         continue-on-error: true
 
-      - name: IPSW fetch (small members + kernelcache)
+      - name: Build lzfse (kernelcache is LZFSE-compressed)
         run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake build-essential
+          git clone --depth 1 https://github.com/lzfse/lzfse.git /tmp/lzfse
+          cmake -S /tmp/lzfse -B /tmp/lzfse/build -DCMAKE_BUILD_TYPE=Release >/dev/null
+          cmake --build /tmp/lzfse/build -j"$(nproc)" >/dev/null
+          sudo cp /tmp/lzfse/build/lzfse /usr/local/bin/lzfse
+          lzfse -h 2>&1 | head -3 || true
+
+      - name: IPSW fetch (small members + kernelcache)        run: |
           set -eux
           cd unixnu
           ./unixnu ipsw fetch 2>&1 | tail -60
