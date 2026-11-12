@@ -35,7 +35,12 @@ version = "16.7.16"
 build = "20H392"
 device_class = "d21ap"
 chip_id = 0x8015                  # A11 / t8015 (same silicon generation as the iPhone X)
-board_id = 0x0E                   # UNVERIFIED placeholder: read ApBoardID for d21ap out of this IPSW's BuildManifest.plist
+board_id = 0x04                   # MEASURED from this IPSW's BuildManifest.plist:
+                                  #   d21ap  (iPhone 8 Plus) ApBoardID 0x04  <- this board
+                                  #   d211ap (iPhone 8)      ApBoardID 0x0C
+                                  #   ApChipID 0x8015 for both.
+                                  # Read over HTTP range requests by
+                                  # .github/workflows/probe-meizu15-ipsw.yml (run log 2026-11-13).
 fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]
 
 # [meizu15] The raw image for the userdata partition.
