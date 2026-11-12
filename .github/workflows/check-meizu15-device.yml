@@ -1,0 +1,70 @@
+name: check-meizu15-device
+
+# Cheap validation of the device repository itself: does the unixnu driver accept
+# our board.toml / defconfig / feeds.toml, and what does it think it is going to
+# build?  Runs on Linux (unixnu refuses Windows outright), takes about a minute,
+# and needs no kernel, no IPSW and no macOS.
+#
+# The kernel step (macOS + Xcode + the d21ap kernelcache) is a separate workflow.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'board.toml'
+      - 'feeds.toml'
+      - 'configs/**'
+      - 'patches/**'
+      - 'package/**'
+      - '.github/workflows/check-meizu15-device.yml'
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout device repository
+        uses: actions/checkout@v4
+        with:
+          path: device
+
+      - name: Show python
+        run: python3 --version
+
+      - name: Clone UniXNU
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/UniXNU/UniXNU.git unixnu
+          ls unixnu | head -20
+
+      - name: Select the meizu15 defconfig
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu defconfig meizu15 -D ../device 2>&1 | tail -40
+        continue-on-error: true
+
+      - name: Status
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu status --json 2>&1 | tee /tmp/status.json | head -100
+        continue-on-error: true
+
+      - name: Fetch feeds (metadata only)
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu fetch 2>&1 | tail -60
+        continue-on-error: true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-check-logs
+          path: |
+            /tmp/status.json
+            unixnu/logs/**
+          if-no-files-found: warn

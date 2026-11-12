@@ -1,0 +1,10 @@
+# Device-level XNU patch series.
+#
+# Empty on purpose: the Meizu 15 reuses the arch (ARMv8.0), soc (SDM660) and os
+# (iOS 16.7.16 / 20H392) series from the UniXNU modules unchanged. A device
+# series is only needed when this phone requires a patch those three do not
+# carry -- e.g. a Synaptics DSX touch driver, or the eMMC (qcom,sdhci-msm-v5)
+# native block driver once it exists.
+#
+# Format: one "NNNN-name.patch" per line, applied in order, paths relative to
+# this directory.
