@@ -1,0 +1,103 @@
+name: probe-meizu15-ipsw
+
+# Pull only what the device description still guesses at, straight from Apple's
+# restore image, without downloading the 5 GB file:
+#
+#   * BuildManifest.plist  -> d21ap ApBoardID  (board.toml [ipsw] board_id is 0x0E, a guess)
+#   * KernelCache          -> sha256 of the decompressed kernelcache
+#                             (board.toml [kernel.prelink] kernelcache_sha256 is still the
+#                              iPhone X / d22ap value copied from lavender)
+#   * DeviceTree, StaticTrustCache, Cryptex1,SystemTrustCache -> the same list unixnu fetches
+#
+# unixnu reads the IPSW over HTTP range requests, so only those members cross the wire.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout device repository
+        uses: actions/checkout@v4
+        with:
+          path: device
+
+      - name: Clone UniXNU
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/UniXNU/UniXNU.git unixnu
+
+      - name: Select defconfig
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu defconfig meizu15_defconfig -D ../device
+
+      - name: IPSW info
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu ipsw info 2>&1 | tee /tmp/ipsw-info.txt | head -80
+        continue-on-error: true
+
+      - name: IPSW fetch (small members + kernelcache)
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu ipsw fetch 2>&1 | tail -60
+        continue-on-error: true
+
+      - name: Hash what came out
+        run: |
+          set -eux
+          echo "--- files ---"
+          find unixnu/out -path '*ipsw*' -type f -printf '%p  %s bytes\n' 2>/dev/null | head -30 || true
+          echo "--- sha256 ---"
+          find unixnu/out -path '*ipsw*' -type f -size +1M -print0 2>/dev/null \
+            | xargs -0r sha256sum | head -20 || true
+
+      - name: Board id straight from BuildManifest
+        run: |
+          set -eux
+          python3 - <<'PY' 2>&1 | tee /tmp/boardid.txt
+          import sys, os, glob
+          sys.path.insert(0, 'unixnu/scripts')
+          try:
+              from unixnu import ipsw as unixnu_ipsw
+              print("ipsw module:", os.path.dirname(unixnu_ipsw.__file__))
+          except Exception as e:
+              print("import failed:", e)
+              sys.exit(0)
+          cands = glob.glob('unixnu/out/**/BuildManifest.plist', recursive=True)
+          print("BuildManifest candidates:", cands)
+          if not cands:
+              print("no BuildManifest on disk; checking whether unixnu can expose it")
+          import plistlib
+          for c in cands:
+              try:
+                  d = plistlib.load(open(c, 'rb'))
+              except Exception as e:
+                  print("parse failed", c, e); continue
+              for prod, idents in d.get('BuildIdentities', {}).items():
+                  info = idents.get('Info', {}) if isinstance(idents, dict) else {}
+                  if info.get('ProductType') in ('iPhone10,2', 'iPhone10,5'):
+                      print("identity:", prod)
+                      print("  ProductType :", info.get('ProductType'))
+                      print("  ApBoardID   :", info.get('ApBoardID'), hex(info.get('ApBoardID', 0)))
+                      print("  ApChipID    :", info.get('ApChipID'), hex(info.get('ApChipID', 0)))
+                      print("  BuildNumber :", info.get('BuildNumber'))
+          PY
+        continue-on-error: true
+
+      - name: Upload probe output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipsw-probe
+          path: |
+            /tmp/ipsw-info.txt
+            /tmp/boardid.txt
+          if-no-files-found: warn
