@@ -1,0 +1,75 @@
+name: check-meizu15-patches
+
+# Patch-series dry run, on Linux, while the macOS kernel job waits for a runner.
+#
+# `unixnu release --check` fetches the sources, resolves the arch/soc/os/device
+# patch series and stops before any build step. It needs no Xcode and no IPSW,
+# so it is the cheapest way to find out whether the XNU patch stack still
+# applies cleanly to xnu-10063.141.1 -- which is the most likely place the
+# macOS build will die.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'board.toml'
+      - 'configs/**'
+      - 'patches/**'
+      - 'feeds.toml'
+      - '.github/workflows/check-meizu15-patches.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout device repository
+        uses: actions/checkout@v4
+        with:
+          path: device
+
+      - name: Clone UniXNU
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/UniXNU/UniXNU.git unixnu
+
+      - name: Select defconfig
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu defconfig meizu15_defconfig -D ../device
+
+      - name: Fetch sources
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu fetch 2>&1 | tail -80
+        continue-on-error: true
+
+      - name: Resolve patch series
+        run: |
+          set -eux
+          cd unixnu
+          ./unixnu release --check 2>&1 | tail -200
+        continue-on-error: true
+
+      - name: Report
+        if: always()
+        run: |
+          echo "--- lock / tree ---"
+          find unixnu -maxdepth 3 -name 'unixnu.lock' -printf '%p  %s bytes\n' 2>/dev/null || true
+          find unixnu/out -maxdepth 4 -type d 2>/dev/null | head -20 || true
+          echo "--- logs ---"
+          find unixnu -name '*.log' -newermt '-1 hour' -printf '%p  %s\n' 2>/dev/null | head -10 || true
+          for f in $(find unixnu/logs -name '*.log' 2>/dev/null | head -5); do echo "=== $f ==="; tail -30 "$f"; done || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meizu15-patch-check
+          path: |
+            unixnu/logs/**
+            unixnu/unixnu.lock
+          if-no-files-found: warn
