@@ -105,6 +105,12 @@ roots = [
 # THIS phone's xbl_a (mmcblk0p1, start=131072, 7168 sectors = 3.5 MiB).
 # The lavender port carves from xbl.elf of the Redmi Note 7; the carving method
 # is the same, the source bytes are not.
+# NOTE: unixnu's own firmware step is NOT used for this board. The bootable
+# firmware is built by .github/workflows/build-meizu15-fix.yml on top of
+# edk2-porting/edk2-msm and proven on the device (see TESTLOG.md, Phase 3).
+# The Meizu15Pkg referenced below is the self-assembled DXE-only volume and has
+# no SEC/PrePI entry, i.e. it cannot boot -- kept only as material for the day
+# this port needs the stock XCL drivers wired back in.
 [firmware]
 config = "meizu15"
 dsc = "Meizu15Pkg/Meizu15Pkg.dsc"

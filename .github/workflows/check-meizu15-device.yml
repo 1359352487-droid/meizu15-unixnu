@@ -42,7 +42,7 @@ jobs:
         run: |
           set -eux
           cd unixnu
-          ./unixnu defconfig meizu15 -D ../device 2>&1 | tail -40
+          ./unixnu defconfig meizu15_defconfig -D ../device 2>&1 | tail -40
         continue-on-error: true
 
       - name: Status
