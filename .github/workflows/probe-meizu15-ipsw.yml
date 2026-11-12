@@ -88,14 +88,13 @@ jobs:
           print("ProductBuild   :", m.get("ProductBuildVersion"))
           print("Supported      :", m.get("SupportedProductTypes"))
           print()
-          print("%-3s %-14s %-8s %-10s %-12s %s" % ("#", "ProductType", "DeviceClass", "ApBoardID", "Restore", "ManifestName"))
+          print("%-3s %-8s %-12s %-10s %-10s %s" % ("#", "DeviceClass", "Restore", "ApChipID", "ApBoardID", "key list"))
           for i, ident in enumerate(m.get("BuildIdentities", [])):
               info = ident.get("Info", {})
-              bid = info.get("ApBoardID")
-              print("%-3d %-14s %-8s %-10s %-12s %s" % (
-                  i, info.get("ProductType"), info.get("DeviceClass"),
-                  ("0x%X" % bid) if isinstance(bid, int) else bid,
-                  info.get("RestoreBehavior"), ident.get("ManifestName")))
+              print("%-3d %-8s %-12s %-10s %-10s %s" % (
+                  i, info.get("DeviceClass"), info.get("RestoreBehavior"),
+                  ident.get("ApChipID"), ident.get("ApBoardID"),
+                  ",".join(sorted(k for k in ident.keys() if k not in ("Manifest", "Info")))))
           PY
         continue-on-error: true
       - name: Upload probe output
