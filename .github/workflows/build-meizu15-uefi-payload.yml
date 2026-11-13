@@ -42,6 +42,20 @@ jobs:
             gcc-aarch64-linux-gnu git mtools dosfstools
           python3 -m pip install --quiet --break-system-packages edk2-pytool-library edk2-pytool-extensions || true
 
+      - name: Pin GCC 12 for BaseTools
+        run: |
+          set -eux
+          # edk2's BaseTools (VfrCompile/Pccts) predates the diagnostics of the GCC
+          # that ubuntu-latest now ships: "WildFunc process;" is a declaration with
+          # no type, which modern gcc rejects under -Werror. build-meizu15-fix.yml
+          # has carried this pin since it first built.
+          if apt-cache policy gcc-12 2>/dev/null | grep -q Candidate; then
+            sudo apt-get install -y --no-install-recommends gcc-12 g++-12
+            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
+            sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
+          fi
+          gcc --version | head -1
+
       - name: Clone edk2-msm
         run: |
           set -eux
