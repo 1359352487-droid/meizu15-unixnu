@@ -27,6 +27,8 @@ jobs:
   kernel:
     runs-on: ubuntu-latest
     timeout-minutes: 355
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -148,6 +150,25 @@ jobs:
           done
           echo "=== xnu tree state ==="
           [ -d hakios/xnu-src ] && ls hakios/xnu-src | head -10 || echo "(no xnu-src)"
+
+      - name: Publish to a Release (the mirrors only accelerate Releases)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          ls -la /tmp/*.gz || true
+          TAG="kernel-$(date -u +%Y%m%d-%H%M)"
+          FILES=""
+          for f in /tmp/unixnu-esp.img.gz /tmp/kernel.macho.gz; do
+            [ -f "$f" ] && FILES="$FILES $f"
+          done
+          if [ -z "$FILES" ]; then echo "nothing to publish"; exit 0; fi
+          # artefacts under 2 GB are fine for a Release; the mirrors (ghfast.top and
+          # friends) only proxy Release/raw/archive URLs, never authenticated
+          # Actions artefacts, which is why this step exists.
+          gh release create "$TAG" $FILES --title "$TAG" \
+            --notes "XNU 8796 (BCM2837 / ARMv8.0) for the Meizu 15, and the UniXNU ESP built from it. Download through a mirror: https://ghfast.top/https://github.com/1359352487-droid/meizu15-unixnu/releases/download/$TAG/<file>"
 
       - name: Upload
         if: always()
