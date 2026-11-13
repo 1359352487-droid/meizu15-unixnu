@@ -249,7 +249,7 @@ jobs:
           printf 'placeholder' > Platform/Meizu/sdm660/payload/unixnu-esp.img
           chmod +x build.sh
           ./build.sh -d meizu15 -r DEBUG 2>&1 | tail -120
-          EFI=$(find Build -name 'Meizu15Launcher.efi' | head -1)
+          EFI=$(find . -name 'Meizu15Launcher.efi' | head -1)
           echo "launcher from the first pass: ${EFI:-NONE}"
           [ -n "$EFI" ] || { echo "::error::no Meizu15Launcher.efi was produced"; exit 1; }
           cp "$EFI" /tmp/Meizu15Launcher.efi
