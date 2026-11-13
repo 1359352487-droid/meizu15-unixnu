@@ -53,7 +53,8 @@ jobs:
           key: unixnu-linux-toolchain-${{ runner.os }}-v1
 
       - name: Toolchain (UniXNU Linux setup)
-        if: steps.toolchain-cache.outputs.cache-hit != 'true'        run: |
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        run: |
           set -eux
           git clone --depth 1 https://github.com/UniXNU/UniXNU.git unixnu
           sudo python3 unixnu/scripts/linux/setup-toolchain.py /opt/unixnu-linux 2>&1 | tail -40
