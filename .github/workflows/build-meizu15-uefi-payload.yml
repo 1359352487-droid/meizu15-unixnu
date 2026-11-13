@@ -127,7 +127,7 @@ jobs:
           set -eux
           cd edk2-msm
           chmod +x build.sh
-          ./build.sh -d meizu15 -r  2>&1 | tail -400
+          ./build.sh -d meizu15 -r RELEASE 2>&1 | tail -400
         continue-on-error: true
 
       - name: Report and assert
@@ -248,10 +248,15 @@ jobs:
         run: |
           set -eux
           cd edk2-msm
-          . ./edksetup.sh >/dev/null 2>&1 || true
           export WORKSPACE="$PWD"
           export PACKAGES_PATH="$PWD:$PWD/Common/edk2:$PWD/Common/edk2-platforms:$PWD/GPLDrivers"
-          build -a AARCH64 -t CLANG38 -b DEBUG -p Platform/Meizu/sdm660/meizu15.dsc \
+          export EDK_TOOLS_PATH="$PWD/Common/edk2/BaseTools"
+          # `build` is a BaseTools wrapper; edk2-msm's build.sh puts it on PATH but
+          # that PATH dies with the script, so call it by path here.
+          BUILD="$EDK_TOOLS_PATH/BinWrappers/PosixLike/build"
+          [ -x "$BUILD" ] || BUILD="$EDK_TOOLS_PATH/Bin/Linux/build"
+          ls -l "$BUILD"
+          "$BUILD" -a AARCH64 -t CLANG38 -b DEBUG -p Platform/Meizu/sdm660/meizu15.dsc \
                 -m UniXNUPkg/Application/UniXNU/UniXNU.inf
           EFI=$(find Build -name 'UniXNU.efi' -size +20k | head -1)
           echo "UniXNU.efi: $EFI"
