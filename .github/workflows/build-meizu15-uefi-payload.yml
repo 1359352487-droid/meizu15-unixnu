@@ -2,17 +2,16 @@ name: build-meizu15-uefi-payload
 
 # Firmware that can see the UniXNU payload.
 #
-# What changes versus build-meizu15-fix.yml (the image proven on the device):
-#   + Meizu15PayloadDxe   our driver: finds the FAT volume in the FV, registers it
-#                         as a ramdisk (edk2-msm's BootShim passes no initrd, so
-#                         UniXNU's UniXNURamDiskDxe cannot be used here)
-#   + RamDiskDxe / DiskIoDxe / PartitionDxe / EnhancedFatDxe
-#   + the FAT volume itself, embedded as a FREEFORM file with a compressed RAW
-#     section (compressed because an FFS file cannot exceed 16 MiB)
+# What this adds over build-meizu15-fix.yml (the image already proven on the phone):
+#   * Meizu15PayloadDxe  finds the FAT volume inside the firmware volume and
+#                        publishes it as a read-only EFI_BLOCK_IO_PROTOCOL device,
+#   * EnhancedFatDxe / DiskIoDxe / PartitionDxe mount it,
+#   * the FAT volume itself is embedded as a FREEFORM file with a compressed RAW
+#     section (compressed because an FFS file cannot exceed 16 MiB).
 #
-# The payload is built here from a placeholder kernel unless a real one is present:
-# this run only has to prove that the firmware still boots and that the volume
-# shows up.  The kernel itself comes from build-meizu15-xnu-hakios-v2.yml.
+# Why not UniXNU's UniXNURamDiskDxe: it reads a Mu-Silicium entry-argument HOB and
+# /chosen/linux,initrd-start. edk2-msm's BootShim passes neither, and the edk2
+# revision edk2-msm pins has no RamDiskLib anyway.
 
 on:
   workflow_dispatch:
@@ -45,10 +44,6 @@ jobs:
       - name: Pin GCC 12 for BaseTools
         run: |
           set -eux
-          # edk2's BaseTools (VfrCompile/Pccts) predates the diagnostics of the GCC
-          # that ubuntu-latest now ships: "WildFunc process;" is a declaration with
-          # no type, which modern gcc rejects under -Werror. build-meizu15-fix.yml
-          # has carried this pin since it first built.
           if apt-cache policy gcc-12 2>/dev/null | grep -q Candidate; then
             sudo apt-get install -y --no-install-recommends gcc-12 g++-12
             sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
@@ -56,6 +51,7 @@ jobs:
           fi
           gcc --version | head -1
 
+      - name: Clone edk2-msm
         run: |
           set -eux
           git clone --depth 1 https://github.com/edk2-porting/edk2-msm.git
@@ -72,53 +68,29 @@ jobs:
           cp meizu15/edk2-msm-overlay/configs/devices/meizu15.conf edk2-msm/configs/devices/
           mkdir -p edk2-msm/Platform/Meizu/sdm660
           cp -r meizu15/edk2-msm-overlay/Platform/Meizu/sdm660/. edk2-msm/Platform/Meizu/sdm660/
-          find edk2-msm/Platform/Meizu -type f -printf '%p  %s bytes\n'
+          find edk2-msm/Platform/Meizu -type f -print
 
       - name: Append the payload entry to the device FDF include
         run: |
           set -eux
-          # Kept out of the tracked file on purpose: build-meizu15-fix.yml (the
-          # image already proven on the device) uses the same include and has no
-          # payload to point at, so the entry is appended only in this job.
-          # A heredoc cannot be used here: its terminator must sit at column 0 for bash,
-          # which would also end the YAML block scalar and break the workflow file. Echo
-          # lines stay inside the scalar and keep the FDF text exact.
+          F=edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc
           {
             echo ""
             echo "// ---------------------------------------------------------------------------"
-            echo "// UniXNU payload volume (added by build-meizu15-uefi-payload.yml)"
+            echo "// UniXNU payload volume (appended by build-meizu15-uefi-payload.yml)"
             echo "//"
-            echo "// The FAT image from scripts/build-esp.sh travels inside the firmware volume as a"
-            echo "// FREEFORM file with a compressed RAW section: compressed because an FFS file"
-            echo "// header carries its size in 24 bits (16 MiB ceiling), FREEFORM because"
-            echo "// Meizu15PayloadDxe looks for exactly this GUID and asks FirmwareVolume2 for"
-            echo "// the decompressed bytes, then registers them as a ramdisk for FatDxe."
+            echo "// A FREEFORM file with a compressed RAW section: compressed because an FFS"
+            echo "// header carries its size in 24 bits (16 MiB ceiling); FREEFORM because"
+            echo "// Meizu15PayloadDxe looks for this GUID and publishes the bytes as a block"
+            echo "// device for EnhancedFatDxe to mount."
             echo "// ---------------------------------------------------------------------------"
             echo "FILE FREEFORM = 3f1a9c22-5b41-4a0e-9c77-2d618b4fe01a {"
             echo "  SECTION COMPRESS PI_STD {"
             echo "    SECTION RAW = Platform/Meizu/sdm660/payload/unixnu-esp.img"
             echo "  }"
             echo "}"
-          } >> edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc
-          tail -12 edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc
-
-      - name: Probe which disk modules this edk2 revision ships
-        run: |
-          set -eux
-          E=edk2-msm/Common/edk2
-          git -C "$E" log -1 --format='edk2 %H %ad' 2>/dev/null || true
-          for p in \
-            MdeModulePkg/Library/RamDiskLib/RamDiskLib.inf \
-            MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe.inf \
-            MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf \
-            MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf \
-            FatPkg/EnhancedFatDxe/Fat.inf \
-            MdePkg/Library/BaseFdtLib/BaseFdtLib.inf \
-          ; do
-            if [ -f "$E/$p" ]; then echo "  YES  $p"; else echo "  NO   $p"; fi
-          done
-          echo "--- anything RamDisk-named ---"
-          find "$E" -maxdepth 5 -iname '*RamDisk*' 2>/dev/null | head -20 || true
+          } >> "$F"
+          tail -14 "$F"
 
       - name: Patch SimpleInit free(NULL)
         run: |
@@ -128,25 +100,20 @@ jobs:
       - name: Build the payload FAT volume
         run: |
           set -eux
-          pwd
-          ls -la meizu15/ 2>/dev/null || true
-          ls -la meizu15/inputs/ 2>/dev/null || true
           mkdir -p edk2-msm/Platform/Meizu/sdm660/payload
-          # A real kernel if the artefact from the XNU job is in the tree, otherwise a
-          # placeholder with a valid Mach-O magic -- this run only checks that the
-          # firmware carries and publishes the volume.
           if [ -f meizu15/inputs/kernel.macho ]; then
             K=meizu15/inputs/kernel.macho
+            echo "using the built kernel: $(wc -c < "$K") bytes"
           else
             head -c 2097152 /dev/zero > /tmp/placeholder.macho
             printf '\xcf\xfa\xed\xfe' | dd of=/tmp/placeholder.macho bs=1 seek=0 conv=notrunc status=none
             K=/tmp/placeholder.macho
-            echo "::warning::no real kernel in the tree, using a 2 MiB placeholder"
+            echo "::warning::no kernel in the tree, using a placeholder"
           fi
           cp meizu15/inputs/meizu15-8plus.adt /tmp/payload.adt
           bash meizu15/scripts/build-esp.sh "$K" /tmp/payload.adt \
                edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 32
-          ls -la edk2-msm/Platform/Meizu/sdm660/payload/
+          ls -l edk2-msm/Platform/Meizu/sdm660/payload/
 
       - name: Build the firmware (RELEASE)
         run: |
@@ -156,32 +123,30 @@ jobs:
           ./build.sh -d meizu15 -r RELEASE 2>&1 | tail -400
         continue-on-error: true
 
-      - name: Report
+      - name: Report and assert
         if: always()
         run: |
           echo "=== firmware artefacts ==="
-          find edk2-msm -maxdepth 2 -name 'boot-*.img' -printf '%p  %s bytes\n' 2>/dev/null || true
-          find edk2-msm -name '*.fd' -printf '%p  %s bytes\n' 2>/dev/null | head -5 || true
+          find edk2-msm -maxdepth 2 -name 'boot-*.img' -print 2>/dev/null || true
+          find edk2-msm -name '*.fd' -print 2>/dev/null | head -3 || true
+          echo "=== payload driver built? ==="
+          find edk2-msm/Build -name 'Meizu15PayloadDxe*' 2>/dev/null | head -3 || true
+          echo "=== payload volume in the tree ==="
+          ls -l edk2-msm/Platform/Meizu/sdm660/payload/ 2>/dev/null || true
           if [ ! -f edk2-msm/boot-meizu15.img ]; then
             echo "::error::build.sh produced no boot-meizu15.img"
-            ls -la edk2-msm/*.log 2>/dev/null | head -5 || true
+            exit 1
           fi
-          echo "=== driver built? ==="
-          find edk2-msm/Build -name 'Meizu15PayloadDxe*' 2>/dev/null | head -5 || true
-          echo "=== payload compiled in? ==="
-          ls -la edk2-msm/Platform/Meizu/sdm660/payload/ 2>/dev/null || true
 
       - name: Retarget to the stock boot header
-        if: always()
+        if: success()
         run: |
           set -eux
-          if [ -f edk2-msm/boot-meizu15.img ]; then
-            python3 meizu15/scripts/ci/retarget_header.py \
-              edk2-msm/boot-meizu15.img \
-              meizu15/edk2-msm-overlay/boot-header-1632.bin \
-              edk2-msm/boot-meizu15-payload.img
-            ls -la edk2-msm/boot-meizu15-payload.img
-          fi
+          python3 meizu15/scripts/ci/retarget_header.py \
+            edk2-msm/boot-meizu15.img \
+            meizu15/edk2-msm-overlay/boot-header-1632.bin \
+            edk2-msm/boot-meizu15-payload.img
+          ls -l edk2-msm/boot-meizu15.img edk2-msm/boot-meizu15-payload.img
 
       - name: Upload
         if: always()
