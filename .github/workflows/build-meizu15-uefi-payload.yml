@@ -264,7 +264,9 @@ jobs:
           bash meizu15/scripts/build-esp.sh /tmp/kernel.macho /tmp/payload.adt \
                edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 48
           IMG=edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img
-          mmd -i "$IMG" ::/EFI ::/EFI/BOOT
+          # /EFI already exists (build-esp.sh creates it); mmd fails on an existing
+          # directory, so ignore its status and let mcopy create /EFI/BOOT.
+          mmd -i "$IMG" ::/EFI/BOOT 2>/dev/null || true
           mcopy -i "$IMG" -o /tmp/Meizu15Launcher.efi ::/EFI/BOOT/BOOTAA64.EFI
           mdir -i "$IMG" ::/EFI/BOOT
           mdir -i "$IMG" ::/EFI/UniXNU
