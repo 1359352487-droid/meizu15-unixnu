@@ -1,0 +1,135 @@
+name: build-meizu15-xnu-hakios-v2
+
+# Build XNU 8796 on Linux by combining two public halves that fit together:
+#
+#   toolchain   UniXNU main's scripts/linux/setup-toolchain.py
+#               builds clang (with __builtin_xnu_type_*), cctools-port ld64-956.6,
+#               libtool, mig/migcom, iig and lzfse under /opt/unixnu-linux, and
+#               installs the xcrun/plutil/codesign shims in /usr/bin.
+#   tree+patch  oosexgang/hakios-xnu-kernel
+#               builds tag xnu-8796.121.2 with xnu/hakios.patch -- the exact iOS 16
+#               tag its own CI proves the patch applies to -- and drives the build
+#               with xnu-build.sh at MACHINE_CONFIGS=BCM2837 (Cortex-A53, ARMv8.0,
+#               the same ISA class as this phone's Kryo 260: no PAN, no LSE).
+#
+# The one seam is that HakiOS asks theos for its cctools
+# ($THEOS/toolchain/linux/iphone/bin) and for $THEOS/sdks/iPhoneOS16.5.sdk.
+# theos' own Linux toolchain download is dead (404), so we point that directory at
+# the cctools UniXNU just built, and fetch the SDK from github.com/theos/sdks.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-meizu15-xnu-hakios-v2.yml'
+
+jobs:
+  kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: meizu15
+
+      - name: Host dependencies
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential pkg-config ninja-build python3 python3-dev python3-venv \
+            xz-utils libssl-dev zlib1g-dev libbsd-dev uuid-dev llvm-dev libclang-dev \
+            device-tree-compiler git curl wget ca-certificates tcsh unifdef cmake mtools \
+            flex bison m4 perl autoconf automake bzip2 cpio rsync libedit-dev libxml2-dev \
+            libncurses-dev rsync unzip
+          clang --version | head -2
+
+      - name: Toolchain (UniXNU Linux setup)
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/UniXNU/UniXNU.git unixnu
+          sudo python3 unixnu/scripts/linux/setup-toolchain.py /opt/unixnu-linux 2>&1 | tail -40
+          echo "=== toolchain layout ==="
+          ls /opt/unixnu-linux
+          ls /opt/unixnu-linux/CommandLineTools/usr/bin | head -20
+          /usr/bin/xcrun -find clang
+          /usr/bin/xcrun -find ld
+
+      - name: Point theos at that toolchain, and fetch the 16.5 SDK
+        run: |
+          set -eux
+          export THEOS="$HOME/theos"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          mkdir -p "$THEOS/toolchain/linux/iphone/bin" "$THEOS/sdks"
+          # HakiOS only checks that $THEOS/toolchain/linux/iphone/bin/ld exists and works.
+          for t in ld ld64 libtool nm lipo ar ranlib strip otool install_name_tool migcom iig clang; do
+            [ -e "/opt/unixnu-linux/CommandLineTools/usr/bin/$t" ] && \
+              ln -sf "/opt/unixnu-linux/CommandLineTools/usr/bin/$t" "$THEOS/toolchain/linux/iphone/bin/$t" || true
+          done
+          [ -e /opt/unixnu-linux/XcodeDefault.xctoolchain/usr/bin/iig ] && \
+            ln -sf /opt/unixnu-linux/XcodeDefault.xctoolchain/usr/bin/iig "$THEOS/toolchain/linux/iphone/bin/iig" || true
+          ls -la "$THEOS/toolchain/linux/iphone/bin" | head
+          echo "=== SDK (sparse: only iPhoneOS16.5.sdk) ==="
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$THEOS/sdks-git"
+          git -C "$THEOS/sdks-git" sparse-checkout set iPhoneOS16.5.sdk
+          ln -sfn "$THEOS/sdks-git/iPhoneOS16.5.sdk" "$THEOS/sdks/iPhoneOS16.5.sdk"
+          du -sh "$THEOS/sdks/iPhoneOS16.5.sdk" || true
+          ls "$THEOS/sdks/iPhoneOS16.5.sdk/usr/include" | head -5
+
+      - name: Clone HakiOS and check its tree
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/oosexgang/hakios-xnu-kernel.git hakios
+          ls hakios | head -30
+          head -30 hakios/Makefile
+
+      - name: Apply the kernel patch (xnu/apply.sh)
+        working-directory: hakios
+        run: |
+          set -eux
+          export THEOS="$HOME/theos"
+          bash xnu/apply.sh 2>&1 | tail -30 || echo "(apply.sh returned non-zero)"
+          ls xnu-src 2>/dev/null || true
+        continue-on-error: true
+
+      - name: Kernel dependencies (xnu-deps/setup.sh)
+        working-directory: hakios
+        run: |
+          set -eux
+          export THEOS="$HOME/theos"
+          bash xnu-deps/setup.sh 2>&1 | tail -60 || echo "(setup.sh returned non-zero)"
+          ls xnu-deps 2>/dev/null | head -20
+        continue-on-error: true
+
+      - name: Build the kernel
+        working-directory: hakios
+        env:
+          JOBS: "4"
+        run: |
+          set -eux
+          export THEOS="$HOME/theos"
+          bash xnu-build.sh 2>&1 | tail -300 || echo "(xnu-build.sh returned non-zero)"
+          echo "=== artefacts ==="
+          ls -la hakios-kernel 2>/dev/null || echo "(no hakios-kernel)"
+          find . -name 'mach.development*' 2>/dev/null | head -5
+
+      - name: Collect
+        if: always()
+        run: |
+          echo "=== kernel candidates ==="
+          find hakios -name 'hakios-kernel' -o -name 'mach.development*' 2>/dev/null | while read f; do
+            echo "  $(wc -c < "$f") $f"
+          done
+          echo "=== xnu tree state ==="
+          [ -d hakios/xnu-src ] && ls hakios/xnu-src | head -10 || echo "(no xnu-src)"
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meizu15-xnu-hakios-v2
+          path: |
+            hakios/hakios-kernel
+            hakios/**/mach.development*
+          if-no-files-found: warn
