@@ -48,11 +48,7 @@
 # ramdisk into a mounted filesystem; RamDiskDxe provides the protocol our driver
 # calls; Meizu15PayloadDxe is the glue.
 # ---------------------------------------------------------------------------
-[LibraryClasses]
-  RamDiskLib|MdeModulePkg/Library/RamDiskLib/RamDiskLib.inf
-
 [Components]
-  MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe.inf
   MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
   FatPkg/EnhancedFatDxe/Fat.inf

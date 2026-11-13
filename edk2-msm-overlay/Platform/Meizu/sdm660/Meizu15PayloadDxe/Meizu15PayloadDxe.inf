@@ -30,10 +30,12 @@
   DebugLib
   MemoryAllocationLib
   BaseMemoryLib
-  RamDiskLib
+  DevicePathLib
 
 [Protocols]
   gEfiFirmwareVolume2ProtocolGuid               ## CONSUMES
+  gEfiBlockIoProtocolGuid                       ## PRODUCES
+  gEfiDevicePathProtocolGuid                    ## PRODUCES
 
 [Depex]
-  gEfiFirmwareVolume2ProtocolGuid AND gEfiRamDiskProtocolGuid
+    gEfiFirmwareVolume2ProtocolGuid
