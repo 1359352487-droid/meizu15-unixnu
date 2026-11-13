@@ -38,7 +38,7 @@ jobs:
           set -eux
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            build-essential uuid-dev iasl nasm python3 python3-pip \
+            build-essential uuid-dev iasl nasm python3 python3-pip gettext \
             gcc-aarch64-linux-gnu git mtools dosfstools
           python3 -m pip install --quiet --break-system-packages edk2-pytool-library edk2-pytool-extensions || true
 
@@ -131,6 +131,10 @@ jobs:
           echo "=== firmware artefacts ==="
           find edk2-msm -maxdepth 2 -name 'boot-*.img' -printf '%p  %s bytes\n' 2>/dev/null || true
           find edk2-msm -name '*.fd' -printf '%p  %s bytes\n' 2>/dev/null | head -5 || true
+          if [ ! -f edk2-msm/boot-meizu15.img ]; then
+            echo "::error::build.sh produced no boot-meizu15.img"
+            ls -la edk2-msm/*.log 2>/dev/null | head -5 || true
+          fi
           echo "=== driver built? ==="
           find edk2-msm/Build -name 'Meizu15PayloadDxe*' 2>/dev/null | head -5 || true
           echo "=== payload compiled in? ==="
