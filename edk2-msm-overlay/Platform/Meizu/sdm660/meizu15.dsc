@@ -49,9 +49,9 @@
 # calls; Meizu15PayloadDxe is the glue.
 # ---------------------------------------------------------------------------
 [Components]
-  # EnhancedFatDxe's Depex requires gEfiUnicodeCollation2ProtocolGuid; without this
-  # the FAT driver is never dispatched and the payload never becomes FS0:.
-  MdeModulePkg/Universal/Console/UnicodeCollationDxe/UnicodeCollationDxe.inf
+  # EnhancedFatDxe's Depex requires gEfiUnicodeCollation2ProtocolGuid. In this edk2
+  # revision the provider is EnglishDxe (the path is Disk/, not Console/).
+  MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
   MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
   FatPkg/EnhancedFatDxe/Fat.inf
