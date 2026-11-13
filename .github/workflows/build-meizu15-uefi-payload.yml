@@ -127,7 +127,7 @@ jobs:
           set -eux
           cd edk2-msm
           chmod +x build.sh
-          ./build.sh -d meizu15 -r RELEASE 2>&1 | tail -400
+          ./build.sh -d meizu15 -r  2>&1 | tail -400
         continue-on-error: true
 
       - name: Report and assert
@@ -163,4 +163,106 @@ jobs:
           path: |
             edk2-msm/boot-meizu15-payload.img
             edk2-msm/boot-meizu15.img
+          if-no-files-found: warn
+
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TARGET: DEBUG
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: meizu15
+
+      - name: Install toolchain
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential uuid-dev iasl nasm python3 python3-pip gettext \
+            gcc-aarch64-linux-gnu git mtools dosfstools clang lld llvm device-tree-compiler
+          if ! command -v llvm-ar >/dev/null; then
+            for c in /usr/lib/llvm-*/bin/llvm-ar; do
+              [ -x "$c" ] && sudo ln -sf "$c" /usr/local/bin/llvm-ar && break
+            done
+          fi
+          llvm-ar --version | head -1
+
+      - name: Pin GCC 12 for BaseTools
+        run: |
+          set -eux
+          if apt-cache policy gcc-12 2>/dev/null | grep -q Candidate; then
+            sudo apt-get install -y --no-install-recommends gcc-12 g++-12
+            sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
+            sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
+          fi
+          gcc --version | head -1
+
+      - name: Clone edk2-msm
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/edk2-porting/edk2-msm.git
+          cd edk2-msm
+          git submodule update --init --depth 1 || git submodule update --init
+          cd Common/edk2 && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../Common/edk2-platforms && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../GPLDrivers/Library/SimpleInit && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../../
+
+      - name: Apply the overlay and the payload entry
+        run: |
+          set -eux
+          cp meizu15/edk2-msm-overlay/configs/devices/meizu15.conf edk2-msm/configs/devices/
+          mkdir -p edk2-msm/Platform/Meizu/sdm660
+          cp -r meizu15/edk2-msm-overlay/Platform/Meizu/sdm660/. edk2-msm/Platform/Meizu/sdm660/
+          F=edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc
+          {
+            echo ""
+            echo "FILE FREEFORM = 3f1a9c22-5b41-4a0e-9c77-2d618b4fe01a {"
+            echo "  SECTION COMPRESS PI_STD {"
+            echo "    SECTION RAW = Platform/Meizu/sdm660/payload/unixnu-esp.img"
+            echo "  }"
+            echo "}"
+          } >> "$F"
+
+      - name: Patch SimpleInit free(NULL)
+        run: python3 meizu15/scripts/ci/patch_simpleinit_free.py edk2-msm
+
+      - name: Build the payload FAT volume
+        run: |
+          set -eux
+          mkdir -p edk2-msm/Platform/Meizu/sdm660/payload
+          cp meizu15/inputs/kernel.macho /tmp/kernel.macho
+          cp meizu15/inputs/meizu15-8plus.adt /tmp/payload.adt
+          bash meizu15/scripts/build-esp.sh /tmp/kernel.macho /tmp/payload.adt \
+               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 48
+
+      - name: Build the firmware (DEBUG)
+        run: |
+          set -eux
+          cd edk2-msm
+          chmod +x build.sh
+          ./build.sh -d meizu15 -r DEBUG 2>&1 | tail -300
+        continue-on-error: true
+
+      - name: Retarget and upload
+        if: always()
+        run: |
+          set -eux
+          ls -l edk2-msm/boot-meizu15.img || true
+          if [ -f edk2-msm/boot-meizu15.img ]; then
+            python3 meizu15/scripts/ci/retarget_header.py \
+              edk2-msm/boot-meizu15.img \
+              meizu15/edk2-msm-overlay/boot-header-1632.bin \
+              edk2-msm/boot-meizu15-payload-debug.img
+            ls -l edk2-msm/boot-meizu15-payload-debug.img
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: meizu15-uefi-payload-debug
+          path: edk2-msm/boot-meizu15-payload-debug.img
           if-no-files-found: warn
