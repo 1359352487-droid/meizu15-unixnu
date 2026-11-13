@@ -73,6 +73,8 @@ jobs:
         run: |
           set -eux
           cp meizu15/edk2-msm-overlay/configs/devices/meizu15.conf edk2-msm/configs/devices/
+          cp -r meizu15/edk2-msm-overlay/UniXNUPkg edk2-msm/
+          cp -r meizu15/edk2-msm-overlay/DarwinBootPkg edk2-msm/
           mkdir -p edk2-msm/Platform/Meizu/sdm660
           cp -r meizu15/edk2-msm-overlay/Platform/Meizu/sdm660/. edk2-msm/Platform/Meizu/sdm660/
           find edk2-msm/Platform/Meizu -type f -print
@@ -243,6 +245,7 @@ jobs:
           # on the payload volume, and the volume has to exist before it can be
           # embedded in the firmware. The first pass packs a throwaway volume so the
           # FDF reference resolves; the second pass packs the real one.
+          mkdir -p Platform/Meizu/sdm660/payload
           printf 'placeholder' > Platform/Meizu/sdm660/payload/unixnu-esp.img
           chmod +x build.sh
           ./build.sh -d meizu15 -r DEBUG 2>&1 | tail -120
