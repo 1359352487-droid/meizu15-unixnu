@@ -18,6 +18,8 @@ dump/dxe/
 # Generated artifacts
 out/
 *.adt
+# ... but the ADT the payload needs is an input, not an artefact.
+!inputs/*.adt
 
 # Python
 __pycache__/

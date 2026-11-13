@@ -20,6 +20,7 @@ on:
     paths:
       - 'edk2-msm-overlay/**'
       - 'scripts/build-esp.sh'
+      - 'inputs/**'
       - '.github/workflows/build-meizu15-uefi-payload.yml'
 
 jobs:
