@@ -38,7 +38,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             build-essential uuid-dev iasl nasm python3 python3-pip gettext \
-            gcc-aarch64-linux-gnu git mtools dosfstools
+            gcc-aarch64-linux-gnu git mtools dosfstools \
+            clang lld llvm device-tree-compiler
+          if ! command -v llvm-ar >/dev/null; then
+            for c in /usr/lib/llvm-*/bin/llvm-ar; do
+              [ -x "$c" ] && sudo ln -sf "$c" /usr/local/bin/llvm-ar && break
+            done
+          fi
+          llvm-ar --version | head -1
           python3 -m pip install --quiet --break-system-packages edk2-pytool-library edk2-pytool-extensions || true
 
       - name: Pin GCC 12 for BaseTools
