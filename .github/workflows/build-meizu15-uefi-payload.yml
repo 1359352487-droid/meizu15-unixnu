@@ -94,6 +94,9 @@ EOF
       - name: Build the payload FAT volume
         run: |
           set -eux
+          pwd
+          ls -la meizu15/ 2>/dev/null || true
+          ls -la meizu15/inputs/ 2>/dev/null || true
           mkdir -p edk2-msm/Platform/Meizu/sdm660/payload
           # A real kernel if the artefact from the XNU job is in the tree, otherwise a
           # placeholder with a valid Mach-O magic -- this run only checks that the
