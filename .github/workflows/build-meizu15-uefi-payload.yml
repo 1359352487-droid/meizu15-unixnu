@@ -215,6 +215,11 @@ jobs:
         run: |
           set -eux
           cp meizu15/edk2-msm-overlay/configs/devices/meizu15.conf edk2-msm/configs/devices/
+          # The whole overlay: Platform/Meizu/sdm660, plus UniXNUPkg (the boot menu
+          # application and its library) and DarwinBootPkg (the loader driver that
+          # installs gUniXNULoaderProtocolGuid).
+          cp -r meizu15/edk2-msm-overlay/UniXNUPkg edk2-msm/
+          cp -r meizu15/edk2-msm-overlay/DarwinBootPkg edk2-msm/
           mkdir -p edk2-msm/Platform/Meizu/sdm660
           cp -r meizu15/edk2-msm-overlay/Platform/Meizu/sdm660/. edk2-msm/Platform/Meizu/sdm660/
           F=edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc
@@ -238,6 +243,23 @@ jobs:
           cp meizu15/inputs/meizu15-8plus.adt /tmp/payload.adt
           bash meizu15/scripts/build-esp.sh /tmp/kernel.macho /tmp/payload.adt \
                edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 48
+
+      - name: Build UniXNU.efi and put it on the volume as BOOTAA64.EFI
+        run: |
+          set -eux
+          cd edk2-msm
+          . ./edksetup.sh >/dev/null 2>&1 || true
+          export WORKSPACE="$PWD"
+          export PACKAGES_PATH="$PWD:$PWD/Common/edk2:$PWD/Common/edk2-platforms:$PWD/GPLDrivers"
+          build -a AARCH64 -t CLANG38 -b DEBUG -p Platform/Meizu/sdm660/meizu15.dsc \
+                -m UniXNUPkg/Application/UniXNU/UniXNU.inf
+          EFI=$(find Build -name 'UniXNU.efi' -size +20k | head -1)
+          echo "UniXNU.efi: $EFI"
+          ls -l "$EFI"
+          IMG=Platform/Meizu/sdm660/payload/unixnu-esp.img
+          mmd -i "$IMG" ::/EFI ::/EFI/BOOT
+          mcopy -i "$IMG" -o "$EFI" ::/EFI/BOOT/BOOTAA64.EFI
+          mdir -i "$IMG" ::/EFI/BOOT
 
       - name: Build the firmware (DEBUG)
         run: |

@@ -48,7 +48,15 @@
 # ramdisk into a mounted filesystem; RamDiskDxe provides the protocol our driver
 # calls; Meizu15PayloadDxe is the glue.
 # ---------------------------------------------------------------------------
+# UniXNU's Darwin loader: a UEFI_DRIVER that installs
+# gUniXNULoaderProtocolGuid (0f0a492e-5a6a-49f6-a1bf-743c87ab1cfe). UniXNU.efi on
+# the payload volume calls it to hand kernel.macho + the ADT to the kernel.
+# Keeping it in the firmware means the ESP only has to carry data, not code.
+[LibraryClasses]
+  UniXNULib|UniXNUPkg/Library/UniXNULib/UniXNULib.inf
+
 [Components]
+  DarwinBootPkg/Driver/DarwinBoot.inf
   # EnhancedFatDxe's Depex requires gEfiUnicodeCollation2ProtocolGuid. In this edk2
   # revision the provider is EnglishDxe (the path is Disk/, not Console/).
   MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
