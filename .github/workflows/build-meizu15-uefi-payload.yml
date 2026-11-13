@@ -264,12 +264,20 @@ jobs:
           bash meizu15/scripts/build-esp.sh /tmp/kernel.macho /tmp/payload.adt \
                edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 48
           IMG=edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img
-          # /EFI already exists (build-esp.sh creates it); mmd fails on an existing
-          # directory, so ignore its status and let mcopy create /EFI/BOOT.
+          # SimpleInit's prober builds its candidate list from
+          # ARCH1_FILE("boot","aa64") in src/boot/efi_path.c, i.e. the literal string
+          # "bootaa64.efi", searched under "/", "/EFI/" and "/EFI/BOOT/". mtools keeps
+          # the name we give it (FAT itself is case-insensitive, but the firmware's
+          # file layer opens by name), so ship both spellings and a startup.nsh that
+          # runs it if the Shell comes up instead.
+          mmd -i "$IMG" ::/EFI 2>/dev/null || true
           mmd -i "$IMG" ::/EFI/BOOT 2>/dev/null || true
           mcopy -i "$IMG" -o /tmp/Meizu15Launcher.efi ::/EFI/BOOT/BOOTAA64.EFI
+          mcopy -i "$IMG" -o /tmp/Meizu15Launcher.efi ::/EFI/BOOT/bootaa64.efi
+          printf 'fs0:\\EFI\\BOOT\\BOOTAA64.EFI\r\n' > /tmp/startup.nsh
+          mcopy -i "$IMG" -o /tmp/startup.nsh ::/startup.nsh
           mdir -i "$IMG" ::/EFI/BOOT
-          mdir -i "$IMG" ::/EFI/UniXNU
+          mdir -i "$IMG" ::/ | tail -12
 
       - name: Build the firmware (DEBUG)
         run: |
