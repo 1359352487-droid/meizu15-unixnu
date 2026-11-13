@@ -45,8 +45,15 @@ jobs:
             libncurses-dev rsync unzip
           clang --version | head -2
 
+      - name: Cache the Linux kernel toolchain
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/unixnu-linux
+          key: unixnu-linux-toolchain-${{ runner.os }}-v1
+
       - name: Toolchain (UniXNU Linux setup)
-        run: |
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'        run: |
           set -eux
           git clone --depth 1 https://github.com/UniXNU/UniXNU.git unixnu
           sudo python3 unixnu/scripts/linux/setup-toolchain.py /opt/unixnu-linux 2>&1 | tail -40
@@ -114,6 +121,23 @@ jobs:
           ls -la hakios-kernel 2>/dev/null || echo "(no hakios-kernel)"
           find . -name 'mach.development*' 2>/dev/null | head -5
 
+      - name: Pack the payload volume (kernel + ADT)
+        run: |
+          set -eux
+          K=$(find hakios/xnu-src -name 'mach.development.bcm2837' -type f \
+                -not -name '*.dSYM' -not -name '*.link' -not -name '*.yml' | head -1)
+          [ -n "$K" ] || K=$(find hakios/xnu-src -name 'mach.development.bcm2837.unstripped' -type f | head -1)
+          echo "kernel: $K"
+          ls -la "$K"
+          cp "$K" /tmp/kernel.macho
+          cp meizu15/inputs/meizu15-8plus.adt /tmp/kernel.macho.adt
+          bash meizu15/scripts/build-esp.sh /tmp/kernel.macho /tmp/kernel.macho.adt /tmp/unixnu-esp.img 64
+          gzip -9 -c /tmp/unixnu-esp.img  > /tmp/unixnu-esp.img.gz
+          gzip -9 -c /tmp/kernel.macho    > /tmp/kernel.macho.gz
+          echo "=== compressed sizes ==="
+          ls -la /tmp/unixnu-esp.img.gz /tmp/kernel.macho.gz
+        continue-on-error: true
+
       - name: Collect
         if: always()
         run: |
@@ -132,4 +156,6 @@ jobs:
           path: |
             hakios/hakios-kernel
             hakios/**/mach.development*
+            /tmp/unixnu-esp.img.gz
+            /tmp/kernel.macho.gz
           if-no-files-found: warn

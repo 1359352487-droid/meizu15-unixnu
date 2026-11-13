@@ -399,3 +399,52 @@ ubuntu runner：
 4. `xnu-build.sh`（MACHINE_CONFIGS=BCM2837）→ mach.development.bcm2837.unstripped
 
 产物再交给我们的 payload 打包（kernel.macho + meizu15 ADT + ESP）与已跑通的 edk2-msm 固件。
+
+## 2026-11-13 19:25 — 内核编出来了：XNU 8796 / BCM2837 / ARMv8.0
+
+`build-meizu15-xnu-hakios-v2`（run 43403528891）**11 个步骤全部 success**：
+
+```
+1 Set up job                                    success
+2 actions/checkout@v4                           success
+3 Host dependencies                             success
+4 Toolchain (UniXNU Linux setup)                success   ← clang+cctools+mig+iig 从源码编成
+5 Point theos at that toolchain + 16.5 SDK      success   ← 软链伪造 theos，SDK 走 theos/sdks
+6 Clone HakiOS                                  success
+7 Apply the kernel patch (xnu/apply.sh)         success   ← hakios.patch 打到 xnu-8796.121.2
+8 Kernel dependencies (xnu-deps/setup.sh)       success
+9 Build the kernel                              success   ★
+10 Collect                                      success
+11 Upload                                       success
+```
+
+产物（日志原文）：
+
+```
+./xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped
+./xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.dSYM
+./xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.link
+```
+
+Artifact `meizu15-xnu-hakios-v2`：149,031,755 字节（含 dSYM），
+artifact id `14027678719`。
+
+### 这个组合是怎么成立的
+
+| 部分 | 来源 | 关键点 |
+|---|---|---|
+| 工具链 | UniXNU `scripts/linux/setup-toolchain.py` | clang 带 `__builtin_xnu_type_*`、cctools-port `ld64-956.6`、`mig`、`iig`、`lzfse` → `/opt/unixnu-linux` |
+| 源码 | apple-oss-distributions/xnu tag `xnu-8796.121.2` | iOS 16 代际（Darwin 22.x） |
+| 补丁 | HakiOS `xnu/hakios.patch` | 它自己的 CI 用 `git apply --check` 保证对这个 tag 可应用 |
+| SDK | `theos/sdks` 的 `iPhoneOS16.5.sdk`（sparse clone） | HakiOS 的 `xnu-deps/setup.sh` 要这个路径 |
+| 平台配置 | HakiOS `xnu-build.sh` 的 `MACHINE_CONFIGS=BCM2837` | Cortex-A53 = ARMv8.0，与 Kryo 260 同代 ISA |
+
+**theos 的 404 是这样绕过的**：`xnu-deps/setup.sh` 只检查
+`$THEOS/toolchain/linux/iphone/bin/ld` 存在，所以把那个目录软链到
+`/opt/unixnu-linux/CommandLineTools/usr/bin/*` 即可。
+
+### 注意：`hakios-kernel` 没有生成
+
+日志里 `=== artefacts ===` 之后是 `(no hakios-kernel)` —— 那是 `make kernel`
+包装脚本的复制步骤（`tools/make-kernel.sh`），我们是直接调 `xnu-build.sh`，
+所以只在 `BUILD/obj/` 下产出。不是失败。
