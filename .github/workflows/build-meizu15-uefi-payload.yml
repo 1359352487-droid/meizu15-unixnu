@@ -1,0 +1,127 @@
+name: build-meizu15-uefi-payload
+
+# Firmware that can see the UniXNU payload.
+#
+# What changes versus build-meizu15-fix.yml (the image proven on the device):
+#   + Meizu15PayloadDxe   our driver: finds the FAT volume in the FV, registers it
+#                         as a ramdisk (edk2-msm's BootShim passes no initrd, so
+#                         UniXNU's UniXNURamDiskDxe cannot be used here)
+#   + RamDiskDxe / DiskIoDxe / PartitionDxe / EnhancedFatDxe
+#   + the FAT volume itself, embedded as a FREEFORM file with a compressed RAW
+#     section (compressed because an FFS file cannot exceed 16 MiB)
+#
+# The payload is built here from a placeholder kernel unless a real one is present:
+# this run only has to prove that the firmware still boots and that the volume
+# shows up.  The kernel itself comes from build-meizu15-xnu-hakios-v2.yml.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'edk2-msm-overlay/**'
+      - 'scripts/build-esp.sh'
+      - '.github/workflows/build-meizu15-uefi-payload.yml'
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: meizu15
+
+      - name: Install toolchain
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential uuid-dev iasl nasm python3 python3-pip \
+            gcc-aarch64-linux-gnu git mtools dosfstools
+          python3 -m pip install --quiet --break-system-packages edk2-pytool-library edk2-pytool-extensions || true
+
+      - name: Clone edk2-msm
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/edk2-porting/edk2-msm.git
+          cd edk2-msm
+          git submodule update --init --depth 1 || git submodule update --init
+          cd Common/edk2 && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../Common/edk2-platforms && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../GPLDrivers/Library/SimpleInit && git submodule update --init --depth 1 || git submodule update --init
+          cd ../../../
+
+      - name: Apply the Meizu 15 overlay
+        run: |
+          set -eux
+          cp meizu15/edk2-msm-overlay/configs/devices/meizu15.conf edk2-msm/configs/devices/
+          mkdir -p edk2-msm/Platform/Meizu/sdm660
+          cp -r meizu15/edk2-msm-overlay/Platform/Meizu/sdm660/. edk2-msm/Platform/Meizu/sdm660/
+          find edk2-msm/Platform/Meizu -type f -printf '%p  %s bytes\n'
+
+      - name: Patch SimpleInit free(NULL)
+        run: |
+          set -eux
+          python3 meizu15/scripts/ci/patch_simpleinit_free.py edk2-msm
+
+      - name: Build the payload FAT volume
+        run: |
+          set -eux
+          mkdir -p edk2-msm/Platform/Meizu/sdm660/payload
+          # A real kernel if the artefact from the XNU job is in the tree, otherwise a
+          # placeholder with a valid Mach-O magic -- this run only checks that the
+          # firmware carries and publishes the volume.
+          if [ -f meizu15/inputs/kernel.macho ]; then
+            K=meizu15/inputs/kernel.macho
+          else
+            head -c 2097152 /dev/zero > /tmp/placeholder.macho
+            printf '\xcf\xfa\xed\xfe' | dd of=/tmp/placeholder.macho bs=1 seek=0 conv=notrunc status=none
+            K=/tmp/placeholder.macho
+            echo "::warning::no real kernel in the tree, using a 2 MiB placeholder"
+          fi
+          cp meizu15/inputs/meizu15-8plus.adt /tmp/payload.adt
+          bash meizu15/scripts/build-esp.sh "$K" /tmp/payload.adt \
+               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 32
+          ls -la edk2-msm/Platform/Meizu/sdm660/payload/
+
+      - name: Build the firmware (RELEASE)
+        run: |
+          set -eux
+          cd edk2-msm
+          chmod +x build.sh
+          ./build.sh -d meizu15 -r RELEASE 2>&1 | tail -400
+        continue-on-error: true
+
+      - name: Report
+        if: always()
+        run: |
+          echo "=== firmware artefacts ==="
+          find edk2-msm -maxdepth 2 -name 'boot-*.img' -printf '%p  %s bytes\n' 2>/dev/null || true
+          find edk2-msm -name '*.fd' -printf '%p  %s bytes\n' 2>/dev/null | head -5 || true
+          echo "=== driver built? ==="
+          find edk2-msm/Build -name 'Meizu15PayloadDxe*' 2>/dev/null | head -5 || true
+          echo "=== payload compiled in? ==="
+          ls -la edk2-msm/Platform/Meizu/sdm660/payload/ 2>/dev/null || true
+
+      - name: Retarget to the stock boot header
+        if: always()
+        run: |
+          set -eux
+          if [ -f edk2-msm/boot-meizu15.img ]; then
+            python3 meizu15/scripts/ci/retarget_header.py \
+              edk2-msm/boot-meizu15.img \
+              meizu15/edk2-msm-overlay/boot-header-1632.bin \
+              edk2-msm/boot-meizu15-payload.img
+            ls -la edk2-msm/boot-meizu15-payload.img
+          fi
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meizu15-uefi-payload
+          path: |
+            edk2-msm/boot-meizu15-payload.img
+            edk2-msm/boot-meizu15.img
+          if-no-files-found: warn

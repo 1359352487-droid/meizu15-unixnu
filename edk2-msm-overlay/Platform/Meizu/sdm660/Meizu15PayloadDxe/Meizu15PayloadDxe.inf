@@ -1,0 +1,39 @@
+## @file
+#  Publish the UniXNU payload volume (a FAT image baked into the firmware volume)
+#  as a read-only block device, so FatDxe can mount it and SimpleInit/DarwinBoot
+#  can read /EFI/UniXNU/ from it.
+#
+#  edk2-msm's BootShim does not pass an initrd, so UniXNU's own
+#  UniXNURamDiskDxe (which reads a Mu-Silicium entry-argument HOB) has nothing to
+#  work with here. This driver takes the volume straight out of the FV instead.
+#
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = Meizu15PayloadDxe
+  FILE_GUID                      = 6b8f4c31-2d7a-4e05-9a1c-3f5e8b0d7c26
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = Meizu15PayloadDxeEntry
+
+[Sources]
+  Meizu15PayloadDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  DebugLib
+  MemoryAllocationLib
+  BaseMemoryLib
+  RamDiskLib
+
+[Protocols]
+  gEfiFirmwareVolume2ProtocolGuid               ## CONSUMES
+
+[Depex]
+  gEfiFirmwareVolume2ProtocolGuid AND gEfiRamDiskProtocolGuid

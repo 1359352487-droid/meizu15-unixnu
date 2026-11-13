@@ -35,3 +35,25 @@
   gRenegadePkgTokenSpaceGuid.PcdDeviceVendor|"Meizu"
   gRenegadePkgTokenSpaceGuid.PcdDeviceProduct|"15"
   gRenegadePkgTokenSpaceGuid.PcdDeviceCodeName|"meizu15"
+
+# ---------------------------------------------------------------------------
+# Payload support for the UniXNU boot chain.
+#
+# The FAT volume that holds kernel.macho, its ADT and unixnu.toml is baked into the
+# firmware volume (see meizu15.fdf.inc) and published as a ramdisk by our own
+# driver, because edk2-msm's BootShim passes no initrd and UniXNU's
+# UniXNURamDiskDxe therefore has nothing to work with.
+#
+# Fat + DiskIo + Partition are the standard stack that turns a registered
+# ramdisk into a mounted filesystem; RamDiskDxe provides the protocol our driver
+# calls; Meizu15PayloadDxe is the glue.
+# ---------------------------------------------------------------------------
+[LibraryClasses]
+  RamDiskLib|MdeModulePkg/Library/RamDiskLib/RamDiskLib.inf
+
+[Components]
+  MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe.inf
+  MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
+  MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
+  FatPkg/EnhancedFatDxe/Fat.inf
+  Platform/Meizu/sdm660/Meizu15PayloadDxe/Meizu15PayloadDxe.inf
