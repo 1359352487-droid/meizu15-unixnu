@@ -448,3 +448,50 @@ artifact id `14027678719`。
 日志里 `=== artefacts ===` 之后是 `(no hakios-kernel)` —— 那是 `make kernel`
 包装脚本的复制步骤（`tools/make-kernel.sh`），我们是直接调 `xnu-build.sh`，
 所以只在 `BUILD/obj/` 下产出。不是失败。
+
+## 2026-11-13 23:35 — 带 payload 的固件编出来了
+
+run 43447057145（`build-meizu15-uefi-payload.yml`）13 个步骤全绿。产物：
+
+```
+boot-meizu15-payload.img   12,398,592 bytes (11.82 MiB)
+  magic        ANDROID!
+  kernel_size  12,393,165
+  kernel_addr  0x8000     tags_addr 0x100     page_size 4096
+  header_ver   0          os_version 0xe040924   ← 原厂值，未变
+```
+
+对比 Phase 3 的 6,230,016 字节：**多了 6.17 MB**，就是压缩后的 payload。
+
+离线验证（`scripts/check_payload_fv.py`）：
+
+```
+kernel seg : 1 gzip member -> 33,554,576 bytes
+outer FV   : 0x90  length 33,554,432  header 72
+  8AF09F13-44C5-96EC-1437-DD899CB5EE5D  type 0x03        43,288 bytes   (SEC)
+  9E21FD93-9C72-4C15-8C4B-E77F1DB2D792  type 0x0b    12,010,382 bytes   (DXE, LZMA)
+inner DXE  : length 35,905,408 bytes
+```
+
+Phase 3 的内层 DXE 是 29,673,032 字节 → 现在 35,905,408，**差 6,232,376 字节**，
+正是 payload。payload 确实被编进固件了。
+
+### 这一路修掉的四个问题
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| workflow 名显示成文件名、job 不创建 | `$GITHUB` 的 YAML 解析器被混合 CRLF/LF 噎住 | 统一 LF |
+| `- name: …        run: |` 同一行 | here-string 结尾没换行 | 拆行 |
+| `error 000E: RamDiskLib.inf is not found` | edk2-msm 的 edk2 版本没有 RamDiskLib | 驱动自己实现 EFI_BLOCK_IO_PROTOCOL，不再依赖 MdeModulePkg 的 ramdisk |
+| `llvm-ar: not found` | CLANG38 用 llvm-ar 链接，payload job 没装 llvm | apt clang lld llvm |
+| `array type 'UINT8[2]' is not assignable` | `EFI_DEVICE_PATH_PROTOCOL.Length` 是两字节数组，`SIGNATURE_TYPE_NONE` 不存在 | `Length[0]/[1]` 赋值，SignatureType = 0 |
+| `Disk full` | `mformat -T` 以 **512 字节**扇区计，我把 32 MiB 算成了 8 MiB | sectors = SIZE_MB × 2048，卷改 48 MiB |
+
+### 下一步（需要手机）
+
+```
+fastboot boot boot-meizu15-payload.img
+```
+
+预期：SimpleInit 菜单里出现 `iOS 16.7.16 (Meizu 15)` 一项。
+若出现，说明「固件 → payload 卷 → 菜单」这条链通了，剩下的是 DarwinBoot 与内核。
