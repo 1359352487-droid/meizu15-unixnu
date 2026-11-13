@@ -273,11 +273,21 @@ jobs:
           mmd -i "$IMG" ::/EFI 2>/dev/null || true
           mmd -i "$IMG" ::/EFI/BOOT 2>/dev/null || true
           mcopy -i "$IMG" -o /tmp/Meizu15Launcher.efi ::/EFI/BOOT/BOOTAA64.EFI
-          mcopy -i "$IMG" -o /tmp/Meizu15Launcher.efi ::/EFI/BOOT/bootaa64.efi
-          printf 'fs0:\\EFI\\BOOT\\BOOTAA64.EFI\r\n' > /tmp/startup.nsh
+          #
+          # SimpleInit's prober has a shadowed loop variable:
+          #
+          #   for(size_t d=0;ep->dir[d];d++) for(size_t d=0;ep->name[d];d++) { ... }
+          #
+          # The inner d clobbers the outer one, so only dir[0] -- the literal "/" --
+          # is ever tried. That is why the menu says "found UEFI Shell at /shell.efi"
+          # and not "/EFI/tools/shell.efi". So the launcher has to sit at the ROOT of
+          # the volume under the name the table uses for this CPU: bootaa64.efi.
+          #
+          mcopy -i "$IMG" -o /tmp/Meizu15Launcher.efi ::/bootaa64.efi
+          printf 'fs0:\\bootaa64.efi\r\n' > /tmp/startup.nsh
           mcopy -i "$IMG" -o /tmp/startup.nsh ::/startup.nsh
           mdir -i "$IMG" ::/EFI/BOOT
-          mdir -i "$IMG" ::/ | tail -12
+          mdir -i "$IMG" ::/ | tail -14
 
       - name: Build the firmware (DEBUG)
         run: |
