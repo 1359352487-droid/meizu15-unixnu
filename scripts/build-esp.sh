@@ -64,8 +64,10 @@ args = "-v keepsyms=1 debug=0x8"
 TOML
 
 rm -f "$OUT"
-# 2048-byte sectors, like every other payload UniXNU writes.
-sectors=$(( SIZE_MB * 1024 * 1024 / 2048 ))
+# mformat -T counts 512-byte sectors (mformat's own unit, not the 2048-byte
+# cluster size): 1 MiB = 2048 sectors. Getting this wrong silently halves the
+# volume and the copy then fails with "Disk full".
+sectors=$(( SIZE_MB * 2048 ))
 mformat -i "$OUT" -C -T "$sectors" -h 64 -s 32 -v UNIXNU ::
 # Fixed timestamps: mformat/mcopy stamp from the clock otherwise.
 export MTOOLS_SKIP_CHECK=1

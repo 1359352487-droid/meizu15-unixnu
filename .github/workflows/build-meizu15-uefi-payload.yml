@@ -112,7 +112,7 @@ jobs:
           fi
           cp meizu15/inputs/meizu15-8plus.adt /tmp/payload.adt
           bash meizu15/scripts/build-esp.sh "$K" /tmp/payload.adt \
-               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 32
+               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 48
           ls -l edk2-msm/Platform/Meizu/sdm660/payload/
 
       - name: Build the firmware (RELEASE)
