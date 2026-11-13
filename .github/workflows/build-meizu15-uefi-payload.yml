@@ -56,7 +56,6 @@ jobs:
           fi
           gcc --version | head -1
 
-      - name: Clone edk2-msm
         run: |
           set -eux
           git clone --depth 1 https://github.com/edk2-porting/edk2-msm.git
@@ -102,6 +101,24 @@ jobs:
             echo "}"
           } >> edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc
           tail -12 edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc
+
+      - name: Probe which disk modules this edk2 revision ships
+        run: |
+          set -eux
+          E=edk2-msm/Common/edk2
+          git -C "$E" log -1 --format='edk2 %H %ad' 2>/dev/null || true
+          for p in \
+            MdeModulePkg/Library/RamDiskLib/RamDiskLib.inf \
+            MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe.inf \
+            MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf \
+            MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf \
+            FatPkg/EnhancedFatDxe/Fat.inf \
+            MdePkg/Library/BaseFdtLib/BaseFdtLib.inf \
+          ; do
+            if [ -f "$E/$p" ]; then echo "  YES  $p"; else echo "  NO   $p"; fi
+          done
+          echo "--- anything RamDisk-named ---"
+          find "$E" -maxdepth 5 -iname '*RamDisk*' 2>/dev/null | head -20 || true
 
       - name: Patch SimpleInit free(NULL)
         run: |
