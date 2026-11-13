@@ -495,3 +495,68 @@ fastboot boot boot-meizu15-payload.img
 
 预期：SimpleInit 菜单里出现 `iOS 16.7.16 (Meizu 15)` 一项。
 若出现，说明「固件 → payload 卷 → 菜单」这条链通了，剩下的是 DarwinBoot 与内核。
+
+## 2026-11-14 02:00 — 完整 payload 链编出来了（run 43476581739 全绿）
+
+两个 job 都成功，产物：
+
+```
+meizu15-uefi-payload-debug  11.62 MB
+meizu15-uefi-payload        23.12 MB
+boot-meizu15-payload-debug.img  12,472,320 bytes
+```
+
+离线拆包（scripts/check_payload_fv.py）：
+
+```
+kernel seg : 1 gzip member -> 33,554,576 bytes
+outer FV   : 0x90  length 33,554,432  header 72
+  8AF09F13-...  type 0x03        49,336 bytes   (SEC)
+  9E21FD93-...  type 0x0b    12,083,085 bytes   (DXE, LZMA)
+inner DXE  : 36,216,000 bytes
+```
+
+DXE 卷 29,673,032（Phase 3）→ 35,905,408（只有 payload）→ **36,216,000**（payload + DarwinBoot + Launcher）。最后这 310 KB 就是 loader 和启动器。
+
+### 这一阶段的六个障碍
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| `error 4000: gFdtTableGuid is not found` | edk2 pin 的版本没有 `MdePkg/Include/Guid/Fdt.h` | 放弃 UniXNU 菜单应用（它依赖 FdtLib），自己写 403 行的 `Meizu15Launcher` |
+| `'AsmMacroLib.h' file not found` | 同上，老 edk2 只有 `AsmMacroIoLib.h` | 在 `UniXNUPkg/Include/AsmMacroLib.h` 提供最小实现（Packages 的 Include 自动进搜索路径） |
+| `build: command not found` | `edksetup.sh` 的 PATH 随脚本结束消失 | 改为让 `build.sh` 自己编（DSC 里加应用） |
+| `no Meizu15Launcher.efi was produced` | `build.sh` 输出在 `workspace/Build/`，我搜的是 `Build/` | `find . -name` |
+| `mmd` exit 1 | `/EFI` 已存在，mtools 拒绝 | 只建 `/EFI/BOOT` 并容忍已存在 |
+| workflow 名显示成文件名 | YAML 里 CRLF/LF 混用 + here-string 尾部换行 | 统一 LF、拆行 |
+
+### 现在的完整链条
+
+```
+boot.img (12.47 MB)
+  └ gzip → FV 33.5 MB
+      ├ SEC 49 KB（BootShim 之后的第一段）
+      └ DXE 36.2 MB (LZMA)
+          ├ Meizu15PayloadDxe   FV 里的 FAT → EFI_BLOCK_IO_PROTOCOL
+          ├ EnglishDxe          gEfiUnicodeCollation2ProtocolGuid
+          ├ DiskIoDxe / PartitionDxe / Fat
+          ├ DarwinBoot          gUniXNULoaderProtocolGuid
+          ├ Meizu15Launcher     找卷、读 ADT、调 loader
+          └ FILE FREEFORM (压缩)
+              └ 48 MiB FAT
+                  ├ /EFI/UniXNU/unixnu.toml
+                  ├ /EFI/UniXNU/Payloads/kernel.macho       15,791,328 B
+                  ├ /EFI/UniXNU/Payloads/kernel.macho.adt       13,996 B
+                  └ /EFI/BOOT/BOOTAA64.EFI                      20,480 B
+```
+
+### 待真机验证
+
+`fastboot boot boot-meizu15-payload-debug.img`，预期屏幕：
+
+```
+Meizu15Launcher: looking for \EFI\UniXNU\Payloads\kernel.macho
+Meizu15Launcher: payload volume found, ADT 13996 bytes
+Meizu15Launcher: loader revision 0x20000, booting
+```
+
+然后 DarwinBoot 接手 kernel.macho。
