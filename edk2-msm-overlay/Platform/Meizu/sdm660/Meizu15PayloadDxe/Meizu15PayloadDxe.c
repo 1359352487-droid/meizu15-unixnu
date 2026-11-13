@@ -207,9 +207,11 @@ MakeDevicePath (
   Hd = (HARDDRIVE_DEVICE_PATH *)Buffer;
   Hd->Header.Type    = MEDIA_DEVICE_PATH;
   Hd->Header.SubType = MEDIA_HARDDRIVE_DP;
-  Hd->Header.Length  = sizeof (HARDDRIVE_DEVICE_PATH);
+  // EFI_DEVICE_PATH_PROTOCOL.Length is UINT8[2]: a two-byte little-endian size.
+  Hd->Header.Length[0] = (UINT8)(sizeof (HARDDRIVE_DEVICE_PATH) & 0xFF);
+  Hd->Header.Length[1] = (UINT8)((sizeof (HARDDRIVE_DEVICE_PATH) >> 8) & 0xFF);
   Hd->PartitionNumber = 1;
-  Hd->SignatureType  = SIGNATURE_TYPE_NONE;
+  Hd->SignatureType  = 0;   // SIGNATURE_TYPE_NONE
   Hd->MBRType        = MBR_TYPE_EFI_PARTITION_TABLE_HEADER;
   // 512-byte sectors, capped to 32 bits like every other HardDrive node.
   Hd->PartitionSize = (Size / PAYLOAD_BLOCK_SIZE) > 0xFFFFFFFFULL
@@ -219,7 +221,8 @@ MakeDevicePath (
   End = (EFI_DEVICE_PATH_PROTOCOL *)(Buffer + sizeof (HARDDRIVE_DEVICE_PATH));
   End->Type    = END_DEVICE_PATH_TYPE;
   End->SubType = END_ENTIRE_DEVICE_PATH_SUBTYPE;
-  End->Length  = sizeof (EFI_DEVICE_PATH_PROTOCOL);
+  End->Length[0] = (UINT8)sizeof (EFI_DEVICE_PATH_PROTOCOL);
+  End->Length[1] = 0;
   return (EFI_DEVICE_PATH_PROTOCOL *)Buffer;
 }
 
