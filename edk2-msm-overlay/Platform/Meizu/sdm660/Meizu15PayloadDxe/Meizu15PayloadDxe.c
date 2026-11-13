@@ -274,8 +274,13 @@ Meizu15PayloadDxeEntry (
 
   if (Payload == NULL) {
     DEBUG ((DEBUG_ERROR, "Meizu15Payload: the payload volume is not in any FV\n"));
+    gST->ConOut->OutputString (gST->ConOut, L"\r\nMeizu15Payload: NO PAYLOAD IN ANY FV\r\n");
+    gBS->Stall (5000000);
     return EFI_NOT_FOUND;
   }
+
+  gST->ConOut->OutputString (gST->ConOut, L"\r\nMeizu15Payload: payload found, publishing\r\n");
+  gBS->Stall (2000000);
 
   mPayload = AllocateZeroPool (sizeof (PAYLOAD_BLOCK_IO));
   if (mPayload == NULL) {
@@ -323,6 +328,13 @@ Meizu15PayloadDxeEntry (
       (UINT32)(mPayload->Media.LastBlock + 1),
       (UINT32)PAYLOAD_BLOCK_SIZE
       ));
+    //
+    // Straight to the console as well: DebugLib's sink depends on the platform's
+    // PCDs, and the point of this driver is to be visible on a phone with no serial.
+    //
+    gST->ConOut->OutputString (gST->ConOut, L"\r\nMeizu15Payload: BLOCK DEVICE PUBLISHED, ");
+    gST->ConOut->OutputString (gST->ConOut, L"kernel.macho is on it\r\n");
+    gBS->Stall (3000000);
   }
 
   //
