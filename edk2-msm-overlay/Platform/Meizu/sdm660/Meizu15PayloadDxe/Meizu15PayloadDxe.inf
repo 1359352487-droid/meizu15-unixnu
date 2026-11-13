@@ -38,4 +38,4 @@
   gEfiDevicePathProtocolGuid                    ## PRODUCES
 
 [Depex]
-    gEfiFirmwareVolume2ProtocolGuid
+  TRUE

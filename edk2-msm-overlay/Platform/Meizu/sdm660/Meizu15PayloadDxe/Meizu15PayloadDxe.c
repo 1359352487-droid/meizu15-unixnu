@@ -247,6 +247,13 @@ Meizu15PayloadDxeEntry (
   Payload     = NULL;
   PayloadSize = 0;
 
+  //
+  // Say we are alive before anything else can fail. The grep for this line on a
+  // photograph of the phone is how this port is debugged: there is no serial port.
+  //
+  gST->ConOut->OutputString (gST->ConOut, L"\r\n\r\n=== Meizu15PayloadDxe ENTER ===\r\n");
+  gBS->Stall (5000000);
+
   Status = gBS->LocateHandleBuffer (
                   ByProtocol,
                   &gEfiFirmwareVolume2ProtocolGuid,
@@ -280,7 +287,7 @@ Meizu15PayloadDxeEntry (
   }
 
   gST->ConOut->OutputString (gST->ConOut, L"\r\nMeizu15Payload: payload found, publishing\r\n");
-  gBS->Stall (2000000);
+  gBS->Stall (15000000);
 
   mPayload = AllocateZeroPool (sizeof (PAYLOAD_BLOCK_IO));
   if (mPayload == NULL) {
@@ -334,7 +341,7 @@ Meizu15PayloadDxeEntry (
     //
     gST->ConOut->OutputString (gST->ConOut, L"\r\nMeizu15Payload: BLOCK DEVICE PUBLISHED, ");
     gST->ConOut->OutputString (gST->ConOut, L"kernel.macho is on it\r\n");
-    gBS->Stall (3000000);
+    gBS->Stall (15000000);
   }
 
   //
