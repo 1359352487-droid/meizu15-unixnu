@@ -67,23 +67,26 @@ jobs:
           # Kept out of the tracked file on purpose: build-meizu15-fix.yml (the
           # image already proven on the device) uses the same include and has no
           # payload to point at, so the entry is appended only in this job.
-          cat >> edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc <<'EOF'
-
-// ---------------------------------------------------------------------------
-// UniXNU payload volume (added by build-meizu15-uefi-payload.yml)
-//
-// The FAT image from scripts/build-esp.sh travels inside the firmware volume as a
-// FREEFORM file with a compressed RAW section: compressed because an FFS file
-// header carries its size in 24 bits (16 MiB ceiling), FREEFORM because
-// Meizu15PayloadDxe looks for exactly this GUID and asks FirmwareVolume2 for the
-// decompressed bytes, then registers them as a ramdisk for FatDxe to mount.
-// ---------------------------------------------------------------------------
-FILE FREEFORM = 3f1a9c22-5b41-4a0e-9c77-2d618b4fe01a {
-  SECTION COMPRESS PI_STD {
-    SECTION RAW = Platform/Meizu/sdm660/payload/unixnu-esp.img
-  }
-}
-EOF
+          # A heredoc cannot be used here: its terminator must sit at column 0 for bash,
+          # which would also end the YAML block scalar and break the workflow file. Echo
+          # lines stay inside the scalar and keep the FDF text exact.
+          {
+            echo ""
+            echo "// ---------------------------------------------------------------------------"
+            echo "// UniXNU payload volume (added by build-meizu15-uefi-payload.yml)"
+            echo "//"
+            echo "// The FAT image from scripts/build-esp.sh travels inside the firmware volume as a"
+            echo "// FREEFORM file with a compressed RAW section: compressed because an FFS file"
+            echo "// header carries its size in 24 bits (16 MiB ceiling), FREEFORM because"
+            echo "// Meizu15PayloadDxe looks for exactly this GUID and asks FirmwareVolume2 for"
+            echo "// the decompressed bytes, then registers them as a ramdisk for FatDxe."
+            echo "// ---------------------------------------------------------------------------"
+            echo "FILE FREEFORM = 3f1a9c22-5b41-4a0e-9c77-2d618b4fe01a {"
+            echo "  SECTION COMPRESS PI_STD {"
+            echo "    SECTION RAW = Platform/Meizu/sdm660/payload/unixnu-esp.img"
+            echo "  }"
+            echo "}"
+          } >> edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc
           tail -12 edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc
 
       - name: Patch SimpleInit free(NULL)
