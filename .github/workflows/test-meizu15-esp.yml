@@ -1,0 +1,86 @@
+name: test-meizu15-esp
+
+# Prove scripts/build-esp.sh produces the volume UniXNU actually reads, without
+# waiting for the kernel: feed it a fake Mach-O and check the FAT tree, the
+# configuration, and that a non-Mach-O input is rejected.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'scripts/build-esp.sh'
+      - '.github/workflows/test-meizu15-esp.yml'
+
+jobs:
+  esp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+
+      - name: Install mtools
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mtools
+
+      - name: Fake inputs (a real Mach-O header + the ADT we already generated)
+        run: |
+          set -eux
+          cd device
+          # 2 MB of zeros with a 64-bit LE Mach-O magic at offset 0 is enough for
+          # the header check; nothing here is ever executed.
+          head -c 2097152 /dev/zero > /tmp/kernel.macho
+          printf '\xcf\xfa\xed\xfe' | dd of=/tmp/kernel.macho bs=1 seek=0 conv=notrunc status=none
+          od -An -tx1 -N4 /tmp/kernel.macho
+          # The real ADT if it is in the tree, else a small stand-in.
+          if [ -f out/meizu15-8plus.adt ]; then
+            cp out/meizu15-8plus.adt /tmp/kernel.macho.adt
+          else
+            printf 'ADTFAKE!' > /tmp/kernel.macho.adt
+          fi
+
+      - name: Build the volume
+        run: |
+          set -eux
+          cd device
+          bash scripts/build-esp.sh /tmp/kernel.macho /tmp/kernel.macho.adt /tmp/unixnu-esp.img 96
+          echo "=== raw directory listing ==="
+          mdir -i /tmp/unixnu-esp.img -/ :: 
+          echo "=== the config as the boot menu will read it ==="
+          mtype -i /tmp/unixnu-esp.img ::/EFI/UniXNU/unixnu.toml
+
+      - name: The volume must survive a re-read
+        run: |
+          set -eux
+          mcopy -i /tmp/unixnu-esp.img ::/EFI/UniXNU/Payloads/kernel.macho /tmp/roundtrip.macho
+          cmp /tmp/kernel.macho /tmp/roundtrip.macho
+          echo "round-trip identical"
+          mcopy -i /tmp/unixnu-esp.img ::/EFI/UniXNU/Payloads/kernel.macho.adt /tmp/roundtrip.adt
+          cmp /tmp/kernel.macho.adt /tmp/roundtrip.adt
+          echo "ADT round-trip identical"
+
+      - name: A non-Mach-O kernel must be refused
+        run: |
+          set +e
+          cd device
+          printf 'not a kernel at all' > /tmp/bogus.bin
+          bash scripts/build-esp.sh /tmp/bogus.bin /tmp/kernel.macho.adt /tmp/bogus.img 16
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::build-esp.sh accepted a non-Mach-O kernel"
+            exit 1
+          fi
+          echo "correctly refused (exit $rc)"
+
+      - name: Upload the test volume
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meizu15-esp-test
+          path: /tmp/unixnu-esp.img
+          if-no-files-found: warn
