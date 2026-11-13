@@ -237,11 +237,11 @@ jobs:
       - name: Patch SimpleInit free(NULL)
         run: python3 meizu15/scripts/ci/patch_simpleinit_free.py edk2-msm
 
-      - name: First pass, to produce UniXNU.efi
+      - name: First pass, to produce the launcher
         run: |
           set -eux
           cd edk2-msm
-          # Two passes are unavoidable: UniXNU.efi has to exist before it can be put
+          # Two passes are unavoidable: the launcher .efi has to exist before it can be put
           # on the payload volume, and the volume has to exist before it can be
           # embedded in the firmware. The first pass packs a throwaway volume so the
           # FDF reference resolves; the second pass packs the real one.
@@ -249,11 +249,11 @@ jobs:
           printf 'placeholder' > Platform/Meizu/sdm660/payload/unixnu-esp.img
           chmod +x build.sh
           ./build.sh -d meizu15 -r DEBUG 2>&1 | tail -120
-          EFI=$(find Build -name 'UniXNU.efi' | head -1)
-          echo "UniXNU.efi from the first pass: ${EFI:-NONE}"
-          [ -n "$EFI" ] || { echo "::error::no UniXNU.efi was produced"; exit 1; }
-          cp "$EFI" /tmp/UniXNU.efi
-          ls -l /tmp/UniXNU.efi
+          EFI=$(find Build -name 'Meizu15Launcher.efi' | head -1)
+          echo "launcher from the first pass: ${EFI:-NONE}"
+          [ -n "$EFI" ] || { echo "::error::no Meizu15Launcher.efi was produced"; exit 1; }
+          cp "$EFI" /tmp/Meizu15Launcher.efi
+          ls -l /tmp/Meizu15Launcher.efi
         continue-on-error: false
 
       - name: Pack the real payload volume with BOOTAA64.EFI
@@ -265,7 +265,7 @@ jobs:
                edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 48
           IMG=edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img
           mmd -i "$IMG" ::/EFI ::/EFI/BOOT
-          mcopy -i "$IMG" -o /tmp/UniXNU.efi ::/EFI/BOOT/BOOTAA64.EFI
+          mcopy -i "$IMG" -o /tmp/Meizu15Launcher.efi ::/EFI/BOOT/BOOTAA64.EFI
           mdir -i "$IMG" ::/EFI/BOOT
           mdir -i "$IMG" ::/EFI/UniXNU
 

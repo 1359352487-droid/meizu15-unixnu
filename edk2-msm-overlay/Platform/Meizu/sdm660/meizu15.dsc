@@ -52,15 +52,11 @@
 # gUniXNULoaderProtocolGuid (0f0a492e-5a6a-49f6-a1bf-743c87ab1cfe). UniXNU.efi on
 # the payload volume calls it to hand kernel.macho + the ADT to the kernel.
 # Keeping it in the firmware means the ESP only has to carry data, not code.
-[LibraryClasses]
-  UniXNULib|UniXNUPkg/Library/UniXNULib/UniXNULib.inf
-
 [Components]
   DarwinBootPkg/Driver/DarwinBoot.inf
-  # The menu application: reads unixnu.toml on the payload volume and calls the
-  # loader protocol. Built by the same build.sh run; CI copies the .efi out of
-  # Build/ into the payload volume as /EFI/BOOT/BOOTAA64.EFI.
-  UniXNUPkg/Application/UniXNU/UniXNU.inf
+  # The launcher: finds the payload volume and calls the loader protocol. CI copies
+  # its .efi onto the payload volume as /EFI/BOOT/BOOTAA64.EFI.
+  Platform/Meizu/sdm660/Meizu15Launcher/Meizu15Launcher.inf
   # EnhancedFatDxe's Depex requires gEfiUnicodeCollation2ProtocolGuid. In this edk2
   # revision the provider is EnglishDxe (the path is Disk/, not Console/).
   MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf

@@ -1,0 +1,44 @@
+## @file
+#  Minimal UniXNU launcher: finds the payload volume, reads the ADT beside the
+#  kernel, and calls the loader protocol that DarwinBoot installs.
+#
+#  Replaces UniXNUPkg/Application/UniXNU on this platform, because that menu
+#  application needs UniXNULib, which needs MdePkg's FdtLib and gFdtTableGuid --
+#  absent from the edk2 revision edk2-msm pins.
+#
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = Meizu15Launcher
+  FILE_GUID                      = 4c7d2a91-6e35-4f8b-9d02-71ab5c3e0f68
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = Meizu15LauncherEntry
+
+[Sources]
+  Meizu15Launcher.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  UniXNUPkg/UniXNUPkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  PrintLib
+  DevicePathLib
+
+[Protocols]
+  gEfiSimpleFileSystemProtocolGuid  ## CONSUMES
+  gEfiLoadedImageProtocolGuid       ## CONSUMES
+  gUniXNULoaderProtocolGuid         ## CONSUMES
+
+[Guids]
+  gEfiFileInfoGuid                  ## CONSUMES
+
+[Depex]
+  TRUE
