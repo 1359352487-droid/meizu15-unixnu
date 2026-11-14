@@ -30,6 +30,7 @@
   DebugLib
   MemoryAllocationLib
   BaseMemoryLib
+  PrintLib
   DevicePathLib
 
 [Protocols]
