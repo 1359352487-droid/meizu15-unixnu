@@ -161,11 +161,14 @@ ReadPayloadFromVolume (
     }
 
     //
-    // Asking for EFI_SECTION_RAW makes FirmwareVolume2 descend through the
-    // enclosing compression section and hand back the decompressed bytes.
+    // First try the plain RAW lookup. This succeeds when the FFS file holds a
+    // bare EFI_SECTION_RAW, and it also succeeds for an enclosing compression
+    // section when the platform's decompression libraries are mapped into the
+    // DXE core (FvReadFileSection calls FfsProcessSection, which needs
+    // UefiDecompressLib/LzmaCustomDecompressLib available at build time).
     //
-    *Buffer            = NULL;
-    *Size              = 0;
+    *Buffer              = NULL;
+    *Size                = 0;
     AuthenticationStatus = 0;
     ReadStatus = Fv->ReadSection (
                        Fv,
@@ -177,11 +180,26 @@ ReadPayloadFromVolume (
                        &AuthenticationStatus
                        );
     if (!EFI_ERROR (ReadStatus) && (*Buffer != NULL) && (*Size >= PAYLOAD_BLOCK_SIZE)) {
-      DEBUG ((DEBUG_INFO, "Meizu15Payload: %u bytes in FV\n", (UINT32)*Size));
+      DEBUG ((DEBUG_INFO, "Meizu15Payload: %u bytes via EFI_SECTION_RAW\n", (UINT32)*Size));
       return EFI_SUCCESS;
     }
 
-    DEBUG ((DEBUG_ERROR, "Meizu15Payload: file present but unreadable: %r\n", ReadStatus));
+    //
+    // No fallback here on purpose. The payload FFS file holds exactly one
+    // section, and every wrapping form EDK2 can emit -- bare RAW, LZMA through
+    // GUID_DEFINED with gLzmaCustomDecompressGuid, or Tiano through COMPRESS
+    // with EFI_STANDARD_COMPRESSION -- is unwound by FirmwareVolume2 itself:
+    // FvReadFileSection opens a section stream, and FfsProcessSection walks the
+    // encapsulation using GuidedSectionExtraction (registered by
+    // LzmaCustomDecompressLib's constructor, which QcomCommonDsc.inc links into
+    // DxeMain) or gEfiDecompressProtocol. Asking for EFI_SECTION_RAW is
+    // therefore already the fully-decoded answer.
+    //
+    DEBUG ((
+      DEBUG_ERROR,
+      "Meizu15Payload: the payload file is present but its section cannot be read: %r\n",
+      ReadStatus
+      ));
     return EFI_NOT_FOUND;
   }
 }
