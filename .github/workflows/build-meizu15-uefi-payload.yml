@@ -444,16 +444,19 @@ jobs:
           # has GPT partitions ahead of our registered ramdisk, so the payload
           # volume's index is not fixed. Let the script find the volume that
           # actually holds the launcher, then run it.
+          # Plain `echo`, not `echo -r`: the UEFI Shell's echo has no -r flag and
+          # answers "Unknown flag - "-r"" for every line, doubling the output with
+          # noise on a panel that is already crowded.
           {
-            printf 'echo -r Meizu15: SimpleInit fell through to the Shell.\r\n'
-            printf 'echo -r Meizu15: searching for the payload volume...\r\n'
+            printf 'echo Meizu15: SimpleInit fell through to the Shell.\r\n'
+            printf 'echo Meizu15: searching for the payload volume...\r\n'
             printf 'for %%i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15\r\n'
             printf '  if exist fs%%i:\\bootaa64.efi then\r\n'
-            printf '    echo -r Meizu15: launcher found on fs%%i:, starting it.\r\n'
+            printf '    echo Meizu15: launcher found on fs%%i:, starting it.\r\n'
             printf '    fs%%i:\\bootaa64.efi\r\n'
             printf '  endif\r\n'
             printf 'endfor\r\n'
-            printf 'echo -r Meizu15: no launcher found on any fsN:.\r\n'
+            printf 'echo Meizu15: no launcher found on any fsN:.\r\n'
           } > /tmp/startup.nsh
           mcopy -i "$IMG" -o /tmp/startup.nsh ::/startup.nsh
           mdir -i "$IMG" ::/EFI/BOOT
