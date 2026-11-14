@@ -139,11 +139,27 @@ PayloadReadBlocks (
 
   P = BASE_CR (This, PAYLOAD_BLOCK_IO, BlockIo);
 
+  //
+  // Log every access attempt with its caller's parameters. Nothing mounts this
+  // volume even though Media is correct (id 0x4d5a3135, LastBlock 31743, 512 B
+  // blocks), and FatDiskIo never lists it. Either no consumer ever reads it, or
+  // one reads and is refused; this tells those apart.
+  //
+  DEBUG ((
+    DEBUG_ERROR,
+    "MZ15>> ReadBlocks lba %u size %u mediaid 0x%08x\r\n",
+    (UINT32)Lba,
+    (UINT32)BufferSize,
+    MediaId
+    ));
+
   if (MediaId != P->Media.MediaId) {
+    DEBUG ((DEBUG_ERROR, "MZ15>> ReadBlocks: media id mismatch, refusing\r\n"));
     return EFI_MEDIA_CHANGED;
   }
 
   if ((BufferSize % PAYLOAD_BLOCK_SIZE) != 0) {
+    DEBUG ((DEBUG_ERROR, "MZ15>> ReadBlocks: bad buffer size\r\n"));
     return EFI_BAD_BUFFER_SIZE;
   }
 
@@ -479,6 +495,38 @@ Publish:
     // correctly and the FF line belongs to something else.
     //
     DEBUG ((DEBUG_ERROR, "MZ15>> media id literal: MZ15 (0x4D5A3135)\r\n"));
+
+    //
+    // Wake the disk stack up.
+    //
+    // Fat.inf declares gEfiBlockIoProtocolGuid as TO_START, so FatDxe scans for
+    // block devices once, during its own dispatch, and never again. This driver
+    // is dispatched after that scan (Media comes out correct here, yet not one
+    // of PartitionDxe's "BlockSize : 512 / LastBlock : ..." lines ever mentions
+    // 0x7BFF), so without an explicit connect nothing downstream will ever look
+    // at this handle.
+    //
+    // ConnectController runs the DriverBindingSupported/Start chain for every
+    // driver whose protocols now match, which is how a device that appears after
+    // the initial scan is supposed to be picked up.
+    //
+    //
+    // Three passes, ignoring the return value: ConnectController reports the
+    // status of the last DriverBinding it ran, and a driver that declines the
+    // handle is normal. What matters is whether a later pass produced readers,
+    // which shows up as ReadBlocks calls below.
+    //
+    for (UINTN Pass = 0; Pass < 3; Pass++) {
+      EFI_STATUS  ConnectStatus;
+
+      ConnectStatus = gBS->ConnectController (Handle, NULL, NULL, TRUE);
+      DEBUG ((
+        DEBUG_ERROR,
+        "MZ15>> ConnectController pass %u: %r\r\n",
+        (UINT32)(Pass + 1),
+        ConnectStatus
+        ));
+    }
   }
 
   //
