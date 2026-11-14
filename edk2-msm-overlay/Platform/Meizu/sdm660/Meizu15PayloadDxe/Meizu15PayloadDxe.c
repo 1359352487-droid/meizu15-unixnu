@@ -430,7 +430,22 @@ Publish:
   mPayload->Media.MediaId          = 0x4D5A3135;   // "MZ15"
   mPayload->Media.RemovableMedia   = FALSE;
   mPayload->Media.MediaPresent     = TRUE;
-  mPayload->Media.LogicalPartition = FALSE;
+  //
+  // TRUE, so PartitionDxe leaves this alone.
+  //
+  // LogicalPartition = FALSE tells PartitionDxe the device is a whole disk, and
+  // it therefore reads offset 0 looking for an MBR. A FAT volume has a boot
+  // record there, not a partition table, so the 446-byte bootstrap area gets
+  // decoded as four partition entries. The panel showed the result:
+  //
+  //   BlockSize : 512
+  //   LastBlock : 7BFF
+  //   PartitionValidMbr: Bad MBR partition size EndingLBA(7FFF) > LastLBA(7BFF)
+  //
+  // A bogus child device was created from that, and SimpleInit then walked it.
+  // The volume is already a filesystem, not a partitioned disk, so say so.
+  //
+  mPayload->Media.LogicalPartition = TRUE;
   mPayload->Media.ReadOnly         = TRUE;
   mPayload->Media.WriteCaching     = FALSE;
   mPayload->Media.BlockSize        = PAYLOAD_BLOCK_SIZE;
