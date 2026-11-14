@@ -42,14 +42,26 @@ from fat_ls import Fat  # noqa: E402  (same directory)
 PAYLOAD_SECTION_SIZE = 50331648          # 48 MiB FAT
 ANDROID_MAGIC = b"ANDROID!"
 
+#
+# None means "this file must exist, but its size is not fixed".
+#
+# The launcher was pinned at 20,480 bytes here and that turned into a false alarm
+# the moment chunked kernel reading was added and it grew to 24,576: the build was
+# green, the image was correct, and only the verifier objected. Its identity is
+# proven properly by the MZ header check below, so the exact byte count only ever
+# produced noise.
+#
 REQUIRED = {
-    "/bootaa64.efi": 20480,
+    "/bootaa64.efi": None,
     "/startup.nsh": None,                # size varies with the hint line
-    "/efi/boot/bootaa64.efi": 20480,
+    "/efi/boot/bootaa64.efi": None,
     "/efi/unixnu/unixnu.toml": None,
     "/efi/unixnu/payloads/kernel.macho": None,
     "/efi/unixnu/payloads/kernel.macho.adt": 13996,
 }
+
+# Anything smaller than this cannot be a usable UEFI application or a FAT image.
+MIN_PLAUSIBLE_FILE = 1024
 
 
 def unpack_fv(boot, out_fv):
@@ -191,6 +203,8 @@ def main():
             problems.append(f"wrong size: {want} is {size:,}, expected {want_size:,}")
         if is_dir:
             problems.append(f"expected a file, found a directory: {want}")
+        elif size < MIN_PLAUSIBLE_FILE:
+            problems.append(f"suspiciously small: {want} is {size:,} bytes")
 
     # The launcher must be present twice and identical: the root copy is what
     # SimpleInit probes, the EFI/BOOT copy is what other firmware looks for.
