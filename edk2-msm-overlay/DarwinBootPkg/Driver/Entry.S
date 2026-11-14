@@ -56,6 +56,42 @@ ASM_FUNC(DarwinEnter)
   mov x14, x4        // framebuffer PA, 0 when there is none
   mov x13, x5        // framebuffer size in bytes
 
+  // Record what it would take to resume the C caller, so the return stub can
+  // hand control back after a fault instead of only painting a band.
+  //
+  // XNU's loader-return channel gives the stub a log pointer and length and
+  // nothing else; there is no way to print from there, since the 5x12 renderer
+  // lives in C and needs the boot-services framebuffer lookup to find the
+  // display. Saving the caller's stack pointer and return address plus the
+  // translation registers means the stub can restore them and simply return,
+  // and DiagDrawRaw() does the drawing in C where the font already exists.
+  adr x9, DarwinSavedContext
+  mov x10, sp
+  stp x10, x30, [x9]          // SP, return address
+  mrs x10, sctlr_el1
+  mrs x11, ttbr0_el1
+  mrs x12, ttbr1_el1
+  mrs x13, tcr_el1
+  mrs x14, mair_el1
+  stp x10, x11, [x9, #16]
+  stp x12, x13, [x9, #32]
+  str x14, [x9, #48]
+  // The callee-saved set: this routine never returns, so nothing else would
+  // preserve them, and the C caller reads them the moment the stub resumes it.
+  stp x19, x20, [x9, #56]
+  stp x21, x22, [x9, #72]
+  stp x23, x24, [x9, #88]
+  stp x25, x26, [x9, #104]
+  stp x27, x28, [x9, #120]
+  str x29, [x9, #136]
+  dc civac, x9
+  dsb sy
+
+  // Restore the registers this routine needs from the arguments again: x13 and
+  // x14 were borrowed above.
+  mov x14, x4        // framebuffer PA
+  mov x13, x5        // framebuffer size
+
   // Paint the top 1/16 of the framebuffer green (BGRA 0xFF00FF00).
   cbz x4, 2f
   lsr x9, x5, #4
@@ -255,6 +291,51 @@ DarwinKernelReturnStubStart:
   b.hi 3b
   dsb sy
 
+  // Record the log the kernel handed over, then resume the C caller.
+  //
+  // reason 1 and 2 both mean the checkpoint timer fired; 0 means the kernel
+  // reached an orderly end. Magenta stays for anything else, including the
+  // early-exception path, which arrives with no registers set at all.
+  adr x9, DarwinKernelReturnStubParameters
+  ldr x9, [x9, #8]            // DarwinSavedContext PA
+  cbz x9, 2f
+
+  str x0, [x9, #144]          // log physical address
+  str x1, [x9, #152]          // log length
+  mov x16, #1
+  str x16, [x9, #160]         // the kernel returned
+  dc civac, x9
+  dsb sy
+
+  // Put the translation regime back before touching the C stack: the caller's
+  // frame lives at a virtual address that only resolves with its own tables.
+  ldp x10, x11, [x9, #16]     // SCTLR_EL1, TTBR0_EL1
+  ldp x12, x13, [x9, #32]     // TTBR1_EL1, TCR_EL1
+  ldr x14, [x9, #48]          // MAIR_EL1
+  msr ttbr0_el1, x11
+  msr ttbr1_el1, x12
+  msr tcr_el1, x13
+  msr mair_el1, x14
+  msr sctlr_el1, x10
+  isb
+  tlbi vmalle1
+  dsb sy
+  isb
+
+  // Restore the callee-saved set last, and nothing may write to them after
+  // this point. x9 stays usable: it is caller-saved.
+  ldp x19, x20, [x9, #56]
+  ldp x21, x22, [x9, #72]
+  ldp x23, x24, [x9, #88]
+  ldp x25, x26, [x9, #104]
+  ldp x27, x28, [x9, #120]
+  ldr x29, [x9, #136]
+
+  ldr x10, [x9, #0]           // SP
+  ldr x30, [x9, #8]           // return address into DarwinBoot
+  mov sp, x10
+  ret
+
 2:
   b 2b
 
@@ -262,7 +343,50 @@ DarwinKernelReturnStubStart:
   .globl DarwinKernelReturnStubParameters
 DarwinKernelReturnStubParameters:
   .quad 0                     // framebuffer PA, written after the copy
+  .quad 0                     // DarwinSavedContext PA, written after the copy
 DarwinKernelReturnStubEnd:
+
+// What it takes to resume the C caller after the kernel hands control back.
+//
+// The last three words are written by the stub itself, which is why this lives
+// in .data: .text is mapped read-only while translation is on, and the first
+// seven words are stored by DarwinEnter before the MMU goes off.
+//
+//   +0    SP                +56   x19, x20
+//   +8    return address    +72   x21, x22
+//   +16   SCTLR_EL1         +88   x23, x24
+//   +24   TTBR0_EL1         +104  x25, x26
+//   +32   TTBR1_EL1         +120  x27, x28
+//   +40   TCR_EL1           +136  x29
+//   +48   MAIR_EL1          +144  log physical address   (stub)
+//                           +152  log length             (stub)
+//                           +160  1 = the kernel returned (stub)
+  .section .data
+  .balign 8
+  .globl DarwinSavedContext
+DarwinSavedContext:
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .text
 
 // Exception vectors, installed with VBAR_EL1 by DarwinEnter just before the MMU
 // is switched off.
