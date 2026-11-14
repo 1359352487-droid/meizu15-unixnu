@@ -724,3 +724,63 @@ CI 也加了同样的检查：debug job 的
 对成品 boot.img 跑同一个脚本，输出存成 `payload-image.txt`。
 这与之前的 `Assert the payload volume layout`（检查打包中途的卷）互补：
 后者防打包出错，前者证明交付的字节没错。
+
+### 2026-11-14 11:05 推送成功、CI 全绿、tiny 镜像实测
+
+有 token 之后这条链终于闭环了：commit -> push（走 127.0.0.1:7897）-> Actions ->
+artifact -> 本地 verify -> fastboot boot。三次提交最后一次把 CI 也修绿了：
+
+| run | sha | 结果 | 说明 |
+|---|---|---|---|
+| #28 | e4e275b | failure | 新增的 `Verify the finished image` 步骤自己挂了：`chmod /tmp/ue/UEFIExtract` 找不到文件 |
+| #29 | 2848fbd | failure | 改成 find 之后仍然找不到：linux 包里的二进制是**小写** `uefiextract` |
+| #30 | 2848fbd | failure | 同上（这次改动还没生效前先跑完的） |
+| #31 | 97bf1d4 | **success** | `firmware`、`debug (full)`、`debug (tiny)` 三个 job 全绿，verify 步骤通过 |
+
+#31 的 artifact：
+
+```
+meizu15-uefi-payload-debug-full  12,195,649 B   img 12,480,512 B
+meizu15-uefi-payload-debug-tiny   6,015,043 B   img  6,311,936 B
+meizu15-uefi-payload             24,241,649 B   （RELEASE 两个 img）
+```
+
+tiny 镜像的 payload 卷只有 8 MiB，CI 自己的 verify 输出（`payload-image.txt`）：
+
+```
+payload FAT: 8,388,608 bytes
+  FILE      20,480  /bootaa64.efi
+  FILE      20,480  /efi/boot/bootaa64.efi
+  FILE       8,192  /efi/unixnu/payloads/kernel.macho      ← 假内核
+  FILE      13,996  /efi/unixnu/payloads/kernel.macho.adt
+  FILE          98  /startup.nsh
+launcher: 20,480 bytes, MZ, sha256 1b4208185b15102e…
+```
+
+#### USB 链路是新的瓶颈
+
+同一根线、同一个口，`fastboot boot` 的实测速率：
+
+| 镜像 | 大小 | 结果 |
+|---|---|---|
+| full（58ae92b） | 12.5 MB | 成功过一次：114 s，110 KB/s |
+| full（43CACEBF） | 12.5 MB | 失败：`usb_read failed`，77 s 中断；重试 272 s 再次失败（45 KB/s） |
+| full（43CACEBF） | 12.5 MB | 失败：`usb_read failed`，271 s，45 KB/s |
+| tiny | 6.3 MB | 传输完成：246 s，25 KB/s |
+| tiny | 6.3 MB | 传输完成：412 s，15 KB/s |
+
+#### 一次值得注意的观察（但被我自己搞脏了）
+
+tiny 第一次传完之后：`t+3s` 设备退出 fastboot，之后 **120 秒既不在 fastboot 也不在 adb**。
+对比 58ae92b 那次是 `t+15s` 离开、`t+60s` 就回到 fastboot（复位）。
+"120 秒不回 fastboot"至少说明这一版**没有在 60 秒内复位**，这是 prober 补丁 + 留帧
+那批改动之后第一次看到的行为差异。
+
+但这个观察不可靠：我紧接着又发了一次 `fastboot boot`，而设备当时已经回到
+fastboot，于是两次刷机的状态叠在一起，时间线没法再分开。教训：**一次只做一件事，
+刷机期间不并发第二条 fastboot 命令。**
+
+#### 当前设备状态
+
+停在 bootloader 界面。这个 bootloader 不支持 `fastboot reboot`
+（`FAILED (remote: 'unknown command')`），只能长按电源 12 秒回 Flyme。
