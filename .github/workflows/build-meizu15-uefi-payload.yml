@@ -419,7 +419,23 @@ jobs:
           # one path that reaches the launcher without a keypress. The launcher
           # now holds its first frame for ten seconds, so the panel still shows
           # "Meizu15Launcher: looking for ..." long enough to be read.
-          printf 'echo -r Meizu15: SimpleInit fell through to the Shell; starting the launcher.\r\nfs0:\\bootaa64.efi\r\n' > /tmp/startup.nsh
+          # Do not assume the volume is fs0:.
+          #
+          # The Shell assigns fsN: in the order it mounts them, and this phone
+          # has GPT partitions ahead of our registered ramdisk, so the payload
+          # volume's index is not fixed. Let the script find the volume that
+          # actually holds the launcher, then run it.
+          {
+            printf 'echo -r Meizu15: SimpleInit fell through to the Shell.\r\n'
+            printf 'echo -r Meizu15: searching for the payload volume...\r\n'
+            printf 'for %%i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15\r\n'
+            printf '  if exist fs%%i:\\bootaa64.efi then\r\n'
+            printf '    echo -r Meizu15: launcher found on fs%%i:, starting it.\r\n'
+            printf '    fs%%i:\\bootaa64.efi\r\n'
+            printf '  endif\r\n'
+            printf 'endfor\r\n'
+            printf 'echo -r Meizu15: no launcher found on any fsN:.\r\n'
+          } > /tmp/startup.nsh
           mcopy -i "$IMG" -o /tmp/startup.nsh ::/startup.nsh
           mdir -i "$IMG" ::/EFI/BOOT
           mdir -i "$IMG" ::/ | tail -14
