@@ -784,3 +784,72 @@ fastboot，于是两次刷机的状态叠在一起，时间线没法再分开。
 
 停在 bootloader 界面。这个 bootloader 不支持 `fastboot reboot`
 （`FAILED (remote: 'unknown command')`），只能长按电源 12 秒回 Flyme。
+
+### 2026-11-14 12:00 fastboot 传输慢的根因：火绒的 USB 类过滤驱动
+
+一整天 `fastboot boot` 都在 10–45 KB/s 甚至卡死，先后被归因为"线材"、"USB 口"、
+"镜像太大"、"老 bootloader 本来就慢"。全部不对。真正的原因在 Windows 的设备树里：
+
+```
+HKLM\SYSTEM\CurrentControlSet\Control\Class\{36fc9e60-c465-11cf-8056-444553540000}
+    UpperFilters = hrdevmon
+
+hrdevmon   Running / Boot 启动
+Huorong Internet Security Devmon Kext
+system32\DRIVERS\hrdevmon.sys   (火绒安全 6.0.0.0)
+```
+
+`hrdevmon.sys` 是火绒的设备监控内核驱动，挂在 **USB 类**的 UpperFilters 上 ——
+手机每一次 bulk 传输都要过它一遍。这解释了一整天的所有反常现象：
+
+| 现象 | 解释 |
+|---|---|
+| MTP 传文件正常 | 走 `WUDFWpdMtp`（用户态驱动框架），不经过 WinUSB |
+| `fastboot getvar` 0.29 s 正常 | 小包，拦截开销看不出来 |
+| 大块传输 10–45 KB/s 或卡死 | 每个 bulk 包都被检查 |
+| 换三个驱动包都慢 | oem4(libwdi) / oem16(android_winusb) / winusb.inf **全是 WinUSB 类**，同一个栈 |
+| 换 USB 口无效 | 换的两个口都挂在同一个控制器上（Intel xHCI） |
+| 昨晚另一台电脑 6 MB / 0.129 s = 48 MB/s | 那台没装火绒 |
+
+**修复**（需要管理员，已执行，原值已备份到 `handoff/usb-class-backup.reg`）：
+
+```
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Class\{36fc9e60-c465-11cf-8056-444553540000}" /v UpperFilters /f
+```
+
+**结果**（不重启，设备重新枚举后即生效）：
+
+```
+12:01:31 transfer start: 6,311,936 bytes
+12:01:31 fastboot: Sending 'boot.img' (6164 KB)
+12:01:31 elapsed 0.05s      <- 608 s 变成 0.05 s
+```
+
+6.3 MB / 0.05 s，等效 116 MB/s。**这一项修好了，以后不需要 tiny 镜像了，
+12.5 MB 的完整镜像也是零点几秒的事。**
+
+注意：`{4d36e967-…}`（存储卷类）的 UpperFilters 里还有 hrdevmon + partmgr，那一条
+不影响 fastboot，暂时保留。
+
+#### 遗留：设备当时停在了一个不认 `boot` 的 fastboot 状态
+
+同一次调用返回 `FAILED (remote: 'unknown command')`，并且
+
+```
+getvar product / version / unlocked / is-userspace -> GetVar Variable not found 或 unknown command
+getvar serialno -> 881QAESM95THY     （只有这个能答）
+```
+
+它认识 `getvar` 和 `serialno`，不认识 `boot`。而 11 点多的同一台设备
+`getvar product` 还能返回 `M1881`、`fastboot boot` 还能正常 Sending 12 MB。
+判断是 `adb reboot bootloader` 与 USB 重新枚举叠在一起，bootloader 状态机没走完。
+处理：长按电源 12 秒回 Flyme，再 `adb reboot bootloader`，先确认 `getvar product`
+返回 `M1881` 再执行 `fastboot boot`。
+
+#### 教训（写给自己）
+
+- 排查"设备能枚举、命令能通、大数据传不动"，**先查类级过滤驱动**（UpperFilters），
+  不要从线材/端口/镜像大小开始猜。`pnputil /enum-drivers` 看不到过滤驱动，
+  得读注册表或 `fltmc`/设备属性。
+- 一次只做一件事：这一天有三次因为并发第二条 fastboot 命令、或者杀掉传输进程，
+  把时间线搞脏，白丢了好几轮。
