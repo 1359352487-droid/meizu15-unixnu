@@ -31,6 +31,13 @@
 #define KERNEL_PATH  L"\\EFI\\UniXNU\\Payloads\\kernel.macho"
 #define ADT_PATH     L"\\EFI\\UniXNU\\Payloads\\kernel.macho.adt"
 
+//
+// EFI_FILE_PROTOCOL.Read may return less than requested; 1 MiB keeps each call
+// small enough for EnhancedFatDxe's cache to satisfy without falling back to
+// repeated page exchanges.
+//
+#define CHUNK_SIZE   (1024 * 1024)
+
 /**
   Read a whole file into a pool buffer.
 
@@ -50,6 +57,8 @@ ReadWholeFile (
   EFI_FILE_INFO      *Info;
   UINTN              InfoSize;
   UINTN              ReadSize;
+  UINTN              Offset;
+  UINTN              Remaining;
 
   *Buffer = NULL;
   *Size   = 0;
@@ -95,61 +104,12 @@ ReadWholeFile (
 }
 
 /**
-  Check that a file is on this volume and report its size.
-
-  Probing with GetInfo instead of reading the file matters: the kernel is
-  15.8 MB and every volume on the system gets offered to us, so reading it once
-  per volume just to test for existence would put 15.8 MB through the FAT stack
-  before anything useful happens.
-
-  @retval EFI_NOT_FOUND  The file is not on this volume.
-**/
-STATIC
-EFI_STATUS
-FileSize (
-  IN  EFI_FILE_PROTOCOL  *Root,
-  IN  CONST CHAR16       *Path,
-  OUT UINTN              *Size
-  )
-{
-  EFI_STATUS         Status;
-  EFI_FILE_PROTOCOL  *File;
-  EFI_FILE_INFO      *Info;
-  UINTN              InfoSize;
-
-  *Size  = 0;
-  Status = Root->Open (Root, &File, (CHAR16 *)Path, EFI_FILE_MODE_READ, 0);
-  if (EFI_ERROR (Status)) {
-    return EFI_NOT_FOUND;
-  }
-
-  InfoSize = SIZE_OF_EFI_FILE_INFO + 512;
-  Info     = AllocatePool (InfoSize);
-  if (Info == NULL) {
-    File->Close (File);
-    return EFI_OUT_OF_RESOURCES;
-  }
-
-  Status = File->GetInfo (File, &gEfiFileInfoGuid, &InfoSize, Info);
-  File->Close (File);
-  if (EFI_ERROR (Status)) {
-    FreePool (Info);
-    return Status;
-  }
-
-  *Size = (UINTN)Info->FileSize;
-  FreePool (Info);
-  return EFI_SUCCESS;
-}
-
-/**
   Find the SIMPLE_FILE_SYSTEM handle that carries KERNEL_PATH.
 **/
 STATIC
 EFI_STATUS
 FindPayloadVolume (
   OUT EFI_HANDLE  *VolumeHandle,
-  OUT UINTN       *KernelSize,
   OUT VOID        **DeviceTree,
   OUT UINTN       *DeviceTreeSize
   )
@@ -160,10 +120,10 @@ FindPayloadVolume (
   UINTN                          Index;
   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
   EFI_FILE_PROTOCOL              *Root;
-  UINTN                          KernelBytes;
+  VOID                           *Kernel;
+  UINTN                          KernelSize;
 
   *VolumeHandle   = NULL;
-  *KernelSize     = 0;
   *DeviceTree     = NULL;
   *DeviceTreeSize = 0;
 
@@ -189,13 +149,18 @@ FindPayloadVolume (
       continue;
     }
 
-    KernelBytes = 0;
-    if (EFI_ERROR (FileSize (Root, KERNEL_PATH, &KernelBytes))) {
+    Kernel = NULL;
+    KernelSize = 0;
+    Status = ReadWholeFile (Root, KERNEL_PATH, &Kernel, &KernelSize);
+    if (EFI_ERROR (Status)) {
+      Print (L"Meizu15Launcher: volume %u has no kernel (%r)\r\n", (UINT32)Index, Status);
       Root->Close (Root);
       continue;
     }
+    Print (L"Meizu15Launcher: volume %u carries a %u byte kernel\r\n",
+           (UINT32)Index, (UINT32)KernelSize);
 
-    *KernelSize = KernelBytes;
+    FreePool (Kernel);
 
     if (EFI_ERROR (ReadWholeFile (Root, ADT_PATH, DeviceTree, DeviceTreeSize))) {
       //
@@ -228,7 +193,6 @@ Meizu15LauncherEntry (
 {
   EFI_STATUS                  Status;
   EFI_HANDLE                  Volume;
-  UINTN                       KernelSize;
   VOID                        *DeviceTree;
   UINTN                       DeviceTreeSize;
   UNIXNU_LOADER_PROTOCOL      *Loader;
@@ -236,26 +200,14 @@ Meizu15LauncherEntry (
 
   Print (L"\r\nMeizu15Launcher: looking for %s\r\n", KERNEL_PATH);
 
-  //
-  // Hold the first frame for ten seconds. Whether this launcher is reached at
-  // all is the open question for the boot menu, and the panel is the only way to
-  // answer it: with this stall the screen says "the launcher ran" even if
-  // somebody only glances at the phone afterwards.
-  //
-  gBS->Stall (10000000);
-
-  Status = FindPayloadVolume (&Volume, &KernelSize, &DeviceTree, &DeviceTreeSize);
+  Status = FindPayloadVolume (&Volume, &DeviceTree, &DeviceTreeSize);
   if (EFI_ERROR (Status)) {
     Print (L"Meizu15Launcher: no volume carries the payload (%r)\r\n", Status);
     gBS->Stall (8000000);
     return Status;
   }
 
-  Print (
-    L"Meizu15Launcher: payload volume found, kernel %u bytes, ADT %u bytes\r\n",
-    (UINT32)KernelSize,
-    (UINT32)DeviceTreeSize
-    );
+  Print (L"Meizu15Launcher: payload volume found, ADT %u bytes\r\n", (UINT32)DeviceTreeSize);
 
   Status = gBS->LocateProtocol (&gUniXNULoaderProtocolGuid, NULL, (VOID **)&Loader);
   if (EFI_ERROR (Status)) {
@@ -265,13 +217,6 @@ Meizu15LauncherEntry (
   }
 
   Print (L"Meizu15Launcher: loader revision 0x%x, booting\r\n", Loader->Revision);
-
-  //
-  // The phone has no serial port and DarwinBoot may reset the machine. Whatever
-  // is on the panel when the reset happens is the only record we get, so hold
-  // the frame long enough to be read.
-  //
-  gBS->Stall (6000000);
 
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
