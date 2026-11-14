@@ -3,20 +3,35 @@
 
   Why this driver exists: UniXNU's own UniXNURamDiskDxe takes the initrd address
   from a Mu-Silicium entry-argument HOB and from /chosen/linux,initrd-start in the
-  device tree, and edk2-msm's BootShim (72 lines of assembly) does neither. It also
-  depends on MdeModulePkg's RamDiskLib, which the edk2 revision edk2-msm pins does
-  not have.
+  device tree, and edk2-msm's BootShim (72 lines of assembly) does neither. It
+  also depends on MdeModulePkg's RamDiskLib, which the edk2 revision edk2-msm
+  pins does not have.
 
   So this driver does the whole job itself: it finds the FAT image that is baked
-  into the firmware volume as a FREEFORM file with a compressed RAW section, keeps
-  the decompressed bytes in memory, and installs an EFI_BLOCK_IO_PROTOCOL (plus a
-  HardDrive device path) over them. EnhancedFatDxe then mounts it, and
-  SimpleInit/DarwinBoot find /EFI/UniXNU/ on it.
+  into the firmware volume as a FREEFORM file with a bare RAW section, keeps the
+  bytes in memory, and installs an EFI_BLOCK_IO_PROTOCOL (plus a HardDrive device
+  path) over them. EnhancedFatDxe then mounts it, and SimpleInit/DarwinBoot find
+  /EFI/UniXNU/ on it.
 
-  Consequences: the ESP travels inside boot.img (no ramdisk segment, no partition
-  table change, nothing written to the phone's storage), and its size is bounded by
-  the FFS file size limit (24-bit field, 16 MiB), which is why the section is
-  compressed.
+  The payload section is deliberately UNCOMPRESSED. Both compressed forms fail on
+  this platform, for different reasons, and both were measured on the phone:
+
+    SECTION COMPRESS  GenFds writes CompressionType = 1 (LZMA), but DxeCore's
+                      EFI_SECTION_COMPRESSION branch only decodes
+                      EFI_STANDARD_COMPRESSION, i.e. bit-Tiano, through
+                      gEfiDecompressProtocol.
+
+    SECTION GUIDED    Needs gLzmaCustomDecompressGuid registered with
+                      ExtractGuidedSectionLib. LzmaCustomDecompressLib registers
+                      from a constructor, and on this build it never reaches the
+                      link: DxeCore stays 286,768 bytes whether or not
+                      QcomCommonDsc.inc names it.
+
+  A bare RAW section is the one form FirmwareVolume2 returns verbatim.
+
+  Diagnostics matter more than usual here: the phone has no serial port, so every
+  verdict goes to ConOut and is followed by a Stall long enough to photograph.
+  Both the DEBUG() and Print() channels are used because neither is guaranteed.
 
   Copyright (c) 2026, the Meizu 15 UniXNU port.
   SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -28,6 +43,7 @@
 #include <Library/DebugLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/DevicePath.h>
@@ -52,6 +68,24 @@ typedef struct {
 } PAYLOAD_BLOCK_IO;
 
 STATIC PAYLOAD_BLOCK_IO  *mPayload = NULL;
+
+/**
+  Print a line to the console and let it sit there.
+
+  ConOut is the only channel that survives a kernel fault on this phone, so it is
+  used for every verdict rather than DEBUG() alone.
+**/
+STATIC
+VOID
+Say (
+  IN CONST CHAR16  *Text
+  )
+{
+  if (gST != NULL && gST->ConOut != NULL) {
+    gST->ConOut->OutputString (gST->ConOut, (CHAR16 *)Text);
+    gST->ConOut->OutputString (gST->ConOut, L"\r\n");
+  }
+}
 
 STATIC
 EFI_STATUS
@@ -131,6 +165,11 @@ PayloadFlushBlocks (
 
 /**
   Find the FREEFORM file carrying the payload volume in one firmware volume.
+
+  Reports how far the walk got, because "not in any FV" on the panel does not
+  distinguish "this volume does not have it" from "GetNextFile gave up partway".
+  The phone has no serial port, so the count and the failing status are the only
+  way to tell those apart after the fact.
 **/
 STATIC
 EFI_STATUS
@@ -148,27 +187,55 @@ ReadPayloadFromVolume (
   EFI_FV_FILE_ATTRIBUTES   Attributes;
   UINTN                    FileSize;
   UINT32                   AuthenticationStatus;
+  UINTN                    Seen;
+  CHAR16                   Line[128];
 
-  Key = 0;
+  *Buffer = NULL;
+  *Size   = 0;
+  Key     = 0;
+  Seen    = 0;
+
   while (TRUE) {
     Status = Fv->GetNextFile (Fv, &Key, &FileType, &NameGuid, &Attributes, &FileSize);
     if (EFI_ERROR (Status)) {
+      //
+      // EFI_NOT_FOUND here means the walk reached the end of this volume. Any
+      // other status means it desynchronised, which is what a mis-sized FFS
+      // header does.
+      //
+      if (Seen != 0) {
+        UnicodeSPrint (
+          Line,
+          sizeof (Line),
+          L"Meizu15Payload: FV walk ended after %u files, status %r",
+          (UINT32)Seen,
+          Status
+          );
+        Say (Line);
+      }
+
       return EFI_NOT_FOUND;
     }
+
+    Seen++;
 
     if ((FileType != EFI_FV_FILETYPE_FREEFORM) || !CompareGuid (&NameGuid, &mPayloadFileGuid)) {
       continue;
     }
 
+    UnicodeSPrint (
+      Line,
+      sizeof (Line),
+      L"Meizu15Payload: payload FFS found as file %u of this FV, %u bytes",
+      (UINT32)Seen,
+      (UINT32)FileSize
+      );
+    Say (Line);
+
     //
-    // First try the plain RAW lookup. This succeeds when the FFS file holds a
-    // bare EFI_SECTION_RAW, and it also succeeds for an enclosing compression
-    // section when the platform's decompression libraries are mapped into the
-    // DXE core (FvReadFileSection calls FfsProcessSection, which needs
-    // UefiDecompressLib/LzmaCustomDecompressLib available at build time).
+    // A bare EFI_SECTION_RAW is returned verbatim; that is the whole story now
+    // that the payload is stored uncompressed.
     //
-    *Buffer              = NULL;
-    *Size                = 0;
     AuthenticationStatus = 0;
     ReadStatus = Fv->ReadSection (
                        Fv,
@@ -179,28 +246,27 @@ ReadPayloadFromVolume (
                        Size,
                        &AuthenticationStatus
                        );
-    if (!EFI_ERROR (ReadStatus) && (*Buffer != NULL) && (*Size >= PAYLOAD_BLOCK_SIZE)) {
-      DEBUG ((DEBUG_INFO, "Meizu15Payload: %u bytes via EFI_SECTION_RAW\n", (UINT32)*Size));
-      return EFI_SUCCESS;
+    if (EFI_ERROR (ReadStatus) || (*Buffer == NULL) || (*Size < PAYLOAD_BLOCK_SIZE)) {
+      UnicodeSPrint (
+        Line,
+        sizeof (Line),
+        L"Meizu15Payload: ReadSection(RAW) failed: %r",
+        ReadStatus
+        );
+      Say (Line);
+      *Buffer = NULL;
+      *Size   = 0;
+      return EFI_NOT_FOUND;
     }
 
-    //
-    // No fallback here on purpose. The payload FFS file holds exactly one
-    // section, and every wrapping form EDK2 can emit -- bare RAW, LZMA through
-    // GUID_DEFINED with gLzmaCustomDecompressGuid, or Tiano through COMPRESS
-    // with EFI_STANDARD_COMPRESSION -- is unwound by FirmwareVolume2 itself:
-    // FvReadFileSection opens a section stream, and FfsProcessSection walks the
-    // encapsulation using GuidedSectionExtraction (registered by
-    // LzmaCustomDecompressLib's constructor, which QcomCommonDsc.inc links into
-    // DxeMain) or gEfiDecompressProtocol. Asking for EFI_SECTION_RAW is
-    // therefore already the fully-decoded answer.
-    //
-    DEBUG ((
-      DEBUG_ERROR,
-      "Meizu15Payload: the payload file is present but its section cannot be read: %r\n",
-      ReadStatus
-      ));
-    return EFI_NOT_FOUND;
+    UnicodeSPrint (
+      Line,
+      sizeof (Line),
+      L"Meizu15Payload: %u bytes via EFI_SECTION_RAW",
+      (UINT32)*Size
+      );
+    Say (Line);
+    return EFI_SUCCESS;
   }
 }
 
@@ -213,9 +279,9 @@ MakeDevicePath (
   IN UINTN  Size
   )
 {
-  HARDDRIVE_DEVICE_PATH  *Hd;
+  HARDDRIVE_DEVICE_PATH     *Hd;
   EFI_DEVICE_PATH_PROTOCOL  *End;
-  UINT8                  *Buffer;
+  UINT8                     *Buffer;
 
   Buffer = AllocateZeroPool (sizeof (HARDDRIVE_DEVICE_PATH) + sizeof (EFI_DEVICE_PATH_PROTOCOL));
   if (Buffer == NULL) {
@@ -229,14 +295,14 @@ MakeDevicePath (
   Hd->Header.Length[0] = (UINT8)(sizeof (HARDDRIVE_DEVICE_PATH) & 0xFF);
   Hd->Header.Length[1] = (UINT8)((sizeof (HARDDRIVE_DEVICE_PATH) >> 8) & 0xFF);
   Hd->PartitionNumber = 1;
-  Hd->SignatureType  = 0;   // SIGNATURE_TYPE_NONE
-  Hd->MBRType        = MBR_TYPE_EFI_PARTITION_TABLE_HEADER;
+  Hd->SignatureType   = 0;   // SIGNATURE_TYPE_NONE
+  Hd->MBRType         = MBR_TYPE_EFI_PARTITION_TABLE_HEADER;
   // 512-byte sectors, capped to 32 bits like every other HardDrive node.
   Hd->PartitionSize = (Size / PAYLOAD_BLOCK_SIZE) > 0xFFFFFFFFULL
                         ? 0xFFFFFFFFULL
                         : (Size / PAYLOAD_BLOCK_SIZE);
 
-  End = (EFI_DEVICE_PATH_PROTOCOL *)(Buffer + sizeof (HARDDRIVE_DEVICE_PATH));
+  End          = (EFI_DEVICE_PATH_PROTOCOL *)(Buffer + sizeof (HARDDRIVE_DEVICE_PATH));
   End->Type    = END_DEVICE_PATH_TYPE;
   End->SubType = END_ENTIRE_DEVICE_PATH_SUBTYPE;
   End->Length[0] = (UINT8)sizeof (EFI_DEVICE_PATH_PROTOCOL);
@@ -259,18 +325,16 @@ Meizu15PayloadDxeEntry (
   VOID                           *Payload;
   UINTN                          PayloadSize;
   EFI_HANDLE                     Handle;
+  CHAR16                         Line[128];
 
   Handles     = NULL;
   HandleCount = 0;
   Payload     = NULL;
   PayloadSize = 0;
 
-  //
-  // Say we are alive before anything else can fail. The grep for this line on a
-  // photograph of the phone is how this port is debugged: there is no serial port.
-  //
-  gST->ConOut->OutputString (gST->ConOut, L"\r\n\r\n=== Meizu15PayloadDxe ENTER ===\r\n");
-  gBS->Stall (5000000);
+  Say (L"");
+  Say (L"=== Meizu15PayloadDxe ENTER ===");
+  DEBUG ((DEBUG_INFO, "Meizu15Payload: entry\n"));
 
   Status = gBS->LocateHandleBuffer (
                   ByProtocol,
@@ -280,15 +344,21 @@ Meizu15PayloadDxeEntry (
                   &Handles
                   );
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "Meizu15Payload: no firmware volumes: %r\n", Status));
+    Say (L"Meizu15Payload: no firmware volumes at all");
     return Status;
   }
+
+  UnicodeSPrint (Line, sizeof (Line), L"Meizu15Payload: %u firmware volume handle(s)", (UINT32)HandleCount);
+  Say (Line);
 
   for (Index = 0; Index < HandleCount; Index++) {
     Status = gBS->HandleProtocol (Handles[Index], &gEfiFirmwareVolume2ProtocolGuid, (VOID **)&Fv);
     if (EFI_ERROR (Status)) {
       continue;
     }
+
+    UnicodeSPrint (Line, sizeof (Line), L"Meizu15Payload: scanning volume %u", (UINT32)(Index + 1));
+    Say (Line);
 
     if (!EFI_ERROR (ReadPayloadFromVolume (Fv, &Payload, &PayloadSize))) {
       break;
@@ -298,14 +368,14 @@ Meizu15PayloadDxeEntry (
   FreePool (Handles);
 
   if (Payload == NULL) {
-    DEBUG ((DEBUG_ERROR, "Meizu15Payload: the payload volume is not in any FV\n"));
-    gST->ConOut->OutputString (gST->ConOut, L"\r\nMeizu15Payload: NO PAYLOAD IN ANY FV\r\n");
-    gBS->Stall (5000000);
+    Say (L"Meizu15Payload: NO PAYLOAD IN ANY FV");
+    gBS->Stall (20000000);
     return EFI_NOT_FOUND;
   }
 
-  gST->ConOut->OutputString (gST->ConOut, L"\r\nMeizu15Payload: payload found, publishing\r\n");
-  gBS->Stall (15000000);
+  UnicodeSPrint (Line, sizeof (Line), L"Meizu15Payload: publishing %u byte volume", (UINT32)PayloadSize);
+  Say (Line);
+  gBS->Stall (5000000);
 
   mPayload = AllocateZeroPool (sizeof (PAYLOAD_BLOCK_IO));
   if (mPayload == NULL) {
@@ -344,23 +414,19 @@ Meizu15PayloadDxeEntry (
                   NULL
                   );
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "Meizu15Payload: cannot publish the block device: %r\n", Status));
+    UnicodeSPrint (Line, sizeof (Line), L"Meizu15Payload: install failed: %r", Status);
+    Say (Line);
   } else {
-    DEBUG ((
-      DEBUG_INFO,
-      "Meizu15Payload: %u bytes, %u blocks of %u, published\n",
-      (UINT32)PayloadSize,
-      (UINT32)(mPayload->Media.LastBlock + 1),
-      (UINT32)PAYLOAD_BLOCK_SIZE
-      ));
-    //
-    // Straight to the console as well: DebugLib's sink depends on the platform's
-    // PCDs, and the point of this driver is to be visible on a phone with no serial.
-    //
-    gST->ConOut->OutputString (gST->ConOut, L"\r\nMeizu15Payload: BLOCK DEVICE PUBLISHED, ");
-    gST->ConOut->OutputString (gST->ConOut, L"kernel.macho is on it\r\n");
-    gBS->Stall (15000000);
+    UnicodeSPrint (
+      Line,
+      sizeof (Line),
+      L"Meizu15Payload: BLOCK DEVICE PUBLISHED, %u blocks",
+      (UINT32)(mPayload->Media.LastBlock + 1)
+      );
+    Say (Line);
   }
+
+  gBS->Stall (20000000);
 
   //
   // Nothing is freed on the way out: the volume is backed by this memory for the
