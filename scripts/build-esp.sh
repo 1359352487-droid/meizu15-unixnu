@@ -20,7 +20,7 @@ set -euo pipefail
 KERNEL=${1:?usage: build-esp.sh <kernel.macho> <kernel.macho.adt> <out.img> [size_mb]}
 ADT=${2:?missing the ADT sidecar}
 OUT=${3:?missing the output image path}
-SIZE_MB=${4:-15}
+SIZE_MB=${4:-15.5}
 
 for tool in mformat mmd mcopy mdir; do
   command -v "$tool" >/dev/null || { echo "build-esp: $tool not found (apt install mtools)" >&2; exit 1; }
@@ -68,7 +68,15 @@ rm -f "$OUT"
 # cluster size): 1 MiB = 2048 sectors. Getting this wrong silently halves the
 # volume and the copy then fails with "Disk full".
 # mformat -T counts 512-byte sectors, so 1 MiB is 2048 of them.
-sectors=$(( SIZE_MB * 2048 ))
+# 15.5 MiB, not 15: at 4 KiB clusters a 15 MiB volume has 15,665,152 usable
+# bytes and the payload needs 15,826,175, so it overflows by 161,023 ("Disk
+# full"). 15.5 MiB leaves 362,241 to spare and is still below the 16 MiB
+# threshold that would promote the whole FV to EFI_FIRMWARE_FILE_SYSTEM3.
+# Kept as a decimal so the shell arithmetic below can express it.
+sectors=$(( ${SIZE_MB%.*} * 2048 ))
+case "$SIZE_MB" in
+  *.*) frac=${SIZE_MB#*.}; sectors=$(( sectors + frac * 2048 / 10 )) ;;
+esac
 #
 # 4 KiB clusters, not 1 KiB. The volume exists to carry a 15.06 MiB kernel and
 # has to stay UNDER 16 MiB, because GenFds promotes the whole firmware volume to
@@ -81,10 +89,25 @@ sectors=$(( SIZE_MB * 2048 ))
 # +0x2088 with "Data abort: Translation fault, third level" even with the prober
 # left unpatched.
 #
-# At 1 KiB clusters the FAT itself eats enough to make a 15 MiB volume too tight.
-# 4 KiB clusters cut it to roughly 31 sectors per copy, which leaves 623,361
-# bytes of slack in a 15.75 MiB volume.
-mformat -i "$OUT" -C -T "$sectors" -h 64 -s 8 -v UNIXNU ::
+# Cluster size is -c, not -s: -s is sectors per track. At the old 1 KiB clusters
+# the FAT for this volume was large enough that the copy overflowed with
+# "Disk full". -c 8 means 8 sectors = 4 KiB per cluster, which brings each FAT
+# copy down to about 31 sectors. Working the geometry out exactly:
+#
+#   volume     sectors   clusters   FAT x2   usable bytes   slack
+#   15.00 MiB   30,720     3,824    30      15,665,152     -161,023
+#   15.25 MiB   31,232     3,888    31      15,926,272     +100,097
+#   15.50 MiB   31,744     3,952    31      16,188,416     +362,241
+#
+# The payload needs 15,826,175 bytes (kernel 15,791,328 + ADT 13,996 + toml 273
+# + launcher 20,480 + startup.nsh 98), so 15.5 MiB it is.
+#
+# Do NOT raise the volume to compensate: a section of 0x1000000 bytes or more
+# makes GenFds mark the whole firmware volume as EFI_FIRMWARE_FILE_SYSTEM3, and
+# then every FFS header is read as HEADER2 with a 64-bit ExtendedSize. That
+# broke GetNextFile in Meizu15PayloadDxe ("not in any Fv") and faulted
+# SimpleInitMain at +0x2088 on this port.
+mformat -i "$OUT" -C -T "$sectors" -h 64 -s 32 -c 8 -v UNIXNU ::
 # Fixed timestamps: mformat/mcopy stamp from the clock otherwise.
 export MTOOLS_SKIP_CHECK=1
 mmd -i "$OUT" ::/EFI
