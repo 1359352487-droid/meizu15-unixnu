@@ -90,16 +90,57 @@ ReadWholeFile (
     return EFI_OUT_OF_RESOURCES;
   }
 
-  ReadSize = *Size;
-  Status   = File->Read (File, &ReadSize, *Buffer);
-  File->Close (File);
-  if (EFI_ERROR (Status) || (ReadSize != *Size)) {
-    FreePool (*Buffer);
-    *Buffer = NULL;
-    *Size   = 0;
-    return EFI_DEVICE_ERROR;
+  //
+  // Read in 1 MiB chunks instead of asking for the whole file at once.
+  //
+  // EFI_FILE_PROTOCOL.Read is allowed to satisfy less than the caller asked for,
+  // and EnhancedFatDxe goes through a small cache -- the "FatDiskIo: Cache Page
+  // OutBound occurred!" lines on the panel are that cache being walked. A single
+  // 15.79 MiB request therefore either comes back short, which the old code
+  // treated as EFI_DEVICE_ERROR and returned silently, or takes so long that the
+  // boot looks hung. Chunking keeps every call small and makes progress visible.
+  //
+  Offset    = 0;
+  Remaining = *Size;
+  while (Remaining > 0) {
+    ReadSize = (Remaining > CHUNK_SIZE) ? CHUNK_SIZE : Remaining;
+    Status   = File->Read (File, &ReadSize, (UINT8 *)*Buffer + Offset);
+    if (EFI_ERROR (Status)) {
+      Print (
+        L"Meizu15Launcher: read failed at %u of %u bytes (%r)\r\n",
+        (UINT32)Offset,
+        (UINT32)*Size,
+        Status
+        );
+      File->Close (File);
+      FreePool (*Buffer);
+      *Buffer = NULL;
+      *Size   = 0;
+      return Status;
+    }
+
+    if (ReadSize == 0) {
+      Print (
+        L"Meizu15Launcher: file ended at %u of %u bytes\r\n",
+        (UINT32)Offset,
+        (UINT32)*Size
+        );
+      File->Close (File);
+      FreePool (*Buffer);
+      *Buffer = NULL;
+      *Size   = 0;
+      return EFI_DEVICE_ERROR;
+    }
+
+    Offset    += ReadSize;
+    Remaining -= ReadSize;
+
+    if ((Offset & 0x003FFFFF) == 0) {
+      Print (L"Meizu15Launcher: read %u of %u bytes\r\n", (UINT32)Offset, (UINT32)*Size);
+    }
   }
 
+  File->Close (File);
   return EFI_SUCCESS;
 }
 
