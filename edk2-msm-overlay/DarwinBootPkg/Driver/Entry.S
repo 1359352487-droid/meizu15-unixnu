@@ -192,6 +192,78 @@ ASM_FUNC(DarwinEnter)
 9:
   br x15
 
+// Return stub for hakios-xnu's loader-return channel.
+//
+// hakios patches start.s with a slot the loader is meant to fill:
+//
+//     Lloader_stub_slot:
+//         .ascii "XNULDRST"    magic the loader searches for
+//         .quad  0             PA of the loader's return stub
+//         .quad  0             checkpoint number to stop at (0 = none)
+//         .quad  0             (physical - virtual) offset of the image
+//
+// Two places read word 1 and branch to it when it is non-zero: the early
+// exception vector in start.s, and loader_return() in loader_return.c. When it
+// is zero the exception path falls into `cbz x9, .` -- a branch to itself.
+//
+// That is what this port has been looking at for the last several boots. The
+// kernel was not hanging silently for a mysterious reason: it faulted somewhere
+// before it could print, found no loader stub to hand the news to, and parked.
+//
+// DarwinEnter copies this routine to the end of the loaded image and writes the
+// slot, so a fault brings control back here with registers as loader_return.c
+// leaves them:
+//
+//     x0 = log physical address     x1 = log length
+//     x2 = reason (0 = orderly end, 2 = checkpoint)
+//     x3 = code
+//
+// The early exception path sets none of those, so nothing here may depend on
+// them. Only PC-relative references are used, because this body is memcpy'd and
+// must stay correct at its new address.
+  .globl DarwinKernelReturnStubStart
+  .globl DarwinKernelReturnStubEnd
+
+DarwinKernelReturnStubStart:
+  msr daifset, #0xf
+
+  // loader_return() leaves translation on, with TTBR0 pointing at a table that
+  // maps only the 2 MiB block this stub sits in. Turning it off makes the
+  // framebuffer addressable without caring which path arrived here.
+  mrs x9, sctlr_el1
+  bic x9, x9, #1
+  msr sctlr_el1, x9
+  isb
+
+  adr x10, DarwinKernelReturnStubParameters
+  ldr x10, [x10]              // framebuffer PA, filled in by the loader
+  cbz x10, 2f
+
+  mov w12, #0x00FF
+  movk w12, #0xFFFF, lsl #16  // magenta: the stub ran
+  cmp x2, #2
+  b.ne 1f
+  mov w12, #0xFFFF
+  movk w12, #0x00FF, lsl #16  // cyan: a checkpoint fired, not a fault
+1:
+  // 64 KiB at the framebuffer base, over whatever the trampoline painted.
+  mov x13, x10
+  mov x14, #0x10000
+3:
+  stp w12, w12, [x13], #8
+  subs x14, x14, #8
+  b.hi 3b
+  dsb sy
+
+2:
+  b 2b
+
+  .balign 8
+  .globl DarwinKernelReturnStubParameters
+DarwinKernelReturnStubParameters:
+  .quad 0                     // framebuffer PA, written after the copy
+DarwinKernelReturnStubEnd:
+
 // Exception vectors, installed with VBAR_EL1 by DarwinEnter just before the MMU
 // is switched off.
 //
