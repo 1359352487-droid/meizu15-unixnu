@@ -448,6 +448,37 @@ Publish:
       (UINT32)(mPayload->Media.LastBlock + 1),
       (UINT32)PAYLOAD_BLOCK_SIZE
       ));
+    //
+    // Dump every field the FAT driver will look at. The panel showed a
+    // "LastBlock : FF" line right after two "Cache Page OutBound occurred"
+    // messages, and FF is 256 blocks -- 128 KiB -- not this volume's 31,744.
+    // Either that line belongs to another device, or Media is being read wrong;
+    // printing the values this driver actually published settles which.
+    //
+    DEBUG ((
+      DEBUG_ERROR,
+      "MZ15>> media: id 0x%08x last %u bs %u ro %u present %u logical %u align %u\r\n",
+      mPayload->Media.MediaId,
+      (UINT32)mPayload->Media.LastBlock,
+      (UINT32)mPayload->Media.BlockSize,
+      (UINT32)mPayload->Media.ReadOnly,
+      (UINT32)mPayload->Media.MediaPresent,
+      (UINT32)mPayload->Media.LogicalPartition,
+      (UINT32)mPayload->Media.IoAlign
+      ));
+    DEBUG ((
+      DEBUG_ERROR,
+      "MZ15>> blockio rev 0x%08x media %p handle %p\r\n",
+      mPayload->BlockIo.Revision,
+      mPayload->BlockIo.Media,
+      Handle
+      ));
+    //
+    // MediaId is what FatDiskIo prints alongside the geometry. If the panel
+    // shows 4D5A3135 against a LastBlock of 0x7BFF, the volume is being seen
+    // correctly and the FF line belongs to something else.
+    //
+    DEBUG ((DEBUG_ERROR, "MZ15>> media id literal: MZ15 (0x4D5A3135)\r\n"));
   }
 
   //
