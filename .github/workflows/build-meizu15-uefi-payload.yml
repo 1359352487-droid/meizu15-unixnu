@@ -169,7 +169,7 @@ jobs:
           fi
           cp meizu15/inputs/meizu15-8plus.adt /tmp/payload.adt
           bash meizu15/scripts/build-esp.sh "$K" /tmp/payload.adt \
-               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 15
+               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 15.5
           ls -l edk2-msm/Platform/Meizu/sdm660/payload/
 
       - name: Build the firmware (RELEASE)
@@ -392,7 +392,7 @@ jobs:
           cp "${ADT_SRC:-meizu15/inputs/meizu15-8plus.adt}" /tmp/payload.adt
           ls -l /tmp/kernel.macho /tmp/payload.adt
           bash meizu15/scripts/build-esp.sh /tmp/kernel.macho /tmp/payload.adt \
-               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img "${ESP_MB:-15}"
+               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img "${ESP_MB:-15.5}"
           IMG=edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img
           # SimpleInit's prober builds its candidate list from
           # ARCH1_FILE("boot","aa64") in src/boot/efi_path.c, i.e. the literal string
