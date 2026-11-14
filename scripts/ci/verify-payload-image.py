@@ -97,21 +97,42 @@ def find_uefiextract(explicit):
         "and pass --uefiextract /path/to/UEFIExtract")
 
 
+def looks_like_fat(data):
+    """A BPB with a sane sector size and cluster size, so tiny volumes work too."""
+    if len(data) < 512:
+        return False
+    bps = struct.unpack_from("<H", data, 11)[0]
+    spc = data[13]
+    return bps in (512, 1024, 2048, 4096) and spc in (1, 2, 4, 8, 16, 32, 64, 128)
+
+
 def extract(uefiextract, fv_path, workdir):
-    """Run UEFIExtract and return the dumped FAT image path."""
+    """Run UEFIExtract and return the dumped FAT image path.
+
+    The volume is whatever size the build packed -- 48 MiB with the real kernel,
+    8 MiB for the tiny payload -- so pick the largest FAT-looking body in the
+    payload file's section rather than a hard-coded size.
+    """
     res = subprocess.run([uefiextract, fv_path], cwd=workdir,
                          capture_output=True, text=True)
     if res.returncode not in (0, 1):     # UEFIExtract returns 1 for "no VTF"
         raise SystemExit("UEFIExtract failed (%d): %s" % (res.returncode, res.stderr.strip()))
 
+    candidates = []
     for root, _dirs, files in os.walk(workdir):
         for f in files:
-            if f == "body.bin":
-                p = os.path.join(root, f)
-                if os.path.getsize(p) == PAYLOAD_SECTION_SIZE and "3F1A9C22" in p.upper():
-                    return p
-    raise SystemExit("the %d-byte payload section was not found in the dump"
-                     % PAYLOAD_SECTION_SIZE)
+            if f != "body.bin" or "3F1A9C22" not in root.upper():
+                continue
+            p = os.path.join(root, f)
+            candidates.append((os.path.getsize(p), p))
+    candidates.sort(reverse=True)
+
+    for size, p in candidates:
+        head = open(p, "rb").read(512)
+        if looks_like_fat(head):
+            return p, size
+    raise SystemExit("no FAT payload volume found in the dump (%d body.bin candidates)"
+                     % len(candidates))
 
 
 def tree(fs):
@@ -147,7 +168,7 @@ def main():
 
     ue = find_uefiextract(args.uefiextract)
     print(f"UEFIExtract: {ue}")
-    fat_path = extract(ue, fv_path, work)
+    fat_path, fat_size = extract(ue, fv_path, work)
     fat_bytes = open(fat_path, "rb").read()
     print(f"payload FAT: {len(fat_bytes):,} bytes  sha256 {hashlib.sha256(fat_bytes).hexdigest()[:16]}…")
 
@@ -174,15 +195,17 @@ def main():
     # The launcher must be present twice and identical: the root copy is what
     # SimpleInit probes, the EFI/BOOT copy is what other firmware looks for.
     if "/bootaa64.efi" in entries and "/efi/boot/bootaa64.efi" in entries:
+        size = entries["/bootaa64.efi"][0]
         a = fat_bytes[fs.cluster_offset(entries["/bootaa64.efi"][1]):
-                      fs.cluster_offset(entries["/bootaa64.efi"][1]) + 20480]
+                      fs.cluster_offset(entries["/bootaa64.efi"][1]) + size]
         b = fat_bytes[fs.cluster_offset(entries["/efi/boot/bootaa64.efi"][1]):
-                      fs.cluster_offset(entries["/efi/boot/bootaa64.efi"][1]) + 20480]
+                      fs.cluster_offset(entries["/efi/boot/bootaa64.efi"][1]) + size]
         if a != b:
             problems.append("/bootaa64.efi and /EFI/BOOT/BOOTAA64.EFI differ")
         if a[:2] != b"MZ":
             problems.append("/bootaa64.efi is not a PE image (no MZ header)")
-        print(f"\nlauncher   : MZ header OK, sha256 {hashlib.sha256(a).hexdigest()[:16]}…")
+        print(f"\nlauncher   : {size:,} bytes, MZ header OK, "
+              f"sha256 {hashlib.sha256(a).hexdigest()[:16]}…")
 
     # startup.nsh has to actually run the launcher: with the menu's countdown
     # picking the UEFI Shell, it is the only path that reaches DarwinBoot.

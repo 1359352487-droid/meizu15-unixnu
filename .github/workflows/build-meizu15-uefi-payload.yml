@@ -188,6 +188,14 @@ jobs:
     timeout-minutes: 120
     env:
       TARGET: DEBUG
+    # Two payloads, every push. `full` carries the real 15.8 MB kernel and is what
+    # the phone eventually has to boot; `tiny` swaps in an 8 KB fake Mach-O so the
+    # image is a couple of MB and `fastboot boot` finishes on this USB 2.0 link,
+    # where a 12 MB transfer has been failing halfway through.
+    strategy:
+      fail-fast: false
+      matrix:
+        payload: [full, tiny]
 
     steps:
       - uses: actions/checkout@v4
@@ -281,7 +289,7 @@ jobs:
         continue-on-error: false
 
       - name: Shrink the payload for fast iteration (optional)
-        if: ${{ inputs.tiny_payload }}
+        if: ${{ inputs.tiny_payload || matrix.payload == 'tiny' }}
         run: |
           set -eux
           python3 meizu15/scripts/ci/make-fake-payload.py /tmp/tiny 8192 13996
@@ -407,7 +415,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: meizu15-uefi-payload-debug
+          # The matrix dimension is part of the name: two jobs cannot publish the
+          # same artifact name in one run.
+          name: meizu15-uefi-payload-debug-${{ matrix.payload }}
           path: |
             edk2-msm/boot-meizu15-payload-debug.img
             esp-listing.txt
