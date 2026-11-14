@@ -7,11 +7,39 @@
   also depends on MdeModulePkg's RamDiskLib, which the edk2 revision edk2-msm
   pins does not have.
 
-  So this driver does the whole job itself: it finds the FAT image that is baked
-  into the firmware volume as a FREEFORM file with a bare RAW section, keeps the
-  bytes in memory, and installs an EFI_BLOCK_IO_PROTOCOL (plus a HardDrive device
-  path) over them. EnhancedFatDxe then mounts it, and SimpleInit/DarwinBoot find
+  So this driver does the whole job itself: it finds the FAT image baked into the
+  firmware volume as a FREEFORM file with a bare RAW section, keeps the bytes in
+  memory, and installs an EFI_BLOCK_IO_PROTOCOL (plus a HardDrive device path)
+  over them. EnhancedFatDxe then mounts it, and SimpleInit/DarwinBoot find
   /EFI/UniXNU/ on it.
+
+------------------------------------------------------------------------------
+  Diagnostics
+
+  This phone has no serial port, so the panel is the only place a verdict can
+  appear, and getting text onto it from a DXE driver turned out to be the hard
+  part of this port.
+
+  What was measured, in order:
+
+    Say() via ConOut->OutputString   nothing appeared
+    Print() from UefiLib             nothing appeared
+    DEBUG ((DEBUG_ERROR, "..."))     appeared, but with a bare \n the next
+                                     line started where this one stopped:
+                                     "Meizu15Payload: entry8B3E019, Size 334..."
+
+  Two conclusions, both acted on here:
+
+    1. The console is not usable at driver-dispatch time on this firmware, but
+       the DEBUG() log buffer is. So every message goes through DEBUG at ERROR
+       level, with an "MZ15>> " prefix so it can be found among the hundreds of
+       lines BDS prints while dispatching everything else.
+    2. The renderer does not return the carriage, so lines end with \r\n.
+
+  Colour and formatting are given up deliberately: this is a debugging channel,
+  not a UI.
+
+------------------------------------------------------------------------------
 
   The payload section is deliberately UNCOMPRESSED. Both compressed forms fail on
   this platform, for different reasons, and both were measured on the phone:
@@ -29,10 +57,6 @@
 
   A bare RAW section is the one form FirmwareVolume2 returns verbatim.
 
-  Diagnostics matter more than usual here: the phone has no serial port, so every
-  verdict goes to ConOut and is followed by a Stall long enough to photograph.
-  Both the DEBUG() and Print() channels are used because neither is guaranteed.
-
   Copyright (c) 2026, the Meizu 15 UniXNU port.
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
@@ -43,9 +67,7 @@
 #include <Library/DebugLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/MemoryAllocationLib.h>
-#include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
-#include <Library/UefiLib.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/DevicePath.h>
 #include <Protocol/FirmwareVolume2.h>
@@ -71,44 +93,18 @@ typedef struct {
 STATIC PAYLOAD_BLOCK_IO  *mPayload = NULL;
 
 /**
-  Print a line to the console and let it sit there.
+  Put one line in the firmware's log buffer.
 
-  ConOut is the only channel that survives a kernel fault on this phone, so it is
-  used for every verdict rather than DEBUG() alone.
+  ASCII only, "MZ15>> " prefix, \r\n terminator. See the file header for why this
+  is DEBUG and not Print.
 **/
 STATIC
 VOID
-Say (
-  IN CONST CHAR16  *Text
+SayA (
+  IN CONST CHAR8  *Text
   )
 {
-  //
-  // Three channels, because on this platform each has failed at least once:
-  //   DEBUG()  reaches the firmware log but the log is drawn with the text
-  //            renderer and gets overwritten by whatever BDS prints next;
-  //   Print()  goes through the same ConOut but formats, and it is what the
-  //            DXE core's own diagnostics use;
-  //   ConOut   directly, in case Print's buffer is the thing failing.
-  // The previous build emitted "Meizu15Payload: entry" from DEBUG and nothing
-  // else, which says gST->ConOut was not usable at dispatch time.
-  //
-  //
-  // \r\n, not \n. This firmware's text renderer does not return the carriage, so
-  // a bare \n starts the next line where this one stopped: the panel showed
-  //   Meizu15Payload: entry8B3E019, Size 334229d be loaded, defaulting to ACPI
-  // with the Device Tree message glued onto the end of ours.
-  //
-  Print (L"Meizu15Payload: %s\r\n", Text);
-  if ((gST != NULL) && (gST->ConOut != NULL) && (gST->ConOut->OutputString != NULL)) {
-    gST->ConOut->OutputString (gST->ConOut, (CHAR16 *)Text);
-    gST->ConOut->OutputString (gST->ConOut, L"\r\n");
-  } else {
-    //
-    // If this line is the only thing that appears, ConOut was not usable at
-    // dispatch time and Print() is the only channel that works.
-    //
-    DEBUG ((DEBUG_ERROR, "Meizu15Payload: gST->ConOut unusable at dispatch\n"));
-  }
+  DEBUG ((DEBUG_ERROR, "MZ15>> %a\r\n", Text));
 }
 
 STATIC
@@ -190,10 +186,8 @@ PayloadFlushBlocks (
 /**
   Find the FREEFORM file carrying the payload volume in one firmware volume.
 
-  Reports how far the walk got, because "not in any FV" on the panel does not
+  The walk count is reported because "not in any FV" on the panel cannot
   distinguish "this volume does not have it" from "GetNextFile gave up partway".
-  The phone has no serial port, so the count and the failing status are the only
-  way to tell those apart after the fact.
 **/
 STATIC
 EFI_STATUS
@@ -212,7 +206,6 @@ ReadPayloadFromVolume (
   UINTN                    FileSize;
   UINT32                   AuthenticationStatus;
   UINTN                    Seen;
-  CHAR16                   Line[128];
 
   *Buffer = NULL;
   *Size   = 0;
@@ -223,21 +216,10 @@ ReadPayloadFromVolume (
     Status = Fv->GetNextFile (Fv, &Key, &FileType, &NameGuid, &Attributes, &FileSize);
     if (EFI_ERROR (Status)) {
       //
-      // EFI_NOT_FOUND here means the walk reached the end of this volume. Any
-      // other status means it desynchronised, which is what a mis-sized FFS
-      // header does.
+      // EFI_NOT_FOUND is the normal end of the list. Anything else means the
+      // header walk desynchronised.
       //
-      if (Seen != 0) {
-        UnicodeSPrint (
-          Line,
-          sizeof (Line),
-          L"Meizu15Payload: FV walk ended after %u files, status %r",
-          (UINT32)Seen,
-          Status
-          );
-        Say (Line);
-      }
-
+      DEBUG ((DEBUG_ERROR, "MZ15>> walk stopped: %u files seen, status %r\r\n", (UINT32)Seen, Status));
       return EFI_NOT_FOUND;
     }
 
@@ -247,19 +229,13 @@ ReadPayloadFromVolume (
       continue;
     }
 
-    UnicodeSPrint (
-      Line,
-      sizeof (Line),
-      L"Meizu15Payload: payload FFS found as file %u of this FV, %u bytes",
+    DEBUG ((
+      DEBUG_ERROR,
+      "MZ15>> payload FFS is file %u of this FV, %u bytes\r\n",
       (UINT32)Seen,
       (UINT32)FileSize
-      );
-    Say (Line);
+      ));
 
-    //
-    // A bare EFI_SECTION_RAW is returned verbatim; that is the whole story now
-    // that the payload is stored uncompressed.
-    //
     AuthenticationStatus = 0;
     ReadStatus = Fv->ReadSection (
                        Fv,
@@ -271,25 +247,13 @@ ReadPayloadFromVolume (
                        &AuthenticationStatus
                        );
     if (EFI_ERROR (ReadStatus) || (*Buffer == NULL) || (*Size < PAYLOAD_BLOCK_SIZE)) {
-      UnicodeSPrint (
-        Line,
-        sizeof (Line),
-        L"Meizu15Payload: ReadSection(RAW) failed: %r",
-        ReadStatus
-        );
-      Say (Line);
+      DEBUG ((DEBUG_ERROR, "MZ15>> ReadSection(RAW) failed: %r\r\n", ReadStatus));
       *Buffer = NULL;
       *Size   = 0;
       return EFI_NOT_FOUND;
     }
 
-    UnicodeSPrint (
-      Line,
-      sizeof (Line),
-      L"Meizu15Payload: %u bytes via EFI_SECTION_RAW",
-      (UINT32)*Size
-      );
-    Say (Line);
+    DEBUG ((DEBUG_ERROR, "MZ15>> got %u bytes from EFI_SECTION_RAW\r\n", (UINT32)*Size));
     return EFI_SUCCESS;
   }
 }
@@ -326,9 +290,9 @@ MakeDevicePath (
                         ? 0xFFFFFFFFULL
                         : (Size / PAYLOAD_BLOCK_SIZE);
 
-  End          = (EFI_DEVICE_PATH_PROTOCOL *)(Buffer + sizeof (HARDDRIVE_DEVICE_PATH));
-  End->Type    = END_DEVICE_PATH_TYPE;
-  End->SubType = END_ENTIRE_DEVICE_PATH_SUBTYPE;
+  End            = (EFI_DEVICE_PATH_PROTOCOL *)(Buffer + sizeof (HARDDRIVE_DEVICE_PATH));
+  End->Type      = END_DEVICE_PATH_TYPE;
+  End->SubType   = END_ENTIRE_DEVICE_PATH_SUBTYPE;
   End->Length[0] = (UINT8)sizeof (EFI_DEVICE_PATH_PROTOCOL);
   End->Length[1] = 0;
   return (EFI_DEVICE_PATH_PROTOCOL *)Buffer;
@@ -349,16 +313,13 @@ Meizu15PayloadDxeEntry (
   VOID                           *Payload;
   UINTN                          PayloadSize;
   EFI_HANDLE                     Handle;
-  CHAR16                         Line[128];
 
   Handles     = NULL;
   HandleCount = 0;
   Payload     = NULL;
   PayloadSize = 0;
 
-  Say (L"");
-  Say (L"=== Meizu15PayloadDxe ENTER ===");
-  DEBUG ((DEBUG_ERROR, "Meizu15Payload: entry\r\n"));
+  SayA ("=== Meizu15PayloadDxe ENTER ===");
 
   Status = gBS->LocateHandleBuffer (
                   ByProtocol,
@@ -368,12 +329,11 @@ Meizu15PayloadDxeEntry (
                   &Handles
                   );
   if (EFI_ERROR (Status)) {
-    Say (L"Meizu15Payload: no firmware volumes at all");
+    DEBUG ((DEBUG_ERROR, "MZ15>> no firmware volume handles: %r\r\n", Status));
     return Status;
   }
 
-  UnicodeSPrint (Line, sizeof (Line), L"Meizu15Payload: %u firmware volume handle(s)", (UINT32)HandleCount);
-  Say (Line);
+  DEBUG ((DEBUG_ERROR, "MZ15>> %u firmware volume handle(s)\r\n", (UINT32)HandleCount));
 
   for (Index = 0; Index < HandleCount; Index++) {
     Status = gBS->HandleProtocol (Handles[Index], &gEfiFirmwareVolume2ProtocolGuid, (VOID **)&Fv);
@@ -381,8 +341,7 @@ Meizu15PayloadDxeEntry (
       continue;
     }
 
-    UnicodeSPrint (Line, sizeof (Line), L"Meizu15Payload: scanning volume %u", (UINT32)(Index + 1));
-    Say (Line);
+    DEBUG ((DEBUG_ERROR, "MZ15>> scanning FV %u of %u\r\n", (UINT32)(Index + 1), (UINT32)HandleCount));
 
     if (!EFI_ERROR (ReadPayloadFromVolume (Fv, &Payload, &PayloadSize))) {
       break;
@@ -392,14 +351,17 @@ Meizu15PayloadDxeEntry (
   FreePool (Handles);
 
   if (Payload == NULL) {
-    Say (L"Meizu15Payload: NO PAYLOAD IN ANY FV");
+    SayA ("NO PAYLOAD IN ANY FV");
+    //
+    // Hold the panel. Everything above is printed while BDS is still loading
+    // drivers and BDS prints hundreds of lines afterwards, so without this the
+    // text scrolls away before SimpleInit draws. 20 s is enough to photograph.
+    //
     gBS->Stall (20000000);
     return EFI_NOT_FOUND;
   }
 
-  UnicodeSPrint (Line, sizeof (Line), L"Meizu15Payload: publishing %u byte volume", (UINT32)PayloadSize);
-  Say (Line);
-  gBS->Stall (5000000);
+  DEBUG ((DEBUG_ERROR, "MZ15>> publishing %u byte volume\r\n", (UINT32)PayloadSize));
 
   mPayload = AllocateZeroPool (sizeof (PAYLOAD_BLOCK_IO));
   if (mPayload == NULL) {
@@ -438,23 +400,24 @@ Meizu15PayloadDxeEntry (
                   NULL
                   );
   if (EFI_ERROR (Status)) {
-    UnicodeSPrint (Line, sizeof (Line), L"Meizu15Payload: install failed: %r", Status);
-    Say (Line);
+    DEBUG ((DEBUG_ERROR, "MZ15>> install failed: %r\r\n", Status));
   } else {
-    UnicodeSPrint (
-      Line,
-      sizeof (Line),
-      L"Meizu15Payload: BLOCK DEVICE PUBLISHED, %u blocks",
-      (UINT32)(mPayload->Media.LastBlock + 1)
-      );
-    Say (Line);
+    DEBUG ((
+      DEBUG_ERROR,
+      "MZ15>> BLOCK DEVICE PUBLISHED, %u blocks of %u\r\n",
+      (UINT32)(mPayload->Media.LastBlock + 1),
+      (UINT32)PAYLOAD_BLOCK_SIZE
+      ));
   }
 
+  //
+  // Hold the panel so the verdict above can be photographed, then let BDS carry
+  // on to SimpleInit.
+  //
   gBS->Stall (20000000);
 
   //
-  // Nothing is freed on the way out: the volume is backed by this memory for the
-  // rest of the boot.
+  // Nothing is freed: the volume is backed by this memory for the rest of boot.
   //
   return Status;
 }
