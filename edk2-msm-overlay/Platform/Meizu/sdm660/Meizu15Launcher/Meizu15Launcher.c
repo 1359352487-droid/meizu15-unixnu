@@ -262,7 +262,26 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  Request.BootArgs       = L"";
+  //
+  // -v, because XNU is silent without it.
+  //
+  // The handoff now completes: both painted bands appear (green before the MMU
+  // is switched off, red after), so the kernel entry is being reached. What
+  // follows it is nothing at all, and that is expected -- XNU only writes to the
+  // video console when PE_verbose is set, which -v does. Booting quietly and
+  // dying at the first instruction look identical from the outside.
+  //
+  // The command line lands in boot_args.CommandLine, which is 1024 bytes at
+  // offset 0x6c and matches XNU's pexpert/pexpert/arm64/boot.h layout (Revision,
+  // Version, four uint64s, a 48-byte Boot_Video of six unsigned long, then
+  // machineType, deviceTreeP, deviceTreeLength, CommandLine). DarwinBoot's
+  // BootArgs.h asserts those offsets, so -v reaches PE_parse_boot_argn intact.
+  //
+  // If the screen still shows nothing after the red band, the kernel is failing
+  // before video console initialisation, which is a different and much earlier
+  // problem than anything the boot arguments could cause.
+  //
+  Request.BootArgs       = L"-v";
   //
   // DeviceTree must stay NULL here.
   //
