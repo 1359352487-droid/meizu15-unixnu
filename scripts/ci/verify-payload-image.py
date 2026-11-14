@@ -60,8 +60,13 @@ REQUIRED = {
     "/efi/unixnu/payloads/kernel.macho.adt": 13996,
 }
 
-# Anything smaller than this cannot be a usable UEFI application or a FAT image.
-MIN_PLAUSIBLE_FILE = 1024
+# Anything smaller than this cannot be a usable UEFI application. Only the PE
+# images are held to it: startup.nsh is ~330 bytes and unixnu.toml ~270, which is
+# exactly right for them, and an earlier version of this check flagged both.
+MIN_PE_FILE = 4096
+
+# Entries that must be PE images, not just files.
+PE_FILES = {"/bootaa64.efi", "/efi/boot/bootaa64.efi"}
 
 
 def unpack_fv(boot, out_fv):
@@ -203,8 +208,8 @@ def main():
             problems.append(f"wrong size: {want} is {size:,}, expected {want_size:,}")
         if is_dir:
             problems.append(f"expected a file, found a directory: {want}")
-        elif size < MIN_PLAUSIBLE_FILE:
-            problems.append(f"suspiciously small: {want} is {size:,} bytes")
+        elif want in PE_FILES and size < MIN_PE_FILE:
+            problems.append(f"suspiciously small for a PE image: {want} is {size:,} bytes")
 
     # The launcher must be present twice and identical: the root copy is what
     # SimpleInit probes, the EFI/BOOT copy is what other firmware looks for.
