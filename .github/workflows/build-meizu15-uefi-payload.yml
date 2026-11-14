@@ -131,6 +131,12 @@ jobs:
           set -eux
           python3 meizu15/scripts/ci/patch_simpleinit_free.py edk2-msm
 
+      - name: Patch SimpleInit prober shadowed loop
+        run: |
+          set -eux
+          python3 meizu15/scripts/ci/patch_simpleinit_prober.py edk2-msm
+          grep -rn "dir\[" edk2-msm/GPLDrivers/Library/SimpleInit/src/boot/prober.c | head -20
+
       - name: Build the payload FAT volume
         run: |
           set -eux
