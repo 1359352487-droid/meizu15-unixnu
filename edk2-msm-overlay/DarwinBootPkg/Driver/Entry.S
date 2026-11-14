@@ -119,20 +119,27 @@ ASM_FUNC(DarwinEnter)
 
   // Identify what x15 actually points at.
   //
-  // The log line for the entry address is unusable on this panel: Print output
-  // and DEBUG output overlap, so "entry pa 0x004614a8" could be 0x0845d4a8 with
-  // the leading byte lost, or a genuinely wrong address. Rather than read it,
-  // look at the memory. kernel.macho's LC_UNIXTHREAD names 0xfffffff0074614a8,
-  // inside __TEXT_EXEC, and the word there is 0x140000ED -- B over 0x3B4.
+  // The expected word is 0x14000AED, read out of kernel.macho rather than off
+  // the panel. Offset 0x45d4a8 -- which is LC_UNIXTHREAD's pc 0xfffffff0074614a8
+  // minus __TEXT's vmaddr 0xfffffff007004000, and also __TEXT_EXEC file offset
+  // 0x28c000 plus the 0x1d14a8 into that segment -- holds
   //
-  // A third band, below the red one, carries that answer:
+  //   ed 0a 00 14   ->   0x14000AED   (B over 0x2BB4)
   //
-  //   blue    x15 holds 0x140000ED, so it points at the kernel entry
+  // The first attempt at this compared against 0x140000ED, because that is what
+  // the panel's "entry words" line appears to say. It is not: A and 0 are nearly
+  // identical in this font, the panel was showing 14000AED, and the check
+  // therefore failed on a correct address and painted yellow. Numbers read off a
+  // photograph of a 1080-wide text console are not evidence.
+  //
+  // A third band, below the red one, carries the answer:
+  //
+  //   blue    x15 holds 0x14000AED, so it points at the kernel entry
   //   yellow  something else entirely, so the address arithmetic is wrong
   //
   // BGRA again: 0xFF0000FF is blue, 0xFFFFFF00 is yellow.
   ldr w9, [x15]
-  mov w10, #0x00ED
+  mov w10, #0x0AED
   movk w10, #0x1400, lsl #16
   cmp w9, w10
   mov w10, #0x00FF
