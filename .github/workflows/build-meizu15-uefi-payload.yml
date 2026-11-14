@@ -275,8 +275,15 @@ jobs:
           F=edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc
           {
             echo ""
+            echo "// GUIDED + LZMA, not COMPRESS: the DXE core's EFI_SECTION_COMPRESSION"
+            echo "// branch feeds EFI_STANDARD_COMPRESSION into gEfiDecompressProtocol,"
+            echo "// which is bit-Tiano, and GenFds writes LZMA there. The section stream"
+            echo "// then fails to open and ReadSection(EFI_SECTION_RAW) returns"
+            echo "// EFI_NOT_FOUND. GUID_DEFINED goes through ExtractGuidedSectionLib"
+            echo "// instead, and QcomCommonDsc.inc already links"
+            echo "// NULL|LzmaCustomDecompressLib into DxeMain, so the handler exists."
             echo "FILE FREEFORM = 3f1a9c22-5b41-4a0e-9c77-2d618b4fe01a {"
-            echo "  SECTION COMPRESS PI_STD {"
+            echo "  SECTION GUIDED EE4E5898-3914-4259-9D6E-DC7BD79403CF PROCESSING_REQUIRED = TRUE {"
             echo "    SECTION RAW = Platform/Meizu/sdm660/payload/unixnu-esp.img"
             echo "  }"
             echo "}"
