@@ -560,3 +560,167 @@ Meizu15Launcher: loader revision 0x20000, booting
 ```
 
 然后 DarwinBoot 接手 kernel.macho。
+
+
+## 2026-11-14 09:51 真机 `fastboot boot` 58ae92b 镜像
+
+镜像：`boot-meizu15-payload-debug.img`，12,480,512 B，
+SHA256 `599D892A640D7B65268DD43E60BC8AD5219486705906CB93E198111992B0063C`。
+只 `fastboot boot`，boot 分区未动。
+
+时间线（本地日志 `boot-run.log`）：
+
+```
+09:51:38  adb reboot bootloader
+09:51:42  fastboot 就绪
+09:53:36  Sending 'boot.img' (12188 KB) 完成，上传耗时 114 s ≈ 110 KB/s
+t+15s     设备退出 fastboot —— BootShim 已执行，UEFI 接管
+t+60s     又出现在 fastboot —— UEFI 复位，屏幕回到 bootloader
+之后      保持 fastboot，adb 不出现
+```
+
+判读：镜像被 bootloader 接受并真的执行过，不是"没刷进去"，也不是上传失败。
+UEFI 起来后自己复位，屏幕最终停在 fastboot 界面。
+
+按可能性排序的可疑点：
+
+1. SimpleInit 菜单倒计时到点后自动启动默认项，启动项（Shell 或 launcher）
+   出错导致复位。`startup.nsh` 在 58ae92b 里改成 `fs0:\bootaa64.efi`，
+   Shell 一旦自动执行它就直进 launcher。
+2. prober 未修好时菜单项数仍是 1，默认项是 Shell，Shell 加载 launcher，
+   launcher 在卷布局未验证的情况下把控制权交给 DarwinBoot 后复位。
+3. USB 太慢（110 KB/s，像是 USB 2.0 口或线材），bootloader 侧等待超时。
+
+本轮已做的工程改动：
+
+- 新增 `scripts/ci/patch_simpleinit_prober.py`：修 `src/boot/prober.c` 的内层
+  循环变量遮蔽（内层 `d` 改名 `d_inner`，连同内层循环体里的引用一起改）。
+  用 fixture 验过两种形态：单行嵌套 `for(...) for(...){...}` 和多行带花括号
+  嵌套；无关循环不动；二次运行幂等；括号数变化时会拒绝写盘。
+- workflow 增加 `prober_fix` 开关（workflow_dispatch，默认关）。
+- workflow 增加 `Assert the payload volume layout`：用 `mdir` 断言卷根必须有
+  `bootaa64.efi`、`startup.nsh`，`/EFI/UniXNU` 下必须有 `kernel.macho`、
+  `kernel.macho.adt`、`unixnu.toml`；缺一个就红，不再拿真机时间去发现。
+- workflow 增加 `tiny_payload` 开关：`scripts/ci/make-fake-payload.py` 造
+  8 KB 假 Mach-O（magic `cffaedfe`，ncmds=0），payload 卷缩到 8 MiB，
+  镜像降到 MB 级，fastboot 上传从 114 s 降到秒级。DarwinBoot 会按预期拒绝
+  这个假内核，正好用来只验证"菜单项数"和"launcher 是否被调用"。
+- artifact 里增加 `esp-listing.txt`（mdir 全卷清单）和 `payload-fv.txt`
+  （`check_payload_fv.py` 对成品镜像的拆包结果），以后不用真机也能核对布局。
+
+仍未解决：缺"复位前最后一帧"。手机没有串口，屏幕是唯一信息源。
+下一次 boot 时盯屏幕：出现 `Meizu15Launcher: ...` 说明 launcher 已被调用；
+只有菜单没有 launcher 输出，说明还是 prober 的问题。
+
+### 同一轮的后续改动（针对"UEFI 起来后自己复位"）
+
+1. `startup.nsh` 不再自动执行启动器。原来它写的是 `fs0:\bootaa64.efi`：当
+   prober 只找到 1 项（Shell）时，菜单倒计时选中的就是 Shell，Shell 一进来就
+   执行 startup.nsh，直接跳进启动器 —— 屏幕因此永远看不到菜单本身。现在它只
+   打印三行提示，把屏幕留在 Shell 提示符上。
+2. `patch_simpleinit_prober.py` 改为**默认执行**，workflow_dispatch 的开关反转成
+   `skip_prober_fix`（默认 false = 修）。prober 修好后 `/EFI/` 和 `/EFI/BOOT/`
+   才真的被遍历，菜单里才会有 `UEFI OS` 这一项。
+3. `Meizu15Launcher`：
+   - 探测卷不再整读 15.8 MB 内核，改用 `GetInfo` 只取大小（`FileSize()`），
+     每个卷只 `Open`+`GetInfo` 一次；
+   - 屏幕多打一行 `kernel %u bytes, ADT %u bytes`；
+   - 调用 `Loader->Boot()` 之前 `Stall(6s)`，让最后一帧留得住。
+4. `DarwinBoot`：在 `inputs validated; exiting boot services` 之后 `Stall(8s)`。
+   这一帧就是内核如果 fault 之后屏幕上的全部内容，也是判断"到底走到哪一步"的
+   唯一凭据。
+
+### 从 GitHub 侧核对到的事实
+
+`build-meizu15-uefi-payload` #27（commit 58ae92b）两个 job 都 success：
+firmware job 13 步、debug job 12 步；artifact 两个 ——
+`meizu15-uefi-payload` 24,244,420 B（payload + 未 retarget 的 img）和
+`meizu15-uefi-payload-debug` 12,192,103 B，后者解出来就是手上这份
+12,480,512 B 的镜像。所以镜像本身没有问题，问题在它跑起来之后。
+
+日志（`.../actions/runs/43483879019/logs`）需要 token，未认证是 403，
+所以 #27 的逐步输出这次没拿到；等 .gh-token 就位可以只读拉下来存档。
+
+### 还欠的一件事
+
+firmware（RELEASE）job 的 payload 卷里没有启动器：它只跑 `build-esp.sh`，
+没有像 debug job 那样把 `Meizu15Launcher.efi` 复制成 `/bootaa64.efi` 再打卷。
+于是 RELEASE 镜像不可能进启动器，两条流水线的产出不等价。要等 debug 这条线
+验证通过后，把 RELEASE job 也改成"两趟 + 打启动器 + 断言"。
+
+### 2026-11-14 10:10 读过 FULL-CONTEXT.md 之后的修正
+
+`FULL-CONTEXT.md`（10:00 版，对应 58ae92b）到了。两份交接包比对：Downloads 那份
+比桌面那份只多这一个文件，artifacts 三个文件哈希完全一致
+（`boot-meizu15-payload-debug.img` = `599D892A…063C`），没有新代码。
+
+按全文第 8 章的铁律，回头改了四处，其中一处是**推翻我自己一小时前的改动**：
+
+1. `startup.nsh` 恢复成自动执行启动器（撤回上一节的改动）。
+   理由：菜单第一项是 `UEFI Shell on #61`，倒计时选中的就是它；Shell 执行
+   startup.nsh 是**唯一不需要按键**就能到达启动器的路径。我先前把它掐掉，
+   等于把自动链路砍断，还把观察点推给"得有人在场按键"。现在恢复，
+   改由启动器自己留帧来保证屏幕可读。
+
+2. `Meizu15Launcher` 入口 `Stall(10s)`。只要启动器被调入，屏幕就会停十秒，
+   谁看都能看见 `Meizu15Launcher: looking for ...` 这一行 —— 这是"启动器有没有
+   被调用"这个当前唯一未决问题的判据。
+
+3. `DarwinBoot` 的交接摘要改为 `Print` 打到屏幕（原先只有 `DEBUG`）。
+   铁律第 7 条写明：手机没有串口，`DEBUG()` 在这个平台上等于写进虚空，
+   关键信息必须走 `ConOut`。现在 kernel/entry/args/video/entry words/SCTLR 都上屏，
+   并在打印后 `Stall(4s)`。
+
+4. 去掉两处 `continue-on-error: true`（RELEASE 与 DEBUG 两条构建）。
+   铁律第 6 条：CI 产出要断言，不要用它掩盖失败。产物缺失本来就有单独断言。
+
+### 文档与实现的一处不一致（记下来，别当成已知）
+
+`FULL-CONTEXT.md` 4.3.2 的目录树写着 48 MiB FAT 里有 `/bootaa64.efi`、
+`/startup.nsh`、`/EFI/UniXNU/*` —— 那只对 `debug` job 成立。`firmware`（RELEASE）
+job 里只跑了 `build-esp.sh`，没有把 `Meizu15Launcher.efi` 复制成 `/bootaa64.efi`，
+也没写 startup.nsh，所以 RELEASE 镜像不可能进启动器。等 debug 这条线验证通过后，
+RELEASE job 要改成"两趟构建 + 打启动器 + 走同一套断言"。
+
+### 2026-11-14 10:40 离线拆开成品镜像：卷内容已证实
+
+payload 卷在 `SECTION COMPRESS` 里，`mdir` 和 `check_payload_fv.py` 都读不到目录。
+用 UEFIExtract（LongSoft/UEFITool A76，win64 版）做 section 解压，其余全部用仓库
+自己的 python 走完：`boot.img -> gzip -> FV -> FFS 3F1A9C22 -> COMPRESSED ->
+48 MiB FAT16 -> 文件树`。新增 `scripts/ci/verify-payload-image.py`（串起来并断言）、
+`scripts/ci/unpack-bootimg-fv.py`、`scripts/ci/fat_ls.py`，说明写在
+`docs/verify-image.md`。
+
+对 `artifacts/boot-meizu15-payload-debug.img`（58ae92b 产物）的实测：
+
+```
+image      : 12,480,512 bytes, 1 gzip member(s) -> FV 33,554,432 bytes
+payload FAT: 50,331,648 bytes  sha256 9048a8856d126097...
+volume     : FAT16, 512 B/sector, 2 sectors/cluster, 10 entries
+
+  FILE      20,480  /bootaa64.efi
+  FILE      20,480  /efi/boot/bootaa64.efi
+  FILE   15,791,328  /efi/unixnu/payloads/kernel.macho
+  FILE      13,996  /efi/unixnu/payloads/kernel.macho.adt
+  FILE         273  /efi/unixnu/unixnu.toml
+  FILE          19  /startup.nsh
+```
+
+三条硬结论：
+
+1. `/bootaa64.efi` 确实在卷根，20,480 B，`MZ` 头，与 `/EFI/BOOT/BOOTAA64.EFI`
+   逐字节相同（sha256 `f41f69e71b2b38d7...`）。58ae92b 的修法进了镜像。
+2. `/startup.nsh` 只有 19 字节，内容 `fs0:\bootaa64.efi`（旧版是 28 字节的
+   `fs0:\EFI\BOOT\BOOTAA64.EFI`）。**Shell 一旦被选中，就一定进启动器。**
+3. 启动器里的 UTF-16 字符串确认它就是我们写的 Meizu15Launcher，找的路径是
+   `\EFI\UniXNU\Payloads\kernel.macho`，并会打印
+   `payload volume found, ADT %u bytes` / `loader revision 0x%x, booting`。
+
+所以"镜像里有没有启动器""Shell 会不会进启动器"这两个问题**都不必再上手机验证**，
+只剩一个未知：真机跑到哪一步复位。
+
+CI 也加了同样的检查：debug job 的
+`Verify the finished image from the outside` 现下载 Linux 版 UEFIExtract，
+对成品 boot.img 跑同一个脚本，输出存成 `payload-image.txt`。
+这与之前的 `Assert the payload volume layout`（检查打包中途的卷）互补：
+后者防打包出错，前者证明交付的字节没错。

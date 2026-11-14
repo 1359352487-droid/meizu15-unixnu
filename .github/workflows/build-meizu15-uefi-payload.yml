@@ -15,10 +15,27 @@ name: build-meizu15-uefi-payload
 
 on:
   workflow_dispatch:
+    inputs:
+      skip_prober_fix:
+        description: >-
+          Do NOT patch SimpleInit's src/boot/prober.c. The patch is on by default
+          because the shadowed loop variable only ever probes dir[0]; set this to
+          true to build the unpatched prober for comparison.
+        type: boolean
+        default: false
+      tiny_payload:
+        description: >-
+          Pack a fake 8 KB kernel instead of the real 15.8 MB one. The image drops
+          to a couple of MB, so `fastboot boot` over USB 2.0 takes seconds instead
+          of minutes. Use it while iterating on the boot menu; DarwinBoot will
+          reject the fake kernel on purpose.
+        type: boolean
+        default: false
   push:
     paths:
       - 'edk2-msm-overlay/**'
       - 'scripts/build-esp.sh'
+      - 'scripts/ci/**'
       - 'inputs/**'
       - '.github/workflows/build-meizu15-uefi-payload.yml'
 
@@ -130,7 +147,6 @@ jobs:
           cd edk2-msm
           chmod +x build.sh
           ./build.sh -d meizu15 -r RELEASE 2>&1 | tail -400
-        continue-on-error: true
 
       - name: Report and assert
         if: always()
@@ -237,6 +253,14 @@ jobs:
       - name: Patch SimpleInit free(NULL)
         run: python3 meizu15/scripts/ci/patch_simpleinit_free.py edk2-msm
 
+      - name: Patch SimpleInit prober shadowed loop (optional)
+        if: ${{ !inputs.skip_prober_fix }}
+        run: |
+          set -eux
+          python3 meizu15/scripts/ci/patch_simpleinit_prober.py edk2-msm
+          # The patch rewrote real code: show what the prober now walks.
+          grep -rn "dir\[" edk2-msm/GPLDrivers/Library/SimpleInit/src/boot/prober.c | head -20
+
       - name: First pass, to produce the launcher
         run: |
           set -eux
@@ -256,13 +280,26 @@ jobs:
           ls -l /tmp/Meizu15Launcher.efi
         continue-on-error: false
 
+      - name: Shrink the payload for fast iteration (optional)
+        if: ${{ inputs.tiny_payload }}
+        run: |
+          set -eux
+          python3 meizu15/scripts/ci/make-fake-payload.py /tmp/tiny 8192 13996
+          {
+            echo "KERNEL_SRC=/tmp/tiny/kernel.macho"
+            echo "ADT_SRC=/tmp/tiny/kernel.macho.adt"
+            echo "ESP_MB=8"
+          } >> "$GITHUB_ENV"
+          ls -l /tmp/tiny
+
       - name: Pack the real payload volume with BOOTAA64.EFI
         run: |
           set -eux
-          cp meizu15/inputs/kernel.macho /tmp/kernel.macho
-          cp meizu15/inputs/meizu15-8plus.adt /tmp/payload.adt
+          cp "${KERNEL_SRC:-meizu15/inputs/kernel.macho}" /tmp/kernel.macho
+          cp "${ADT_SRC:-meizu15/inputs/meizu15-8plus.adt}" /tmp/payload.adt
+          ls -l /tmp/kernel.macho /tmp/payload.adt
           bash meizu15/scripts/build-esp.sh /tmp/kernel.macho /tmp/payload.adt \
-               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 48
+               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img "${ESP_MB:-48}"
           IMG=edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img
           # SimpleInit's prober builds its candidate list from
           # ARCH1_FILE("boot","aa64") in src/boot/efi_path.c, i.e. the literal string
@@ -284,10 +321,37 @@ jobs:
           # the volume under the name the table uses for this CPU: bootaa64.efi.
           #
           mcopy -i "$IMG" -o /tmp/Meizu15Launcher.efi ::/bootaa64.efi
-          printf 'fs0:\\bootaa64.efi\r\n' > /tmp/startup.nsh
+          # startup.nsh DOES run the launcher. The menu's first entry is the UEFI
+          # Shell, so the Shell is what the countdown picks and startup.nsh is the
+          # one path that reaches the launcher without a keypress. The launcher
+          # now holds its first frame for ten seconds, so the panel still shows
+          # "Meizu15Launcher: looking for ..." long enough to be read.
+          printf 'echo -r Meizu15: SimpleInit fell through to the Shell; starting the launcher.\r\nfs0:\\bootaa64.efi\r\n' > /tmp/startup.nsh
           mcopy -i "$IMG" -o /tmp/startup.nsh ::/startup.nsh
           mdir -i "$IMG" ::/EFI/BOOT
           mdir -i "$IMG" ::/ | tail -14
+
+      - name: Assert the payload volume layout
+        run: |
+          set -eux
+          IMG=edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img
+          mdir -i "$IMG" ::/ -/ > esp-listing.txt
+          cat esp-listing.txt
+          # While prober.c's loop variable is still shadowed only dir[0] -- "/" --
+          # is probed, so the launcher has to sit at the volume root, otherwise the
+          # menu comes up without our entry and the next 12-minute fastboot round
+          # trip buys nothing. Assert it here instead of on the phone.
+          grep -qi 'bootaa64 *efi' esp-listing.txt || {
+            echo "::error::/bootaa64.efi is not at the payload volume root"; exit 1; }
+          grep -qi 'startup *nsh' esp-listing.txt || {
+            echo "::error::/startup.nsh is not at the payload volume root"; exit 1; }
+          grep -qi 'kernel\.macho' esp-listing.txt || {
+            echo "::error::/EFI/UniXNU/Payloads/kernel.macho is missing"; exit 1; }
+          grep -qi 'kernel\.macho\.adt' esp-listing.txt || {
+            echo "::error::/EFI/UniXNU/Payloads/kernel.macho.adt is missing"; exit 1; }
+          grep -qi 'unixnu\.toml' esp-listing.txt || {
+            echo "::error::/EFI/UniXNU/unixnu.toml is missing"; exit 1; }
+          echo "payload volume layout OK"
 
       - name: Build the firmware (DEBUG)
         run: |
@@ -295,7 +359,6 @@ jobs:
           cd edk2-msm
           chmod +x build.sh
           ./build.sh -d meizu15 -r DEBUG 2>&1 | tail -300
-        continue-on-error: true
 
       - name: Retarget and upload
         if: always()
@@ -308,11 +371,39 @@ jobs:
               meizu15/edk2-msm-overlay/boot-header-1632.bin \
               edk2-msm/boot-meizu15-payload-debug.img
             ls -l edk2-msm/boot-meizu15-payload-debug.img
+            # Walk the finished image once more from the outside: if the payload
+            # FREEFORM file did not survive the FDF, say so here and not on the
+            # phone. Non-zero here means the image is not worth a fastboot trip.
+            python3 meizu15/scripts/check_payload_fv.py \
+              edk2-msm/boot-meizu15-payload-debug.img | tee payload-fv.txt
           fi
+
+      - name: Verify the finished image from the outside
+        if: always()
+        run: |
+          set -eux -o pipefail
+          IMG=edk2-msm/boot-meizu15-payload-debug.img
+          if [ ! -f "$IMG" ]; then
+            echo "::error::no $IMG to verify"; exit 1
+          fi
+          # The payload volume is inside a COMPRESSED firmware section, so this is
+          # the only place the shipped bytes are actually read back: boot.img ->
+          # gzip -> FV -> FFS 3F1A9C22 -> COMPRESSED -> 48 MiB FAT -> tree.
+          # UEFIExtract does the section decompression; the rest is our own code.
+          curl -sSL -o /tmp/ue.zip \
+            https://github.com/LongSoft/UEFITool/releases/download/A76/UEFIExtract_NE_A76_x64_linux.zip
+          mkdir -p /tmp/ue && unzip -oq /tmp/ue.zip -d /tmp/ue
+          chmod +x /tmp/ue/UEFIExtract
+          python3 meizu15/scripts/ci/verify-payload-image.py "$IMG" \
+            --uefiextract /tmp/ue/UEFIExtract --keep /tmp/verify | tee payload-image.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: meizu15-uefi-payload-debug
-          path: edk2-msm/boot-meizu15-payload-debug.img
+          path: |
+            edk2-msm/boot-meizu15-payload-debug.img
+            esp-listing.txt
+            payload-fv.txt
+            payload-image.txt
           if-no-files-found: warn

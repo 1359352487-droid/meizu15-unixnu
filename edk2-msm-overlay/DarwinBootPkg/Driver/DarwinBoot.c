@@ -1074,10 +1074,40 @@ Boot (
   Print (L"DARWINBOOT: inputs validated; exiting boot services\n");
 
   //
+  // Hold this frame. From here on the firmware's USB is gone, and if the kernel
+  // faults the panel keeps exactly these lines. On this phone that is the only
+  // record of how far the hand-off got, so leave it up long enough to read.
+  //
+  gBS->Stall (8000000);
+
+  //
   // The same facts in large type over the whole screen. The firmware's log
   // draws far larger than the text console, and the form feed clears the
   // screen first. This is what stays visible if the kernel never draws.
   //
+  //
+  // The same facts on the panel, not just in the firmware log. This port has no
+  // serial port, so a DEBUG-only dump is invisible; Print goes through ConOut
+  // and is the only channel that survives a kernel fault.
+  //
+  Print (L"DARWINBOOT: hand-off to the kernel\n");
+  Print (L"DARWINBOOT: kernel va 0x%lx pa 0x%lx\n", Kernel.Base, Address);
+  Print (L"DARWINBOOT: entry pa 0x%lx args pa 0x%lx window 0x%lx\n",
+         Address + Kernel.Entry - Kernel.Base, ArgsAddress, (UINT64)WindowSize);
+  Print (L"DARWINBOOT: video base 0x%lx %lux%lu %lu bpp\n",
+         Video[0], Video[3], Video[4], Video[5]);
+  Print (L"DARWINBOOT: entry words %08x %08x %08x %08x\n",
+         ReadUnaligned32 ((CONST UINT32 *)(UINTN)(Address + Kernel.Entry - Kernel.Base)),
+         ReadUnaligned32 ((CONST UINT32 *)(UINTN)(Address + Kernel.Entry - Kernel.Base + 4)),
+         ReadUnaligned32 ((CONST UINT32 *)(UINTN)(Address + Kernel.Entry - Kernel.Base + 8)),
+         ReadUnaligned32 ((CONST UINT32 *)(UINTN)(Address + Kernel.Entry - Kernel.Base + 12)));
+  Print (L"DARWINBOOT: CurrentEL %lu SCTLR_EL1 0x%lx TCR_EL1 0x%lx\n",
+         DarwinCurrentEl () >> 2, READ_SYSREG (sctlr_el1), READ_SYSREG (tcr_el1));
+  Print (L"DARWINBOOT: ID_AA64MMFR0_EL1 0x%lx ID_AA64PFR0_EL1 0x%lx\n",
+         READ_SYSREG (id_aa64mmfr0_el1), READ_SYSREG (id_aa64pfr0_el1));
+  Print (L"DARWINBOOT: exiting boot services, a green bar marks the hand-off\n");
+  gBS->Stall (4000000);
+
   DEBUG ((DEBUG_ERROR, "\fDARWINBOOT: hand-off to the kernel\n\n"));
   DEBUG ((DEBUG_ERROR, "kernel   va 0x%lx  pa 0x%lx\n", Kernel.Base, Address));
   DEBUG ((DEBUG_ERROR, "entry    pa 0x%lx\n", Address + Kernel.Entry - Kernel.Base));
