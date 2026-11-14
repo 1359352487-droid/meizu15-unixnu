@@ -338,6 +338,25 @@ jobs:
           # 10-45 KB/s -- the bootloader's USB stack, not the cable: MTP on the same
           # port moves files at full speed and both fastboot binaries are identical.
           sed -i -E '/^[[:space:]]*INF[[:space:]].*(LinuxSimpleMassStorage|LogoDxe)/d' "$FDF"
+          #
+          # Drop SimpleInit's GUI.
+          #
+          # It faults at SimpleInitMain + 0x2088 immediately after printing
+          # "Initialize SimpleInit GUI", with FAR = 0 and
+          # "Data abort: Translation fault, third level" -- a null read inside its
+          # own initialisation. Disassembly puts the fault on an indirect call
+          # through a global table at .data:0x885500 that is still zero at that
+          # point, i.e. something the GUI expects to have been populated is not.
+          #
+          # That is not a defect this port introduced and not one worth chasing
+          # through 8 MB of someone else's PE32: the port does not need the GUI.
+          # With SimpleInit gone BdsDxe falls back to the next UEFI application in
+          # boot order, which is the Shell, and the Shell runs startup.nsh from
+          # the payload volume -- which is the actual goal.
+          #
+          # LinuxSimpleMassStorage and LogoDxe stay removed for size; they were
+          # never on this boot path.
+          sed -i -E '/^[[:space:]]*INF[[:space:]].*SimpleInitMain/d' "$FDF"
           echo "=== diff ==="
           diff -u "$FDF.orig" "$FDF" || true
           echo "=== INF entries after ==="
