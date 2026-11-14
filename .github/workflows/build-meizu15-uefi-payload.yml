@@ -394,9 +394,11 @@ jobs:
             https://github.com/LongSoft/UEFITool/releases/download/A76/UEFIExtract_NE_A76_x64_linux.zip
           # Unpack with python3 rather than unzip (not guaranteed on the runner) and
           # look the binary up instead of assuming the archive has no top directory.
+          # The linux release ships it as lower-case "uefiextract", the windows one
+          # as "UEFIExtract.exe", so match case-insensitively.
           python3 -c "import zipfile; zipfile.ZipFile('/tmp/ue.zip').extractall('/tmp/ue')"
           ls -lR /tmp/ue | head -20
-          UE=$(find /tmp/ue -type f -name 'UEFIExtract*' | head -1)
+          UE=$(find /tmp/ue -type f -iname 'uefiextract*' | head -1)
           [ -n "$UE" ] || { echo "::error::UEFIExtract missing from the archive"; exit 1; }
           chmod +x "$UE"
           python3 meizu15/scripts/ci/verify-payload-image.py "$IMG" \
