@@ -491,6 +491,16 @@ RunEnd (EFI_MEMORY_DESCRIPTOR *Map, UINTN Size, UINTN Stride, UINT64 Start, UINT
 // Large diagnostic text straight into the GOP framebuffer: the UEFI text console font is too small to
 // photograph. 5x12 glyphs from DiagFont.h scaled 4x, white on a black box; wraps at the right edge.
 #include "DiagFont.h"
+
+//
+// The loader-return stub, assembled in Entry.S. It is not called from here:
+// it is memcpy'd into the loaded image so that a faulting kernel can branch to
+// it by physical address. The three symbols bracket the body and the parameter
+// word at its end.
+//
+extern UINT8  DarwinKernelReturnStubStart[];
+extern UINT8  DarwinKernelReturnStubEnd[];
+extern UINT8  DarwinKernelReturnStubParameters[];
 STATIC CONST UINT64 mDiagFont[] = GLYPH_FONT;
 
 STATIC
@@ -985,6 +995,89 @@ Boot (
     CopyMem ((VOID *)(UINTN)(Address + Kernel.Segments[Index].Address - Kernel.Base),
              (UINT8 *)Image + Kernel.Segments[Index].FileOffset, (UINTN)Kernel.Segments[Index].FileSize);
   }
+
+  //
+  // Hand the kernel a way to come back.
+  //
+  // hakios-xnu patches start.s with a slot the loader is expected to fill:
+  //
+  //     Lloader_stub_slot:
+  //         .ascii "XNULDRST"   magic the loader searches for
+  //         .quad  0            PA of the loader's return stub
+  //         .quad  0            checkpoint number to stop at (0 = none)
+  //         .quad  0            (physical - virtual) offset of the image
+  //
+  // The early exception vector and loader_return() both read word 1 and branch
+  // to it when it is non-zero. When it is zero the exception path reaches
+  // `cbz x9, .` and parks in a one-instruction loop, with nothing on screen.
+  //
+  // That is exactly what this port has been showing: the kernel faulted before
+  // it could print, had no stub to hand the log to, and spun. Filling the slot
+  // is what turns "silent" into "a coloured band and, on the loader_return path,
+  // a log".
+  //
+  // The slot is found by its magic rather than by address: a hardcoded VA would
+  // silently point elsewhere the moment a different kernel build is dropped into
+  // the payload volume.
+  //
+  {
+    UINTN  SlotOffset;
+    UINTN  StubOffset;
+    UINTN  StubSize;
+    UINTN  ParameterOffset;
+    UINT64 *Slot;
+
+    SlotOffset = 0;
+    for (Index = 0; Index + 32 <= ImageSize; Index++) {
+      if (CompareMem ((UINT8 *)Image + Index, "XNULDRST", 8) == 0) {
+        SlotOffset = Index;
+        break;
+      }
+    }
+
+    if (SlotOffset == 0) {
+      Print (L"DARWINBOOT: no loader_stub_slot in this kernel, staying silent\n");
+    } else {
+      StubSize        = (UINTN)(DarwinKernelReturnStubEnd - DarwinKernelReturnStubStart);
+      ParameterOffset = (UINTN)(DarwinKernelReturnStubParameters - DarwinKernelReturnStubStart);
+      StubOffset      = ALIGN_VALUE (Used, 16);
+
+      if ((StubOffset + StubSize) > (WindowSize - BLOCK_SIZE)) {
+        Print (L"DARWINBOOT: no room for the return stub, staying silent\n");
+      } else {
+        CopyMem ((VOID *)(UINTN)(Address + StubOffset),
+                 (VOID *)DarwinKernelReturnStubStart,
+                 StubSize);
+        //
+        // The stub reaches the framebuffer by physical address once it has
+        // switched translation off, so the parameter word is filled here.
+        //
+        WriteUnaligned64 (
+          (UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset),
+          Video[0]
+          );
+
+        Slot    = (UINT64 *)(UINTN)(Address + SlotOffset);
+        Slot[1] = Address + StubOffset;
+        Slot[2] = 0;
+        Slot[3] = Address - Kernel.Base;
+
+        //
+        // Extend the kernel data region over the stub: the kernel allocates
+        // upwards from TopOfKernelData, and a stub outside that range would be
+        // handed out and overwritten before it was ever needed.
+        //
+        Used = StubOffset + ALIGN_VALUE (StubSize, 16);
+
+        Print (
+          L"DARWINBOOT: return stub at 0x%lx, slot at file offset 0x%lx\n",
+          (UINT64)(Address + StubOffset),
+          (UINT64)SlotOffset
+          );
+      }
+    }
+  }
+
   Args = (DARWIN_BOOT_ARGS *)(UINTN)ArgsAddress;
   Args->Revision = 2;
   Args->Version = 2;
@@ -1074,40 +1167,10 @@ Boot (
   Print (L"DARWINBOOT: inputs validated; exiting boot services\n");
 
   //
-  // Hold this frame. From here on the firmware's USB is gone, and if the kernel
-  // faults the panel keeps exactly these lines. On this phone that is the only
-  // record of how far the hand-off got, so leave it up long enough to read.
-  //
-  gBS->Stall (8000000);
-
-  //
   // The same facts in large type over the whole screen. The firmware's log
   // draws far larger than the text console, and the form feed clears the
   // screen first. This is what stays visible if the kernel never draws.
   //
-  //
-  // The same facts on the panel, not just in the firmware log. This port has no
-  // serial port, so a DEBUG-only dump is invisible; Print goes through ConOut
-  // and is the only channel that survives a kernel fault.
-  //
-  Print (L"DARWINBOOT: hand-off to the kernel\n");
-  Print (L"DARWINBOOT: kernel va 0x%lx pa 0x%lx\n", Kernel.Base, Address);
-  Print (L"DARWINBOOT: entry pa 0x%lx args pa 0x%lx window 0x%lx\n",
-         Address + Kernel.Entry - Kernel.Base, ArgsAddress, (UINT64)WindowSize);
-  Print (L"DARWINBOOT: video base 0x%lx %lux%lu %lu bpp\n",
-         Video[0], Video[3], Video[4], Video[5]);
-  Print (L"DARWINBOOT: entry words %08x %08x %08x %08x\n",
-         ReadUnaligned32 ((CONST UINT32 *)(UINTN)(Address + Kernel.Entry - Kernel.Base)),
-         ReadUnaligned32 ((CONST UINT32 *)(UINTN)(Address + Kernel.Entry - Kernel.Base + 4)),
-         ReadUnaligned32 ((CONST UINT32 *)(UINTN)(Address + Kernel.Entry - Kernel.Base + 8)),
-         ReadUnaligned32 ((CONST UINT32 *)(UINTN)(Address + Kernel.Entry - Kernel.Base + 12)));
-  Print (L"DARWINBOOT: CurrentEL %lu SCTLR_EL1 0x%lx TCR_EL1 0x%lx\n",
-         DarwinCurrentEl () >> 2, READ_SYSREG (sctlr_el1), READ_SYSREG (tcr_el1));
-  Print (L"DARWINBOOT: ID_AA64MMFR0_EL1 0x%lx ID_AA64PFR0_EL1 0x%lx\n",
-         READ_SYSREG (id_aa64mmfr0_el1), READ_SYSREG (id_aa64pfr0_el1));
-  Print (L"DARWINBOOT: exiting boot services, a green bar marks the hand-off\n");
-  gBS->Stall (4000000);
-
   DEBUG ((DEBUG_ERROR, "\fDARWINBOOT: hand-off to the kernel\n\n"));
   DEBUG ((DEBUG_ERROR, "kernel   va 0x%lx  pa 0x%lx\n", Kernel.Base, Address));
   DEBUG ((DEBUG_ERROR, "entry    pa 0x%lx\n", Address + Kernel.Entry - Kernel.Base));
