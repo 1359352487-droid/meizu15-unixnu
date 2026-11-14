@@ -276,8 +276,23 @@ jobs:
         if: ${{ !inputs.keep_everything }}
         run: |
           set -eux
-          FDF=edk2-msm/Platform/Meizu/sdm660/meizu15.fdf
-          [ -f "$FDF" ] || FDF=$(ls edk2-msm/Platform/Meizu/sdm660/*.fdf | head -1)
+          # This port has no Platform/Meizu/sdm660/meizu15.fdf: the override is an
+          # include (meizu15.fdf.inc) pulled in by the SoC-level
+          # Platform/Qualcomm/sdm660/sdm660.fdf, which is what FLASH_DEFINITION
+          # names. Looking only for meizu15.fdf made this step exit 1 under
+          # `set -eux` and skip every step after it, so the debug job never built
+          # anything.
+          FDF=""
+          for cand in \
+              edk2-msm/Platform/Qualcomm/sdm660/sdm660.fdf \
+              edk2-msm/Platform/Meizu/sdm660/meizu15.fdf \
+          ; do
+            if [ -f "$cand" ]; then FDF="$cand"; break; fi
+          done
+          if [ -z "$FDF" ]; then
+            echo "no FDF found to trim; leaving the volume as it is"
+            exit 0
+          fi
           echo "FDF: $FDF"
           echo "=== INF entries before ==="
           grep -n '^ *INF ' "$FDF" | head -100 || true
