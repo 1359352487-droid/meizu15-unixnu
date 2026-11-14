@@ -26,10 +26,37 @@ ASM_FUNC(DarwinFlush)
 
 // x0=boot_args PA, x1=entry PA, x2=owned PA, x3=owned size, x4=frame buffer
 // PA (0 for none), x5=its size in bytes. EL1 only.
+//
+// Two painted bands, because one could not answer the question that matters.
+//
+// Before this, the top of the screen turned green and then nothing else
+// happened. Green only proves the paint ran; the branch to the kernel comes
+// after the MMU is switched off, and if instruction fetch fails at that point
+// the panel looks exactly the same as a kernel that started and stayed quiet.
+//
+// So the branch now goes through a trampoline that paints a second band midway
+// down the screen, and the three possible outcomes are all distinguishable:
+//
+//   green, no red   stopped between the two paints -- cache maintenance or the
+//                   SCTLR_EL1 write, before any branch
+//   green and red   the trampoline executed with the MMU off, so
+//                   instruction fetch still works; the kernel was entered and
+//                   produced no visible output of its own
+//   neither         DarwinEnter was never called
+//
+// Colour note: these are BGRA words, so 0xFF00FF00 is green and 0xFFFF0000 is
+// red -- the low byte is blue.
 ASM_FUNC(DarwinEnter)
   msr daifset, #15
-  // Paint the top 1/16 of the framebuffer green (BGRA 0xFF00FF00)
-  // before cache maintenance, MMU shutdown and the branch to the kernel.
+
+  // Everything the trampoline needs has to survive in registers. Once the MMU is
+  // off only the identity-mapped kernel image and this code are reachable, and
+  // the stack is not something to rely on for an argument like this.
+  mov x15, x1        // real kernel entry PA
+  mov x14, x4        // framebuffer PA, 0 when there is none
+  mov x13, x5        // framebuffer size in bytes
+
+  // Paint the top 1/16 of the framebuffer green (BGRA 0xFF00FF00).
   cbz x4, 2f
   lsr x9, x5, #4
   bic x9, x9, #7
@@ -42,6 +69,8 @@ ASM_FUNC(DarwinEnter)
   b.hi 3b
   dsb sy
 2:
+  // Write the kernel image back out of the data cache so the kernel reads what
+  // was actually loaded, then drop the instruction cache.
   add x5, x2, x3
   mrs x6, ctr_el0
   ubfx x6, x6, #16, #4
@@ -68,4 +97,25 @@ ASM_FUNC(DarwinEnter)
   tlbi vmalle1
   dsb sy
   isb
+
+  // Branch to the trampoline by PC-relative address, so the value is correct
+  // whether or not the MMU is still translating this code.
+  adr x1, 8f
   br x1
+
+8:
+  // Reaching here means the branch executed with translation off.
+  cbz x14, 9f
+  mov w10, #0x0000
+  movk w10, #0xFFFF, lsl #16   // BGRA red
+  add x12, x14, x13, lsr #1    // middle of the framebuffer
+  lsr x9, x13, #5
+  bic x9, x9, #7
+1:
+  stp w10, w10, [x12], #8
+  subs x9, x9, #8
+  b.hi 1b
+  dsb sy
+
+9:
+  br x15
