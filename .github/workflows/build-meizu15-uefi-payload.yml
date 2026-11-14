@@ -16,11 +16,12 @@ name: build-meizu15-uefi-payload
 on:
   workflow_dispatch:
     inputs:
-      skip_prober_fix:
+      apply_prober_fix:
         description: >-
-          Do NOT patch SimpleInit's src/boot/prober.c. The patch is on by default
-          because the shadowed loop variable only ever probes dir[0]; set this to
-          true to build the unpatched prober for comparison.
+          Patch SimpleInit's src/boot/prober.c to un-shadow the nested loop
+          variable. OFF by default: the rewrite changes how many times the loop
+          body runs, which exposes a double fs_close() in boot_scan_part and
+          kills SimpleInitMain at +0x2088. Turn it on only to reproduce that.
         type: boolean
         default: false
       tiny_payload:
@@ -129,9 +130,7 @@ jobs:
             echo "// its extractor from a constructor, so DxeCore can unwrap it for us."
             echo "// ---------------------------------------------------------------------------"
             echo "FILE FREEFORM = 3f1a9c22-5b41-4a0e-9c77-2d618b4fe01a {"
-            echo "  SECTION GUIDED EE4E5898-3914-4259-9D6E-DC7BD79403CF PROCESSING_REQUIRED = TRUE {"
-            echo "    SECTION RAW = Platform/Meizu/sdm660/payload/unixnu-esp.img"
-            echo "  }"
+            echo "  SECTION RAW = Platform/Meizu/sdm660/payload/unixnu-esp.img"
             echo "}"
           } >> "$F"
           tail -14 "$F"
@@ -142,6 +141,14 @@ jobs:
           python3 meizu15/scripts/ci/patch_simpleinit_free.py edk2-msm
 
       - name: Patch SimpleInit prober shadowed loop
+        # OFF by default. The shadowed loop is real, but rewriting it changes how
+        # many times the body runs: the original tries dir[0] with every name, the
+        # rewrite walks dir[0..3] against name[0..7]. That difference reaches
+        # boot_scan_part's prober_cache, which fs_close()s a handle in add_item and
+        # again in free_cache, and SimpleInitMain then dies at +0x2088 with
+        # 'Data abort: Translation fault, third level'. Fix the payload first;
+        # revisit the prober with a patch that also removes the double close.
+        if: ${{ inputs.apply_prober_fix }}
         run: |
           set -eux
           python3 meizu15/scripts/ci/patch_simpleinit_prober.py edk2-msm
@@ -275,17 +282,22 @@ jobs:
           F=edk2-msm/Platform/Meizu/sdm660/meizu15.fdf.inc
           {
             echo ""
-            echo "// GUIDED + LZMA, not COMPRESS: the DXE core's EFI_SECTION_COMPRESSION"
-            echo "// branch feeds EFI_STANDARD_COMPRESSION into gEfiDecompressProtocol,"
-            echo "// which is bit-Tiano, and GenFds writes LZMA there. The section stream"
-            echo "// then fails to open and ReadSection(EFI_SECTION_RAW) returns"
-            echo "// EFI_NOT_FOUND. GUID_DEFINED goes through ExtractGuidedSectionLib"
-            echo "// instead, and QcomCommonDsc.inc already links"
-            echo "// NULL|LzmaCustomDecompressLib into DxeMain, so the handler exists."
+            echo "// No wrapper at all. Every compressed form this platform can produce is"
+            echo "// unreadable here:"
+            echo "//   COMPRESS writes CompressionType 1 (LZMA), but the DXE core's"
+            echo "//     EFI_SECTION_COMPRESSION branch hands EFI_STANDARD_COMPRESSION to"
+            echo "//     gEfiDecompressProtocol, which is bit-Tiano; LZMA through Tiano"
+            echo "//     fails and the section stream is dropped."
+            echo "//   GUIDED needs gLzmaCustomDecompressGuid registered with"
+            echo "//     ExtractGuidedSectionLib, and on this build it is not: DxeCore is"
+            echo "//     286,768 bytes both before and after QcomCommonDsc.inc started"
+            echo "//     naming NULL|LzmaCustomDecompressLib, and the 7z SDK alone is"
+            echo "//     larger than that. ReadSection(RAW) returns EFI_NOT_FOUND."
+            echo "// A bare RAW section is the one form FirmwareVolume2 always returns"
+            echo "// verbatim, and the payload volume has to fit the 24-bit FFS size"
+            echo "// field (16 MiB) instead of relying on compression."
             echo "FILE FREEFORM = 3f1a9c22-5b41-4a0e-9c77-2d618b4fe01a {"
-            echo "  SECTION GUIDED EE4E5898-3914-4259-9D6E-DC7BD79403CF PROCESSING_REQUIRED = TRUE {"
-            echo "    SECTION RAW = Platform/Meizu/sdm660/payload/unixnu-esp.img"
-            echo "  }"
+            echo "  SECTION RAW = Platform/Meizu/sdm660/payload/unixnu-esp.img"
             echo "}"
           } >> "$F"
 
@@ -335,7 +347,7 @@ jobs:
         run: python3 meizu15/scripts/ci/patch_simpleinit_free.py edk2-msm
 
       - name: Patch SimpleInit prober shadowed loop (optional)
-        if: ${{ !inputs.skip_prober_fix }}
+        if: ${{ inputs.apply_prober_fix }}
         run: |
           set -eux
           python3 meizu15/scripts/ci/patch_simpleinit_prober.py edk2-msm
