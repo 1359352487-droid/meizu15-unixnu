@@ -263,25 +263,19 @@ Meizu15LauncherEntry (
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
   //
-  // -v, because XNU is silent without it.
-  //
-  // The handoff now completes: both painted bands appear (green before the MMU
-  // is switched off, red after), so the kernel entry is being reached. What
-  // follows it is nothing at all, and that is expected -- XNU only writes to the
-  // video console when PE_verbose is set, which -v does. Booting quietly and
-  // dying at the first instruction look identical from the outside.
+  // -v, because XNU is silent without it. loader_return_after asks hakios-xnu to
+  // hand control back to the loader after that many seconds whether or not
+  // anything went wrong, which is the only way to read a log from a board with
+  // no serial port.
   //
   // The command line lands in boot_args.CommandLine, which is 1024 bytes at
   // offset 0x6c and matches XNU's pexpert/pexpert/arm64/boot.h layout (Revision,
   // Version, four uint64s, a 48-byte Boot_Video of six unsigned long, then
   // machineType, deviceTreeP, deviceTreeLength, CommandLine). DarwinBoot's
-  // BootArgs.h asserts those offsets, so -v reaches PE_parse_boot_argn intact.
+  // BootArgs.h asserts those offsets, so both arguments reach
+  // PE_parse_boot_argn intact.
   //
-  // If the screen still shows nothing after the red band, the kernel is failing
-  // before video console initialisation, which is a different and much earlier
-  // problem than anything the boot arguments could cause.
-  //
-  Request.BootArgs       = L"-v";
+  Request.BootArgs       = L"-v loader_return_after=15";
   //
   // DeviceTree must stay NULL here.
   //
