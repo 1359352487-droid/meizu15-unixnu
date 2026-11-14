@@ -392,10 +392,15 @@ jobs:
           # UEFIExtract does the section decompression; the rest is our own code.
           curl -sSL -o /tmp/ue.zip \
             https://github.com/LongSoft/UEFITool/releases/download/A76/UEFIExtract_NE_A76_x64_linux.zip
-          mkdir -p /tmp/ue && unzip -oq /tmp/ue.zip -d /tmp/ue
-          chmod +x /tmp/ue/UEFIExtract
+          # Unpack with python3 rather than unzip (not guaranteed on the runner) and
+          # look the binary up instead of assuming the archive has no top directory.
+          python3 -c "import zipfile; zipfile.ZipFile('/tmp/ue.zip').extractall('/tmp/ue')"
+          ls -lR /tmp/ue | head -20
+          UE=$(find /tmp/ue -type f -name 'UEFIExtract*' | head -1)
+          [ -n "$UE" ] || { echo "::error::UEFIExtract missing from the archive"; exit 1; }
+          chmod +x "$UE"
           python3 meizu15/scripts/ci/verify-payload-image.py "$IMG" \
-            --uefiextract /tmp/ue/UEFIExtract --keep /tmp/verify | tee payload-image.txt
+            --uefiextract "$UE" --keep /tmp/verify | tee payload-image.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
