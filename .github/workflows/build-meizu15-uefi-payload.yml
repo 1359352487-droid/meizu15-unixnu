@@ -444,6 +444,10 @@ jobs:
             echo "::error::/EFI/UniXNU/Payloads/kernel.macho.adt is missing"; exit 1; }
           grep -qi 'unixnu\.toml' esp-listing.txt || {
             echo "::error::/EFI/UniXNU/unixnu.toml is missing"; exit 1; }
+          # Keep the geometry check as a guard even though it passes today: the
+          # FAT type is chosen by cluster count, so a change to the volume size
+          # or cluster size can silently cross the FAT12/FAT16 threshold.
+          python3 meizu15/scripts/ci/check_fat_geometry.py "$IMG"
           echo "payload volume layout OK"
 
       - name: Build the firmware (DEBUG)
