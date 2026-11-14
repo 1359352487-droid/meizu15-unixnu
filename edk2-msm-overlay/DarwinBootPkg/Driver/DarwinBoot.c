@@ -501,6 +501,43 @@ RunEnd (EFI_MEMORY_DESCRIPTOR *Map, UINTN Size, UINTN Stride, UINT64 Start, UINT
 extern UINT8  DarwinKernelReturnStubStart[];
 extern UINT8  DarwinKernelReturnStubEnd[];
 extern UINT8  DarwinKernelReturnStubParameters[];
+
+//
+// Filled by DarwinEnter before the MMU goes off, and by the return stub when the
+// kernel hands control back. The layout is fixed by Entry.S.
+//
+// The callee-saved registers are part of this because DarwinEnter is an ordinary
+// C call that happens never to return: if the stub resumes that frame without
+// restoring x19..x29, the C code continues with whatever the kernel left in
+// them. The first access through a stale x19 would fault, and the crash would
+// look like a bug in the log printer.
+//
+typedef struct {
+  UINT64  Stack;
+  UINT64  Return;
+  UINT64  Sctlr;
+  UINT64  Ttbr0;
+  UINT64  Ttbr1;
+  UINT64  Tcr;
+  UINT64  Mair;
+  UINT64  X19;
+  UINT64  X20;
+  UINT64  X21;
+  UINT64  X22;
+  UINT64  X23;
+  UINT64  X24;
+  UINT64  X25;
+  UINT64  X26;
+  UINT64  X27;
+  UINT64  X28;
+  UINT64  X29;
+  UINT64  LogAddress;
+  UINT64  LogLength;
+  UINT64  Returned;
+} DARWIN_SAVED_CONTEXT;
+
+extern DARWIN_SAVED_CONTEXT  DarwinSavedContext;
+
 STATIC CONST UINT64 mDiagFont[] = GLYPH_FONT;
 
 STATIC
@@ -545,6 +582,132 @@ DiagDraw (CONST CHAR16 *Text, UINTN Row)
     }
     X += Cell;
   }
+}
+
+/**
+  Draw text straight into the framebuffer, without any boot services.
+
+  DiagDraw above asks the GOP for the display every time, which is fine while the
+  firmware still owns the machine. After ExitBootServices it is not available,
+  and the one moment a kernel log is worth reading is exactly then. So this takes
+  the six video words DarwinEnter was given and writes pixels at their physical
+  addresses: no protocol lookups, no allocation, nothing that can fail.
+
+  Scale 3 keeps roughly 45 rows on a 1920-line panel, which is the useful part of
+  a boot log.
+**/
+STATIC
+VOID
+DiagDrawRaw (
+  IN CONST UINT64  *Video,
+  IN CONST UINT8   *Text,
+  IN UINTN         Limit,
+  IN UINTN         Row
+  )
+{
+  UINTN   Scale;
+  UINTN   Cell;
+  UINTN   Line;
+  UINTN   X;
+  UINT64  Y;
+  UINTN   Index;
+  UINTN   Gx;
+  UINTN   Gy;
+  UINTN   Dx;
+  UINTN   Dy;
+  UINT32  *Fb;
+  UINT64  Glyph;
+  UINT64  Data;
+  UINT8   Ch;
+
+  if ((Video[0] == 0) || (Video[2] == 0) || (Video[3] == 0) || (Video[4] == 0)) {
+    return;
+  }
+
+  Scale = 3;
+  Cell  = 6 * Scale;
+  Line  = 14 * Scale;
+  X     = 0;
+  Y     = (UINT64)Row * Line;
+  Fb    = (UINT32 *)(UINTN)Video[0];
+
+  for (Index = 0; (Index < Limit) && (Text[Index] != 0); Index++) {
+    Ch = Text[Index];
+    if (Ch == '\n') {
+      X = 0;
+      Y += Line;
+      continue;
+    }
+    if (Ch == '\r') {
+      X = 0;
+      continue;
+    }
+    if ((Ch < 32) || (Ch > 126)) {
+      continue;
+    }
+    if (X + Cell > Video[3]) {
+      X = 0;
+      Y += Line;
+    }
+    if (Y + Line > Video[4]) {
+      return;
+    }
+
+    Glyph = mDiagFont[Ch - 32];
+    for (Gy = 0; Gy < Line; Gy++) {
+      for (Gx = 0; Gx < Cell; Gx++) {
+        Fb[(Y + Gy) * (Video[2] / 4) + X + Gx] = 0xFF000000;
+      }
+    }
+    for (Gy = 0; Gy < 12; Gy++) {
+      Data = (Gy < 6) ? ((Glyph >> 32) >> (Gy * 5)) : ((Glyph & 0xFFFFFFFFULL) >> ((Gy - 6) * 5));
+      for (Gx = 0; Gx < 5; Gx++) {
+        if ((Data >> Gx) & 1) {
+          for (Dy = 0; Dy < Scale; Dy++) {
+            for (Dx = 0; Dx < Scale; Dx++) {
+              Fb[(Y + Gy * Scale + Dy) * (Video[2] / 4) + X + Gx * Scale + Dx] = 0xFFFFFFFF;
+            }
+          }
+        }
+      }
+    }
+    X += Cell;
+  }
+}
+
+/**
+  Print whatever the kernel left behind, if it came back.
+
+  hakios-xnu's loader-return channel hands a log pointer and length to the stub;
+  the stub parks them in DarwinSavedContext and restores this stack frame, so
+  control arrives here with the kernel's own output buffered at a physical
+  address. Nothing has been printed since ExitBootServices, so this is the first
+  and only chance to put it on the panel.
+**/
+STATIC
+VOID
+DarwinShowKernelLog (
+  IN CONST UINT64  *Video
+  )
+{
+  CONST UINT8  *Log;
+  UINTN        Length;
+
+  if (DarwinSavedContext.Returned == 0) {
+    return;
+  }
+  if ((DarwinSavedContext.LogAddress == 0) || (DarwinSavedContext.LogLength == 0)) {
+    return;
+  }
+
+  Log    = (CONST UINT8 *)(UINTN)DarwinSavedContext.LogAddress;
+  Length = (UINTN)DarwinSavedContext.LogLength;
+
+  //
+  // The head of the log is the boot, which is what a stall this early needs.
+  // DiagDrawRaw stops as soon as the panel is full.
+  //
+  DiagDrawRaw (Video, Log, Length, 0);
 }
 
 STATIC
@@ -1052,9 +1215,18 @@ Boot (
         // The stub reaches the framebuffer by physical address once it has
         // switched translation off, so the parameter word is filled here.
         //
+        // The context pointer is handed over the same way. This is the address
+        // of DarwinSavedContext in .data, and it is used as a physical address:
+        // edk2 maps its own images identity, which is why every "Load driver at
+        // 0x000CB05xxx" line names a usable physical address.
+        //
         WriteUnaligned64 (
           (UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset),
           Video[0]
+          );
+        WriteUnaligned64 (
+          (UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset + 8),
+          (UINT64)(UINTN)&DarwinSavedContext
           );
 
         Slot    = (UINT64 *)(UINTN)(Address + SlotOffset);
@@ -1221,6 +1393,12 @@ Boot (
     if (!EFI_ERROR (Status)) {
       if (Excluded == NULL) {
         DarwinEnter (ArgsAddress, Address + Kernel.Entry - Kernel.Base, Address, WindowSize, Video[0], Video[2] * Video[4]);
+        //
+        // Reaching this line at all means the kernel came back through the
+        // loader-return stub: DarwinEnter does not otherwise return. The stub
+        // restored this frame and set DarwinSavedContext.Returned.
+        //
+        DarwinShowKernelLog (Video);
         CpuDeadLoop ();
       }
       // The usable memory behind the head leaves the data cache as the head does in DarwinEnter. An excluded
@@ -1232,6 +1410,10 @@ Boot (
       }
       if (Address + WindowSize > Cursor) { DarwinFlush (Cursor, Address + WindowSize - Cursor); }
       DarwinEnter (ArgsAddress, Address + Kernel.Entry - Kernel.Base, Address, HeadSize, Video[0], Video[2] * Video[4]);
+      //
+      // Same as above: only the loader-return stub gets here.
+      //
+      DarwinShowKernelLog (Video);
       CpuDeadLoop ();
     }
     if (Status != EFI_INVALID_PARAMETER) { CpuDeadLoop (); }
