@@ -31,6 +31,14 @@ on:
           reject the fake kernel on purpose.
         type: boolean
         default: false
+      keep_everything:
+        description: >-
+          Do NOT drop LinuxSimpleMassStorage (~8.5 MB) and LogoDxe (~6.2 MB) from
+          the firmware volume. They are on by default because the image has to
+          travel over a fastboot link measured at 10-45 KB/s, and neither component
+          is used by this boot path.
+        type: boolean
+        default: false
   push:
     paths:
       - 'edk2-msm-overlay/**'
@@ -257,6 +265,33 @@ jobs:
             echo "  }"
             echo "}"
           } >> "$F"
+
+      - name: Trim firmware components this port does not use
+        if: ${{ !inputs.keep_everything }}
+        run: |
+          set -eux
+          FDF=edk2-msm/Platform/Meizu/sdm660/meizu15.fdf
+          [ -f "$FDF" ] || FDF=$(ls edk2-msm/Platform/Meizu/sdm660/*.fdf | head -1)
+          echo "FDF: $FDF"
+          echo "=== INF entries before ==="
+          grep -n '^ *INF ' "$FDF" | head -100 || true
+          cp "$FDF" "$FDF.orig"
+          # Two components dominate the firmware volume and nothing on this boot
+          # path uses them:
+          #   LinuxSimpleMassStorage  ~8.5 MB  presents eMMC as a USB mass-storage
+          #                                    device to a host; we boot from our own
+          #                                    payload volume, so it is dead weight.
+          #   LogoDxe                 ~6.2 MB  draws the firmware splash; BDS runs
+          #                                    without it, the panel just stays dark
+          #                                    until SimpleInit draws the menu.
+          # Shrinking the image matters because `fastboot boot` here transfers at
+          # 10-45 KB/s -- the bootloader's USB stack, not the cable: MTP on the same
+          # port moves files at full speed and both fastboot binaries are identical.
+          sed -i -E '/^[[:space:]]*INF[[:space:]].*(LinuxSimpleMassStorage|LogoDxe)/d' "$FDF"
+          echo "=== diff ==="
+          diff -u "$FDF.orig" "$FDF" || true
+          echo "=== INF entries after ==="
+          grep -c '^ *INF ' "$FDF" || true
 
       - name: Patch SimpleInit free(NULL)
         run: python3 meizu15/scripts/ci/patch_simpleinit_free.py edk2-msm
