@@ -71,6 +71,7 @@
 #include <Protocol/BlockIo.h>
 #include <Protocol/DevicePath.h>
 #include <Protocol/FirmwareVolume2.h>
+#include <Protocol/LoadedImage.h>
 
 //
 // Must match the FILE FREEFORM GUID that build-meizu15-uefi-payload.yml appends
@@ -313,14 +314,52 @@ Meizu15PayloadDxeEntry (
   VOID                           *Payload;
   UINTN                          PayloadSize;
   EFI_HANDLE                     Handle;
+  EFI_LOADED_IMAGE_PROTOCOL      *LoadedImage;
 
   Handles     = NULL;
   HandleCount = 0;
+  LoadedImage = NULL;
   Payload     = NULL;
   PayloadSize = 0;
 
   SayA ("=== Meizu15PayloadDxe ENTER ===");
 
+  //
+  // Look in the volume this driver was loaded FROM first.
+  //
+  // LocateHandleBuffer for gEfiFirmwareVolume2ProtocolGuid reported only two
+  // volumes on the phone, and the walk stopped after one and zero files
+  // respectively. Neither can be the 71-file DXE volume that this driver itself
+  // was just dispatched out of. The handle list is simply incomplete this early,
+  // whereas LoadedImage->DeviceHandle is by definition correct: it names the
+  // volume the image was read from.
+  //
+  Status = gBS->HandleProtocol (
+                  ImageHandle,
+                  &gEfiLoadedImageProtocolGuid,
+                  (VOID **)&LoadedImage
+                  );
+  if (!EFI_ERROR (Status) && (LoadedImage != NULL) && (LoadedImage->DeviceHandle != NULL)) {
+    DEBUG ((DEBUG_ERROR, "MZ15>> own volume is at handle %p\r\n", LoadedImage->DeviceHandle));
+    Status = gBS->HandleProtocol (
+                    LoadedImage->DeviceHandle,
+                    &gEfiFirmwareVolume2ProtocolGuid,
+                    (VOID **)&Fv
+                    );
+    if (!EFI_ERROR (Status)) {
+      if (!EFI_ERROR (ReadPayloadFromVolume (Fv, &Payload, &PayloadSize))) {
+        goto Publish;
+      }
+    } else {
+      DEBUG ((DEBUG_ERROR, "MZ15>> own volume has no FV protocol: %r\r\n", Status));
+    }
+  } else {
+    DEBUG ((DEBUG_ERROR, "MZ15>> no LoadedImage: %r\r\n", Status));
+  }
+
+  //
+  // Fall back to every volume the DXE core knows about.
+  //
   Status = gBS->LocateHandleBuffer (
                   ByProtocol,
                   &gEfiFirmwareVolume2ProtocolGuid,
@@ -361,6 +400,7 @@ Meizu15PayloadDxeEntry (
     return EFI_NOT_FOUND;
   }
 
+Publish:
   DEBUG ((DEBUG_ERROR, "MZ15>> publishing %u byte volume\r\n", (UINT32)PayloadSize));
 
   mPayload = AllocateZeroPool (sizeof (PAYLOAD_BLOCK_IO));
