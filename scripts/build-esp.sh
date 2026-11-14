@@ -20,7 +20,7 @@ set -euo pipefail
 KERNEL=${1:?usage: build-esp.sh <kernel.macho> <kernel.macho.adt> <out.img> [size_mb]}
 ADT=${2:?missing the ADT sidecar}
 OUT=${3:?missing the output image path}
-SIZE_MB=${4:-96}
+SIZE_MB=${4:-15}
 
 for tool in mformat mmd mcopy mdir; do
   command -v "$tool" >/dev/null || { echo "build-esp: $tool not found (apt install mtools)" >&2; exit 1; }
@@ -67,8 +67,24 @@ rm -f "$OUT"
 # mformat -T counts 512-byte sectors (mformat's own unit, not the 2048-byte
 # cluster size): 1 MiB = 2048 sectors. Getting this wrong silently halves the
 # volume and the copy then fails with "Disk full".
+# mformat -T counts 512-byte sectors, so 1 MiB is 2048 of them.
 sectors=$(( SIZE_MB * 2048 ))
-mformat -i "$OUT" -C -T "$sectors" -h 64 -s 32 -v UNIXNU ::
+#
+# 4 KiB clusters, not 1 KiB. The volume exists to carry a 15.06 MiB kernel and
+# has to stay UNDER 16 MiB, because GenFds promotes the whole firmware volume to
+# EFI_FIRMWARE_FILE_SYSTEM3 as soon as any one section reaches LARGE_FILE_SIZE
+# (0x1000000). An FFS3 FV is not just a bigger version of an FFS1 one: every FFS
+# header in it is parsed with EFI_FFS_FILE_HEADER2 and a 64-bit ExtendedSize.
+# Measured on this port, that broke two things at once: Meizu15PayloadDxe walked
+# the volume with GetNextFile, desynchronised at the 48 MiB payload file and
+# reported "the payload volume is not in any Fv"; and SimpleInitMain faulted at
+# +0x2088 with "Data abort: Translation fault, third level" even with the prober
+# left unpatched.
+#
+# At 1 KiB clusters the FAT itself eats enough to make a 15 MiB volume too tight.
+# 4 KiB clusters cut it to roughly 31 sectors per copy, which leaves 623,361
+# bytes of slack in a 15.75 MiB volume.
+mformat -i "$OUT" -C -T "$sectors" -h 64 -s 8 -v UNIXNU ::
 # Fixed timestamps: mformat/mcopy stamp from the clock otherwise.
 export MTOOLS_SKIP_CHECK=1
 mmd -i "$OUT" ::/EFI
