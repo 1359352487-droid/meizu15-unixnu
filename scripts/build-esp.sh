@@ -107,6 +107,12 @@ esac
 # then every FFS header is read as HEADER2 with a 64-bit ExtendedSize. That
 # broke GetNextFile in Meizu15PayloadDxe ("not in any Fv") and faulted
 # SimpleInitMain at +0x2088 on this port.
+# -c 8 = 4 KiB clusters. At this volume size mformat picks FAT12 by cluster
+# count (3,960 clusters, under the 4,085 threshold), and a FAT12 table of 12
+# sectors holds 12*512/1.5 = 4,096 entries, so the 3,855 clusters a 15.06 MiB
+# kernel spans fit with room to spare. The type is decided by cluster count,
+# not by this flag -- check_fat_geometry.py asserts the arithmetic after the
+# fact rather than trusting either.
 mformat -i "$OUT" -C -T "$sectors" -h 64 -s 32 -c 8 -v UNIXNU ::
 # Fixed timestamps: mformat/mcopy stamp from the clock otherwise.
 export MTOOLS_SKIP_CHECK=1
