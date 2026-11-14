@@ -117,5 +117,39 @@ ASM_FUNC(DarwinEnter)
   b.hi 1b
   dsb sy
 
+  // Identify what x15 actually points at.
+  //
+  // The log line for the entry address is unusable on this panel: Print output
+  // and DEBUG output overlap, so "entry pa 0x004614a8" could be 0x0845d4a8 with
+  // the leading byte lost, or a genuinely wrong address. Rather than read it,
+  // look at the memory. kernel.macho's LC_UNIXTHREAD names 0xfffffff0074614a8,
+  // inside __TEXT_EXEC, and the word there is 0x140000ED -- B over 0x3B4.
+  //
+  // A third band, below the red one, carries that answer:
+  //
+  //   blue    x15 holds 0x140000ED, so it points at the kernel entry
+  //   yellow  something else entirely, so the address arithmetic is wrong
+  //
+  // BGRA again: 0xFF0000FF is blue, 0xFFFFFF00 is yellow.
+  ldr w9, [x15]
+  mov w10, #0x00ED
+  movk w10, #0x1400, lsl #16
+  cmp w9, w10
+  mov w10, #0x00FF
+  movk w10, #0xFF00, lsl #16   // blue: entry word matches
+  b.eq 5f
+  mov w10, #0xFF00
+  movk w10, #0xFFFF, lsl #16   // yellow: entry word differs
+5:
+  add x12, x14, x13, lsr #1
+  add x12, x12, x13, lsr #3   // an eighth of the screen below the red band
+  lsr x9, x13, #5
+  bic x9, x9, #7
+1:
+  stp w10, w10, [x12], #8
+  subs x9, x9, #8
+  b.hi 1b
+  dsb sy
+
 9:
   br x15
