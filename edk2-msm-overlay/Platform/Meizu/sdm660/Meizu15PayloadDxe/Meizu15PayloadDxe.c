@@ -81,9 +81,32 @@ Say (
   IN CONST CHAR16  *Text
   )
 {
-  if (gST != NULL && gST->ConOut != NULL) {
+  //
+  // Three channels, because on this platform each has failed at least once:
+  //   DEBUG()  reaches the firmware log but the log is drawn with the text
+  //            renderer and gets overwritten by whatever BDS prints next;
+  //   Print()  goes through the same ConOut but formats, and it is what the
+  //            DXE core's own diagnostics use;
+  //   ConOut   directly, in case Print's buffer is the thing failing.
+  // The previous build emitted "Meizu15Payload: entry" from DEBUG and nothing
+  // else, which says gST->ConOut was not usable at dispatch time.
+  //
+  //
+  // \r\n, not \n. This firmware's text renderer does not return the carriage, so
+  // a bare \n starts the next line where this one stopped: the panel showed
+  //   Meizu15Payload: entry8B3E019, Size 334229d be loaded, defaulting to ACPI
+  // with the Device Tree message glued onto the end of ours.
+  //
+  Print (L"Meizu15Payload: %s\r\n", Text);
+  if ((gST != NULL) && (gST->ConOut != NULL) && (gST->ConOut->OutputString != NULL)) {
     gST->ConOut->OutputString (gST->ConOut, (CHAR16 *)Text);
     gST->ConOut->OutputString (gST->ConOut, L"\r\n");
+  } else {
+    //
+    // If this line is the only thing that appears, ConOut was not usable at
+    // dispatch time and Print() is the only channel that works.
+    //
+    DEBUG ((DEBUG_ERROR, "Meizu15Payload: gST->ConOut unusable at dispatch\n"));
   }
 }
 
@@ -334,7 +357,7 @@ Meizu15PayloadDxeEntry (
 
   Say (L"");
   Say (L"=== Meizu15PayloadDxe ENTER ===");
-  DEBUG ((DEBUG_INFO, "Meizu15Payload: entry\n"));
+  DEBUG ((DEBUG_ERROR, "Meizu15Payload: entry\r\n"));
 
   Status = gBS->LocateHandleBuffer (
                   ByProtocol,
