@@ -263,8 +263,30 @@ Meizu15LauncherEntry (
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
   Request.BootArgs       = L"";
-  Request.DeviceTree     = DeviceTree;
-  Request.DeviceTreeSize = DeviceTreeSize;
+  //
+  // DeviceTree must stay NULL here.
+  //
+  // DarwinBoot rejects a request that carries one:
+  //
+  //   if ((Request->KextCount != 0) || (Request->DeviceTree != NULL) ||
+  //       (Request->DeviceTreeSize != 0) || (DarwinCurrentEl () != 4))
+  //   {
+  //     Print (L"DARWINBOOT: unsupported inputs or exception level; ...");
+  //     return EFI_UNSUPPORTED;
+  //   }
+  //
+  // That is not a bug on its side: it opens KernelPath + ".adt" from the same
+  // volume itself and parses it there. Passing our own copy both duplicated the
+  // work and tripped the guard, which is exactly the failure seen on the panel:
+  //
+  //   DARWINBOOT: unsupported kernel for os explained. firmware retained
+  //   Meizu15Launcher: the loader returned Unsupported
+  //
+  // The read above stays, because "ADT 13996 bytes" is worth printing: it proves
+  // the file the loader is about to open is present and readable.
+  //
+  Request.DeviceTree     = NULL;
+  Request.DeviceTreeSize = 0;
   Request.Ramdisk        = NULL;
   Request.RamdiskSize    = 0;
   Request.Kexts          = NULL;
