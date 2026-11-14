@@ -1,0 +1,29 @@
+# Everything in this tree is built on Linux and edited on Windows.
+# core.autocrlf was on, so checkout turned LF into CRLF and the next edit
+# committed CRLF back -- which is what repeatedly broke the workflow YAML
+# (GitHub then shows the file name as the workflow name and creates no jobs).
+* text=auto eol=lf
+
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.md   text eol=lf
+*.c    text eol=lf
+*.h    text eol=lf
+*.py   text eol=lf
+*.sh   text eol=lf
+*.inf  text eol=lf
+*.dsc  text eol=lf
+*.fdf  text eol=lf
+*.inc  text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.nsh  text eol=lf
+
+# Binaries must not be touched at all.
+*.img  binary
+*.efi  binary
+*.bin  binary
+*.gz   binary
+*.zip  binary
+*.adt  binary
+*.macho binary
