@@ -11,33 +11,23 @@
       }
 
 The inner `d` shadows the outer one, so after the inner loop has run once the
-outer condition reads `ep->dir[strlen(ep->name)]` and the walk stops after
-`dir[0]` -- the literal "/".  That is why the menu reports
+outer condition reads `ep->dir[<len(name)>]` and the walk stops after `dir[0]`
+-- the literal "/".  That is why the menu reports
 `found UEFI Shell at /shell.efi` instead of `/EFI/tools/shell.efi`.
 
-The fix renames ONLY the inner loop variable and the `ep->name[...]` subscript.
-It deliberately leaves `ep->dir[d]` alone: `d` there is the outer variable and
-must stay.
+Two mistakes this script exists to avoid, both of which shipped a broken
+firmware before:
 
-That distinction is the whole point of this script.  An earlier version
-renamed every standalone `d` inside the inner loop body, which turned
+  * renaming every standalone `d` in the inner body, which turns
+    `ep->dir[d]` into `ep->dir[n]` and indexes the directory table with the
+    *name* counter.  `dir[]` is shorter, so the read runs off the end and the
+    firmware dies in SimpleInitMain with
+    `Data abort: Translation fault, third level`.
+  * rewriting `ep->name[d]` but not the declaration `size_t d = 0` in the inner
+    `for`, which leaves `n` used but never declared.
 
-    ep->dir[d], ep->name[d]
-
-into
-
-    ep->dir[n], ep->name[n]
-
-The outer `d` stops at the end of `dir[]`, but the body then indexed `dir[]`
-with the inner counter, which keeps counting to the length of `name[]`.
-`ep->dir[3]` is NULL and `ep->dir[4]` is past the array, and the firmware dies
-in SimpleInitMain with
-
-    ESR : EC 0x25 IL 0x1 ISS 0x00000007
-    Data abort: Translation fault, third level
-
-Idempotent; exits non-zero when the pattern it expects is not there instead of
-silently doing nothing.
+So the rewrite is done on the exact source span of the inner `for` statement,
+with three separate substitutions, and the result is verified before writing.
 
 Usage:
     patch_simpleinit_prober.py <edk2-msm tree>
@@ -52,17 +42,20 @@ CANDIDATES = [
     "src/boot/prober.c",
 ]
 
-# The exact construct we rewrite: an outer `for` over ep->dir[d] immediately
-# followed by an inner `for` that declares the SAME variable over ep->name[d].
-OUTER_THEN_INNER = re.compile(
-    r"for\s*\(\s*(?P<t>[A-Za-z_]\w*)\s+(?P<v>\w+)\s*=\s*0\s*;\s*"
-    r"ep\s*->\s*dir\s*\[\s*(?P=v)\s*\]\s*;\s*(?P=v)\+\+\s*\)\s*"
-    r"for\s*\(\s*(?P=t)\s+(?P=v)\s*=\s*0\s*;\s*"
-    r"ep\s*->\s*name\s*\[\s*(?P=v)\s*\]\s*;\s*(?P=v)\+\+\s*\)",
+# Outer loop over ep->dir[d], immediately followed by the inner loop over
+# ep->name[d] that re-declares the same variable.
+NESTED = re.compile(
+    r"for\s*\(\s*(?P<t>[A-Za-z_]\w*)\s+(?P<v>\w+)\s*=\s*0\s*;"
+    r"\s*ep\s*->\s*dir\s*\[\s*(?P=v)\s*\]\s*;"
+    r"\s*(?P=v)\s*\+\+\s*\)"
+    r"\s*for\s*\(\s*(?P=t)\s+(?P=v)\s*=\s*0\s*;"
+    r"\s*ep\s*->\s*name\s*\[\s*(?P=v)\s*\]\s*;"
+    r"\s*(?P=v)\s*\+\+\s*\)",
     re.S,
 )
 
-ALREADY = re.compile(r"ep\s*->\s*name\s*\[\s*\w+\s*\]\s*;\s*\w+\+\+\s*\)")
+# Names that are already taken anywhere in the file are not candidates.
+IDENT = re.compile(r"[A-Za-z_]\w*")
 
 
 def find_file(root):
@@ -91,106 +84,111 @@ def match_brace(src, open_idx):
     raise ValueError("unbalanced braces")
 
 
-def inner_body_span(src, for_end):
-    """Span of the inner loop body that starts just after `for (...)`, or None."""
-    j = for_end
+def body_span(src, after_header):
+    """Span of the statement that follows a `for (...)` header."""
+    j = after_header
     while j < len(src) and src[j] in " \t\r\n":
         j += 1
     if j < len(src) and src[j] == "{":
         return j, match_brace(src, j)
-    return None
+    end = src.find(";", j)
+    if end < 0:
+        raise ValueError("dangling loop body")
+    return j, end + 1
 
 
 def pick_name(src, taken):
-    for cand in ("n", "name_index", "n_inner", "ni"):
-        if cand in taken:
+    used = set(IDENT.findall(src))
+    for cand in ("n", "name_index", "n_inner", "ni", "idx"):
+        if cand in used or cand == taken:
             continue
-        if not re.search(r"\b" + re.escape(cand) + r"\b", src):
-            return cand
+        return cand
     raise ValueError("no free identifier for the inner loop variable")
 
 
 def patch(path):
     src = open(path, encoding="utf-8", errors="surrogateescape").read()
 
-    m = OUTER_THEN_INNER.search(src)
+    m = NESTED.search(src)
     if not m:
-        # Either already fixed, or upstream restructured it. Say which.
-        if re.search(r"ep\s*->\s*dir\s*\[\s*d\s*\]", src) and "ep->name[n]" in src:
+        if re.search(r"ep\s*->\s*dir\s*\[\s*d\s*\]", src) and \
+           re.search(r"ep\s*->\s*name\s*\[\s*n\s*\]", src):
             print("already patched:", path)
             return 0
-        print("FAIL: no `dir[d]`/`name[d]` shadowed pair found in", path, file=sys.stderr)
+        print("FAIL: no shadowed `dir[d]` / `name[d]` pair in", path, file=sys.stderr)
         print("      inspect the file by hand; upstream may have restructured it",
               file=sys.stderr)
         return 2
 
     var = m.group("v")
-    if var != "d":
-        print("note: the shadowed variable is `%s`, not `d`" % var)
+    new = pick_name(src, var)
 
-    new = pick_name(src, {var})
+    # Work on the inner `for` only: everything from the second `for` to the end
+    # of its body.
+    inner_start = m.start("v") if False else src.index("for", m.start() + 1)
+    body = body_span(src, m.end(0))
+    inner_end = body[1]
 
-    # Rewrite the inner `for` header first: only its two occurrences of the
-    # variable change (the one in ep->name[...] and the increment).
-    header = m.group(0)
-    new_header = re.sub(
-        r"(ep\s*->\s*name\s*\[\s*)" + re.escape(var) + r"(\s*\]\s*;\s*)" + re.escape(var) + r"(\s*\+\+\s*\))",
-        lambda mm: mm.group(1) + new + mm.group(2) + new + mm.group(3),
-        header,
-        count=1,
-    )
-    # The declaration itself: `size_t d = 0` inside the inner for.
-    inner_part = re.search(
-        r"for\s*\(\s*(?P<t>[A-Za-z_]\w*)\s+" + re.escape(var) + r"\s*=\s*0",
-        new_header,
-    )
-    if not inner_part:
-        print("FAIL: could not find the inner loop declaration", file=sys.stderr)
-        return 2
-    offset = m.start(0) + inner_part.start()
-    new_header = (
-        new_header[: inner_part.start()]
-        + inner_part.group(0).replace(" %s =" % var, " %s =" % new, 1)
-        + new_header[inner_part.end():]
-    )
+    span = src[inner_start:inner_end]
 
-    out = src[: m.start(0)] + new_header + src[m.end(0):]
+    # 1) the declaration `size_t d = 0` -> `size_t n = 0`
+    decl = re.compile(r"(\b[A-Za-z_]\w*\s+)" + re.escape(var) + r"(\s*=\s*0\s*;)")
+    span, n1 = decl.subn(lambda mm: mm.group(1) + new + mm.group(2), span, count=1)
+    # 2) the condition `ep->name[d]` -> `ep->name[n]`
+    cond = re.compile(r"(ep\s*->\s*name\s*\[\s*)" + re.escape(var) + r"(\s*\])")
+    span, n2 = cond.subn(lambda mm: mm.group(1) + new + mm.group(2), span, count=1)
+    # 3) the increment `; d++)` -> `; n++)`
+    incr = re.compile(r"(;\s*)" + re.escape(var) + r"(\s*\+\+\s*\)\s*\{?)", re.S)
+    span, n3 = incr.subn(lambda mm: mm.group(1) + new + mm.group(2), span, count=1)
 
-    # Now the body: replace ONLY `ep->name[var]`, never `ep->dir[var]`.
-    body = inner_body_span(out, m.start(0) + len(new_header))
-    if body:
-        b0, b1 = body
-        chunk = out[b0:b1]
-        fixed, count = re.subn(
-            r"(ep\s*->\s*name\s*\[\s*)" + re.escape(var) + r"(\s*\])",
-            lambda mm: mm.group(1) + new + mm.group(2),
-            chunk,
-        )
-        out = out[:b0] + fixed + out[b1:]
-        print("inner body: %d reference(s) to ep->name[%s] -> ep->name[%s]" % (count, var, new))
-    else:
-        print("warning: inner loop has no braced body; only the header was rewritten",
-              file=sys.stderr)
-
-    # Verify: dir must still be indexed by the outer variable, name by the new one.
-    if not re.search(r"ep\s*->\s*dir\s*\[\s*" + re.escape(var) + r"\s*\]", out):
-        print("FAIL: ep->dir[%s] disappeared -- refusing to write" % var, file=sys.stderr)
+    if (n1, n2, n3) != (1, 1, 1):
+        print("FAIL: expected one match each for declaration/condition/increment, "
+              "got %s -- refusing to write" % ((n1, n2, n3),), file=sys.stderr)
         return 3
-    if not re.search(r"ep\s*->\s*name\s*\[\s*" + re.escape(new) + r"\s*\]", out):
-        print("FAIL: ep->name[%s] was not produced -- refusing to write" % new, file=sys.stderr)
-        return 3
-    if re.search(r"ep\s*->\s*dir\s*\[\s*" + re.escape(new) + r"\s*\]", out):
-        print("FAIL: ep->dir[%s] must not exist -- refusing to write" % new, file=sys.stderr)
+
+    # 4) the body: only `ep->name[var]`, never `ep->dir[var]`.
+    body_start_in_span = body[0] - inner_start
+    head, tail = span[:body_start_in_span], span[body_start_in_span:]
+    tail, n4 = re.subn(
+        r"(ep\s*->\s*name\s*\[\s*)" + re.escape(var) + r"(\s*\])",
+        lambda mm: mm.group(1) + new + mm.group(2),
+        tail,
+    )
+    span = head + tail
+
+    out = src[:inner_start] + span + src[inner_end:]
+
+    # Verify before writing. Each of these has shipped a broken build before.
+    checks = [
+        (r"ep\s*->\s*dir\s*\[\s*" + re.escape(var) + r"\s*\]", True,
+         "ep->dir[%s] must survive (outer loop)" % var),
+        (r"ep\s*->\s*dir\s*\[\s*" + re.escape(new) + r"\s*\]", False,
+         "ep->dir[%s] must not exist (inner body)" % new),
+        (r"ep\s*->\s*name\s*\[\s*" + re.escape(new) + r"\s*\]", True,
+         "ep->name[%s] must exist" % new),
+        (r"\b[A-Za-z_]\w*\s+" + re.escape(new) + r"\s*=\s*0\s*;", True,
+         "'%s' must be declared" % new),
+    ]
+    failures = []
+    for pat, want, why in checks:
+        got = re.search(pat, out) is not None
+        if got != want:
+            failures.append(why)
+    if failures:
+        print("FAIL: verification failed -- refusing to write", file=sys.stderr)
+        for f in failures:
+            print("      -", f, file=sys.stderr)
         return 3
     if out.count("{") != src.count("{") or out.count("}") != src.count("}"):
-        print("FAIL: brace count changed, refusing to write", file=sys.stderr)
+        print("FAIL: brace count changed -- refusing to write", file=sys.stderr)
         return 3
 
     open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(out)
     print("patched:", path)
-    for line in out.splitlines():
+    print("  inner variable `%s` -> `%s`; ep->dir[] still on `%s`" % (var, new, var))
+    for i, line in enumerate(out.splitlines(), 1):
         if "->dir[" in line or "->name[" in line:
-            print("   |", line.strip())
+            print("   %4d | %s" % (i, line.strip()))
     return 0
 
 
