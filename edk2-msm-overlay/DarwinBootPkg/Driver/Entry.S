@@ -88,6 +88,29 @@ ASM_FUNC(DarwinEnter)
   ic iallu
   dsb sy
   isb
+
+  // Hand the kernel our exception vectors before it runs.
+  //
+  // Everything this loader can observe ends at br. If the kernel faults on its
+  // own first instruction, nothing is written anywhere and the panel looks
+  // exactly like a kernel that is running quietly -- the blue band proved the
+  // entry address is right, but not that the code there survives.
+  //
+  // VBAR_EL1 is writable at EL1 and the kernel does not overwrite it until it
+  // gets far enough to install its own vectors. Catching a fault before that
+  // point is therefore possible from here, and a fault that lands in our handler
+  // means the kernel never reached its own vector setup. The handler paints the
+  // exception class over the green band; see DarwinTrap.
+  //
+  // The table address goes in now; the framebuffer address is stored further
+  // down, after the MMU is off. Two reasons: this driver's .text is mapped
+  // read-only by the firmware's own SetUefiImageMemoryAttributes, so a store
+  // into it while translation is on would take a permission fault, and with
+  // translation off there is no check at all.
+  adr x9, DarwinVectors
+  msr vbar_el1, x9
+  isb
+
   mrs x4, sctlr_el1
   bic x4, x4, #1
   bic x4, x4, #4
@@ -97,6 +120,14 @@ ASM_FUNC(DarwinEnter)
   tlbi vmalle1
   dsb sy
   isb
+
+  // Translation is off, so this store into our own .text no longer has to pass
+  // a read-only mapping. The handler cannot keep the framebuffer in a register
+  // because it has no idea what the kernel did to x0..x30 before it faulted.
+  adr x10, DarwinTrapFramebuffer
+  str x14, [x10]
+  dc civac, x10
+  dsb sy
 
   // Branch to the trampoline by PC-relative address, so the value is correct
   // whether or not the MMU is still translating this code.
@@ -160,3 +191,106 @@ ASM_FUNC(DarwinEnter)
 
 9:
   br x15
+
+// Exception vectors, installed with VBAR_EL1 by DarwinEnter just before the MMU
+// is switched off.
+//
+// Sixteen entries of 128 bytes in the order the architecture defines. All of
+// them lead to DarwinTrap: with translation off and the kernel's state unknown
+// there is nothing to unwind, and the only useful act is to record what fired.
+//
+// 2048-byte alignment is what VBAR_EL1 requires; the low 11 bits are ignored by
+// the hardware, so an unaligned table would silently point somewhere else.
+  .balign 2048
+DarwinVectors:
+  b DarwinTrap              // 0x000 current EL, SP0, synchronous
+  .balign 128
+  b DarwinTrap              // 0x080 current EL, SP0, IRQ
+  .balign 128
+  b DarwinTrap              // 0x100 current EL, SP0, FIQ
+  .balign 128
+  b DarwinTrap              // 0x180 current EL, SP0, SError
+  .balign 128
+  b DarwinTrap              // 0x200 current EL, SPx, synchronous
+  .balign 128
+  b DarwinTrap              // 0x280 current EL, SPx, IRQ
+  .balign 128
+  b DarwinTrap              // 0x300 current EL, SPx, FIQ
+  .balign 128
+  b DarwinTrap              // 0x380 current EL, SPx, SError
+  .balign 128
+  b DarwinTrap              // 0x400 lower EL, AArch64, synchronous
+  .balign 128
+  b DarwinTrap              // 0x480 lower EL, AArch64, IRQ
+  .balign 128
+  b DarwinTrap              // 0x500 lower EL, AArch64, FIQ
+  .balign 128
+  b DarwinTrap              // 0x580 lower EL, AArch64, SError
+  .balign 128
+  b DarwinTrap              // 0x600 lower EL, AArch32, synchronous
+  .balign 128
+  b DarwinTrap              // 0x680 lower EL, AArch32, IRQ
+  .balign 128
+  b DarwinTrap              // 0x700 lower EL, AArch32, FIQ
+  .balign 128
+  b DarwinTrap              // 0x780 lower EL, AArch32, SError
+
+// A fault landed here, which means the kernel did not get as far as installing
+// its own vectors. Paint the exception class over the green band and stop.
+//
+// The class comes from ESR_EL1[31:26] and each one maps to a colour:
+//
+//   white    EC 0x00  unknown, or an undefined instruction
+//   magenta  EC 0x21  instruction abort from the same EL
+//   cyan     EC 0x25  data abort from the same EL
+//   yellow   anything else
+//
+// A coloured band on top of the green one is therefore not "the kernel is
+// quiet": it is a specific fault class, and the kernel died before it could say
+// anything itself.
+DarwinTrap:
+  mrs x0, esr_el1
+
+  // Framebuffer address, written by DarwinEnter once translation is off.
+  adr x2, DarwinTrapFramebuffer
+  ldr x2, [x2]
+  cbz x2, 9f
+
+  lsr x3, x0, #26
+  and x3, x3, #0x3f
+
+  mov w4, #0xFF00
+  movk w4, #0xFFFF, lsl #16     // yellow 0xFFFFFF00, the default
+  cmp w3, #0x21
+  b.ne 1f
+  mov w4, #0x00FF
+  movk w4, #0xFFFF, lsl #16     // magenta 0xFFFF00FF: instruction abort
+  b 8f
+1:
+  cmp w3, #0x25
+  b.ne 2f
+  mov w4, #0xFFFF
+  movk w4, #0x00FF, lsl #16     // cyan 0xFF00FFFF: data abort
+  b 8f
+2:
+  cbnz w3, 8f
+  mov w4, #0xFFFF
+  movk w4, #0xFFFF, lsl #16     // white 0xFFFFFFFF: unknown / undefined
+
+8:
+  // 64 KiB at the framebuffer base is well inside this panel's 8.3 MiB frame
+  // and covers the green band, so the two cannot be confused.
+  mov x5, x2
+  mov x6, #0x10000
+3:
+  stp w4, w4, [x5], #8
+  subs x6, x6, #8
+  b.hi 3b
+  dsb sy
+
+9:
+  b 9b
+
+  .balign 8
+DarwinTrapFramebuffer:
+  .quad 0
