@@ -300,7 +300,19 @@ Meizu15LauncherEntry (
   // Sixty seconds is comfortably past the point where a working early-boot would
   // have moved on, and short enough to keep each attempt tolerable.
   //
-  Request.BootArgs       = L"-v loader_return_after=60";
+  //
+  // checkpoint=<n> makes hakios-xnu return to the loader at checkpoint n instead
+  // of running on, which turns "where does the kernel stop" into a binary search
+  // over the checkpoints that are already planted in arm_init (10..21, 30..35,
+  // 40..44). DarwinBoot reads this out of the command line and writes it into the
+  // slot's word 2; loader_checkpoint(n) fires only when the two match.
+  //
+  // 10 is the first of the series, immediately before cpu_data_init(). The panel
+  // already proved the kernel gets past do_cacheid() -- that is inside
+  // cpu_data_init -- so 10 should fire, and each later number narrows the window
+  // between "reached" and "never reached".
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=10";
   //
   // DeviceTree must stay NULL here.
   //

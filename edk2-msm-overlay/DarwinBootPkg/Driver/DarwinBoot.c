@@ -1386,6 +1386,38 @@ Boot (
     UINTN  StubSpan;
     UINTN  ParameterOffset;
     UINT64 *Slot;
+    UINT64  Checkpoint;
+
+    //
+    // checkpoint=<n> from the launcher's boot arguments, 0 for none.
+    //
+    // The loader owns the command line (DarwinBoot builds it and hands it to the
+    // kernel), so the value arrives here through CommandLine rather than through
+    // a boot service variable -- there is nothing to read after ExitBootServices.
+    //
+    //
+    // CommandLine is CHAR8 -- the kernel's boot arguments are ASCII, and the
+    // launcher hands them over as a CHAR16 string that this code narrows on the
+    // way in (see the copy loop above). So the search is byte-wise: a wide
+    // L"checkpoint=" here would never match anything.
+    //
+    Checkpoint = 0;
+    {
+      CONST CHAR8  *Mark = NULL;
+      UINTN         Index2;
+      for (Index2 = 0; (CommandLine[Index2] != 0) && (Index2 + 11 < sizeof (CommandLine)); Index2++) {
+        if (CompareMem (&CommandLine[Index2], "checkpoint=", 11) == 0) {
+          Mark = &CommandLine[Index2 + 11];
+          break;
+        }
+      }
+      if (Mark != NULL) {
+        while ((*Mark >= '0') && (*Mark <= '9')) {
+          Checkpoint = Checkpoint * 10 + (UINT64)(*Mark - '0');
+          Mark++;
+        }
+      }
+    }
 
     SlotOffset = 0;
     for (Index = 0; Index + 32 <= ImageSize; Index++) {
@@ -1493,7 +1525,22 @@ Boot (
         // short before its own fault. Ask for 0 and read the fault instead:
         // x3 = ESR_EL1, x4 = ELR_EL1, x5 = FAR_EL1 come back in the log.
         //
-        Slot[2] = 0;
+        // The number now comes from the launcher's boot arguments instead of
+        // being compiled in.
+        //
+        // It was hardcoded to 0, which quietly disabled every checkpoint:
+        // loader_checkpoint(n) only fires when slot[2] == n, so with slot[2]
+        // pinned at 0 the whole series (10..21, 30..35, 40..44) could never
+        // match. That is why an earlier attempt to ask for checkpoint 1 produced
+        // nothing and looked like "the checkpoint code never ran" -- it did run,
+        // and its compare was always false.
+        //
+        // Now the panel's kernel log stops at do_cacheid(), and the question is
+        // exactly which of the checkpoints after it the kernel reaches. Booting
+        // the same image with a different loader checkpoint= value answers that
+        // without a rebuild.
+        //
+        Slot[2] = Checkpoint;
         Slot[3] = Address - Kernel.Base;
 
         //
@@ -1503,6 +1550,10 @@ Boot (
         //
         Used = StubOffset + ALIGN_VALUE (StubSpan, 16);
 
+        Print (
+          L"DARWINBOOT: checkpoint requested %lu\n",
+          Checkpoint
+          );
         Print (
           L"DARWINBOOT: return stub at 0x%lx, slot at file offset 0x%lx\n",
           (UINT64)(Address + StubOffset),
