@@ -140,18 +140,25 @@ PayloadReadBlocks (
   P = BASE_CR (This, PAYLOAD_BLOCK_IO, BlockIo);
 
   //
-  // Log every access attempt with its caller's parameters. Nothing mounts this
-  // volume even though Media is correct (id 0x4d5a3135, LastBlock 31743, 512 B
-  // blocks), and FatDiskIo never lists it. Either no consumer ever reads it, or
-  // one reads and is refused; this tells those apart.
+  // Log reads of LBA 0 only.
   //
-  DEBUG ((
-    DEBUG_ERROR,
-    "MZ15>> ReadBlocks lba %u size %u mediaid 0x%08x\r\n",
-    (UINT32)Lba,
-    (UINT32)BufferSize,
-    MediaId
-    ));
+  // Every read used to print a line, and a single kernel load produces dozens of
+  // them -- MZ15>> ReadBlocks lba 89 size 1048576, lba 2137, lba 4185, and so on
+  // to 30,953. That was worth having while the question was "does anything read
+  // this volume at all"; that question is answered. What it does now is push
+  // every DarwinBoot diagnostic off the top of the panel before the boot reaches
+  // the handoff, which is exactly when those diagnostics matter.
+  //
+  // LBA 0 is the one that matters later: it is the FAT boot sector, so a line
+  // there proves the volume was opened rather than merely probed.
+  //
+  if (Lba == 0) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "MZ15>> ReadBlocks lba 0 size %u\r\n",
+      (UINT32)BufferSize
+      ));
+  }
 
   if (MediaId != P->Media.MediaId) {
     DEBUG ((DEBUG_ERROR, "MZ15>> ReadBlocks: media id mismatch, refusing\r\n"));
