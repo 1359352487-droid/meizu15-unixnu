@@ -731,6 +731,34 @@ DarwinShowKernelLog (
   UINTN        Length;
   CHAR8        Status[128];
 
+  //
+  // Report unconditionally, and report the flag itself.
+  //
+  // This used to return silently when Returned was 0, which made two completely
+  // different states produce the same blank screen:
+  //
+  //   the stub never ran            -> nothing was written, Returned stays 0
+  //   the stub ran but the context  -> something was written, but not to the
+  //   word pointed elsewhere           DarwinSavedContext this code reads
+  //
+  // The barcodes now say reason 0 / ESR 0, i.e. loader_return()'s orderly path,
+  // so the stub definitely ran. Four boots were spent unable to tell whether the
+  // resume worked, purely because this early return hid the answer.
+  //
+  // One line, always, with the raw values.
+  //
+  AsciiSPrint (
+    Status,
+    sizeof (Status),
+    "ret %lu reason %lu log %lx+%lx ctx %lx\r\n",
+    DarwinSavedContext.Returned,
+    DarwinSavedContext.Reason,
+    DarwinSavedContext.LogAddress,
+    DarwinSavedContext.LogLength,
+    (UINT64)(UINTN)&DarwinSavedContext
+    );
+  DiagDrawRaw (Video, (CONST UINT8 *)Status, sizeof (Status), 0);
+
   if (DarwinSavedContext.Returned == 0) {
     return;
   }
@@ -1515,6 +1543,22 @@ Boot (
           L"DARWINBOOT: stub reads back fb 0x%lx ctx 0x%lx\n",
           ReadUnaligned64 ((UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset)),
           ReadUnaligned64 ((UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset + 8))
+          );
+          //
+          // Print the address of the parameter word next to the address the C
+          // side passed in.
+          //
+          // The stub reaches its parameter block with adr, i.e. by PC-relative
+          // offset from the copied code, while this line handed over the
+          // link-time address of DarwinSavedContext. If those two disagree, the
+          // stub stores the log somewhere C never reads, and
+          // DarwinShowKernelLog reports Returned = 0 -- indistinguishable from
+          // "the stub never ran", which is what four boots were spent on.
+          //
+        Print (
+            L"DARWINBOOT: ctx word at 0x%lx, DarwinSavedContext at 0x%lx\n",
+            (UINT64)(UINTN)(Address + StubOffset + ParameterOffset + 8),
+            (UINT64)(UINTN)&DarwinSavedContext
           );
         //
         // Read the slot back too, and the magic with it.

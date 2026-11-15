@@ -361,10 +361,30 @@ DarwinKernelReturnStubStart:
   ldur x10, [x9, #16]         // row stride in bytes, travels with the copy
   ldur x9, [x9]               // framebuffer PA
 
-  mov x11, x2                 // keep reason, x2 is the bit count register
-  mov x12, x3
-  mov x13, x4
-  mov x14, x5
+  //
+  // What to draw changed once the reason turned out to be 0.
+  //
+  // The last boot's barcodes decoded to reason 0, ESR 0 -- which is
+  // loader_return()'s orderly path, not a fault. That path is taken by
+  // `loader_return_after=15`, a debug hook in the kernel: run for fifteen
+  // seconds, then hand the log back to the loader. So the kernel did boot, and
+  // x0/x1 are the address and length of the log it wants printed.
+  //
+  // Drawing a fault that never happened was wasting the channel. These rows now
+  // answer the questions that are actually open:
+  //
+  //   y = 1700   x0  log physical address
+  //   y = 1742   x1  log length in bytes
+  //   y = 1784   x2  reason               (0 = orderly)
+  //   y = 1826   x3  code
+  //   y = 1868   marker 0x5A
+  //
+  // If x1 is non-zero the log exists and the task is only to get it on screen.
+  //
+  mov x11, x0                 // log address
+  mov x12, x1                 // log length
+  mov x13, x2                 // reason
+  mov x14, x3                 // code
 
   // The helper must be inside the copied range: DarwinDrawBarcode sits after
   // DarwinKernelReturnStubEnd, so it is not part of what the loader memcpy's,
@@ -384,28 +404,28 @@ DarwinKernelReturnStubStart:
   bl Lstub_calbar
   mov x0, x11
   mov x1, #1700
-  mov x2, #16
+  mov x2, #64
   bl Lstub_barcode
 
   mov x0, x12
   mov x1, #1736
   bl Lstub_calbar
   mov x1, #1742
-  mov x2, #32
+  mov x2, #64
   bl Lstub_barcode
 
   mov x0, x13
   mov x1, #1778
   bl Lstub_calbar
   mov x1, #1784
-  mov x2, #64
+  mov x2, #16
   bl Lstub_barcode
 
   mov x0, x14
   mov x1, #1820
   bl Lstub_calbar
   mov x1, #1826
-  mov x2, #64
+  mov x2, #16
   bl Lstub_barcode
 
   mov x0, #0x5A
