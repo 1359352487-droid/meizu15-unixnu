@@ -779,6 +779,8 @@ AllocateWindow (KERNEL *Kernel, UINT64 WindowSize, EFI_PHYSICAL_ADDRESS *Address
   UINT64                BestStart;
   UINT64                BestBytes;
   UINT64                RunBytes;
+  UINT64                Highest;
+  UINTN                 Pass;
 
   *Address = 0;
   Map = NULL;
@@ -788,6 +790,29 @@ AllocateWindow (KERNEL *Kernel, UINT64 WindowSize, EFI_PHYSICAL_ADDRESS *Address
   Status = GetMap (&Map, &Capacity, &Size, &Key, &Stride);
   if (EFI_ERROR (Status)) { if (Map != NULL) { FreePool (Map); } return Status; }
   Status = EFI_OUT_OF_RESOURCES;
+
+  //
+  // Take the highest address that fits, not the first one.
+  //
+  // This scan runs over the memory map in ascending order and used to stop at
+  // the first descriptor large enough, which is always the lowest one. On this
+  // board the low conventional memory is large enough on paper, so the kernel
+  // window landed wherever the firmware happened to leave a gap:
+  //
+  //     0x08000000 on one boot, 0x00D00000 on the next, 0x000D0000 on another
+  //
+  // That is not harmless. XNU's arm64_start builds its page tables from
+  // boot_args.physBase, and a base of 0xD0000 -- below any DRAM this SoC maps --
+  // produces a translation regime that faults on the first instruction the
+  // kernel tries to fetch. It also explains the behaviour that made this look
+  // like a kernel bug: one build ran for fifteen seconds and returned through
+  // the checkpoint timer, the next stopped before its first statement, with no
+  // change to the kernel at all.
+  //
+  // So the highest fitting candidate is tried first, and the old first-fit scan
+  // stays as a fallback for boards where the top of memory is not usable.
+  //
+  Highest = 0;
   for (Offset = 0; Offset + Stride <= Size; Offset += Stride) {
     Descriptor = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)Map + Offset);
     if ((Descriptor->Type != EfiConventionalMemory) || (Descriptor->NumberOfPages == 0)) { continue; }
@@ -797,8 +822,29 @@ AllocateWindow (KERNEL *Kernel, UINT64 WindowSize, EFI_PHYSICAL_ADDRESS *Address
     if (RunBytes > BestBytes) { BestBytes = RunBytes; BestStart = Descriptor->PhysicalStart; }
     Candidate = ALIGN_VALUE (Descriptor->PhysicalStart, BLOCK_SIZE) + (Kernel->Base & (BLOCK_SIZE - 1));
     if ((Candidate < Descriptor->PhysicalStart) || (End < Candidate) || (End - Candidate < WindowSize)) { continue; }
-    Status = gBS->AllocatePages (AllocateAddress, EfiLoaderCode, EFI_SIZE_TO_PAGES (WindowSize), &Candidate);
-    if (!EFI_ERROR (Status)) { *Address = Candidate; break; }
+    if (Candidate > Highest) { Highest = Candidate; }
+  }
+
+  for (Pass = 0; Pass < 2; Pass++) {
+    if (Pass == 0) {
+      if (Highest == 0) { continue; }
+      Candidate = Highest;
+      Status = gBS->AllocatePages (AllocateAddress, EfiLoaderCode, EFI_SIZE_TO_PAGES (WindowSize), &Candidate);
+      if (!EFI_ERROR (Status)) { *Address = Candidate; break; }
+      continue;
+    }
+
+    for (Offset = 0; Offset + Stride <= Size; Offset += Stride) {
+      Descriptor = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)Map + Offset);
+      if ((Descriptor->Type != EfiConventionalMemory) || (Descriptor->NumberOfPages == 0)) { continue; }
+      End = RunEnd (Map, Size, Stride, Descriptor->PhysicalStart,
+                    Descriptor->PhysicalStart + EFI_PAGES_TO_SIZE (Descriptor->NumberOfPages));
+      Candidate = ALIGN_VALUE (Descriptor->PhysicalStart, BLOCK_SIZE) + (Kernel->Base & (BLOCK_SIZE - 1));
+      if ((Candidate < Descriptor->PhysicalStart) || (End < Candidate) || (End - Candidate < WindowSize)) { continue; }
+      Status = gBS->AllocatePages (AllocateAddress, EfiLoaderCode, EFI_SIZE_TO_PAGES (WindowSize), &Candidate);
+      if (!EFI_ERROR (Status)) { *Address = Candidate; break; }
+    }
+    if (!EFI_ERROR (Status)) { break; }
   }
   if (EFI_ERROR (Status)) {
     CHAR16 Line[96];
