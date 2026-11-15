@@ -299,36 +299,7 @@ DarwinKernelReturnStubStart:
   // reason 1 and 2 both mean the checkpoint timer fired; 0 means the kernel
   // reached an orderly end. Magenta stays for anything else, including the
   // early-exception path, which arrives with no registers set at all.
-  adr x9, DarwinKernelReturnStubParameters
-  ldur x9, [x9, #8]           // DarwinSavedContext PA
-  cbz x9, 2f
-
-  str x0, [x9, #144]          // log physical address
-  str x1, [x9, #152]          // log length
-  str x2, [x9, #168]          // reason, kept for the status line
-  //
-  // x3..x7 are the only description of what the kernel was doing that survives
-  // the jump here, and until now they were thrown away.
-  //
-  // The early-exception vector in start.s sets them like this before branching:
-  // x3 = ESR_EL1, x4 = ELR_EL1, x5 = FAR_EL1, x6 = LR, x7 = SP, with x2 = 1.
-  // A checkpoint sets x2 = 2 and x3 = the checkpoint number, and an orderly
-  // return from loader_return.c sets x2 = 0 / x3 = code. So the meaning is
-  // decided by reason, and storing all five unconditionally costs nothing.
-  //
-  // On a fault this is the whole diagnosis: ESR names the class, ELR the
-  // instruction that faulted, FAR the address it touched. The coloured band
-  // could only ever say "something happened".
-  //
-  str x3, [x9, #176]
-  str x4, [x9, #184]
-  str x5, [x9, #192]
-  str x6, [x9, #200]
-  str x7, [x9, #208]
-  mov x16, #1
-  str x16, [x9, #160]         // the kernel returned
-  dc civac, x9
-  dsb sy
+  // The context store moved below the draw; see the note there.
 
   //
   // Draw the values here as well, before anything can go wrong with the resume.
@@ -381,9 +352,18 @@ DarwinKernelReturnStubStart:
   //
   // If x1 is non-zero the log exists and the task is only to get it on screen.
   //
-  mov x11, x0                 // log address
-  mov x12, x1                 // log length
-  mov x13, x2                 // reason
+  //
+  // Saved in callee-saved registers, not x11..x14.
+  //
+  // Lstub_barcode uses x11 as its row-loop counter, so the first draw destroys
+  // whatever x11 held. The previous build kept the log address in x11 and then
+  // stored x11 into the context afterwards -- which would have written 20 into
+  // LogAddress. x19..x22 are only reloaded from DarwinSavedContext at the very
+  // end of the resume, so they survive both helpers untouched.
+  //
+  mov x19, x0                 // log address
+  mov x20, x1                 // log length
+  mov x21, x2                 // reason
   //
   // The fifth row carries the context pointer the stub will store into, not the
   // code the kernel returned.
@@ -421,19 +401,19 @@ DarwinKernelReturnStubStart:
   // 1700..1888 is black on this panel: the last console line sits around 1650.
   mov x1, #1694
   bl Lstub_calbar
-  mov x0, x11
+  mov x0, x19
   mov x1, #1700
   mov x2, #64
   bl Lstub_barcode
 
-  mov x0, x12
+  mov x0, x20
   mov x1, #1736
   bl Lstub_calbar
   mov x1, #1742
   mov x2, #64
   bl Lstub_barcode
 
-  mov x0, x13
+  mov x0, x21
   mov x1, #1778
   bl Lstub_calbar
   mov x1, #1784
@@ -456,10 +436,34 @@ DarwinKernelReturnStubStart:
 
   dsb sy
 
-  // Reload the context word: Lstub_barcode clobbers x9 and x10.
+  //
+  // Store into the context *after* drawing, not before.
+  //
+  // The previous build stored first and drew second, and came up with a blank
+  // bottom: the context word held 0x0CB045088, which is outside this image (the
+  // driver loaded at 0x0CB04Bxxx, and .data is at +0x27000), so
+  // `str x0, [x9, #144]` took a data abort. DarwinTrap fired, the draw never
+  // ran, and the screen showed two bands and no barcodes -- the same picture as
+  // "the stub was never called", which is what made this take so long.
+  //
+  // Drawing first costs nothing and means a bad address can only lose the store,
+  // never the report. The barcodes are the only channel that survives.
+  //
+  // x0/x1/x2/x3 were saved into x11..x14 before the drawing began, and
+  // Lstub_barcode clobbers x3..x8 and x11..x15 -- so the stored values come back
+  // from x11..x14 where the caller put them, not from x0..x3.
+  //
   adr x9, DarwinKernelReturnStubParameters
   ldur x9, [x9, #8]           // DarwinSavedContext PA
   cbz x9, 2f
+
+  str x19, [x9, #144]         // log physical address
+  str x20, [x9, #152]         // log length
+  str x21, [x9, #168]         // reason
+  mov x16, #1
+  str x16, [x9, #160]         // the kernel returned
+  dc civac, x9
+  dsb sy
 
   // Put the translation regime back before touching the C stack: the caller's
   // frame lives at a virtual address that only resolves with its own tables.
