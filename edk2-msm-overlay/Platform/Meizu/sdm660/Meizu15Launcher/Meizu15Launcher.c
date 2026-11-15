@@ -324,7 +324,32 @@ Meizu15LauncherEntry (
   //   17 silent  the kernel dies between arm_init's start and arm_vm_init, which
   //              narrows it to the window that already shows do_cacheid()
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=17";
+  //
+  // Back to no checkpoint, with the diagnostics that make a silent stall speak.
+  //
+  // checkpoint=17 came back as reason 0, i.e. that checkpoint never fired, which
+  // places the kernel before arm_vm_init(). Every useful checkpoint in that half
+  // of arm_init (10, 11, 30..34) is unreachable for a different reason:
+  // loader_jump() refuses to return while TCR_EL1's t0sz is below 25, and the
+  // kernel only raises it to 25 inside arm_vm_init(). The panel prints
+  // TCR_EL1 = 0x280803518 on the way in, so t0sz is 24 -- every early checkpoint
+  // is accepted by loader_checkpoint() and then dropped.
+  //
+  // Rather than rebuild the kernel to relax that floor, first check whether the
+  // kernel is stalling on purpose. arm_init calls
+  // platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_ARM_INIT) inside
+  // #if (DEVELOPMENT || DEBUG), and this kernel is a DEVELOPMENT build -- if it
+  // takes the spin branch the machine goes quiet at exactly the observed point,
+  // with no log and no panic.
+  //
+  //   xnu-stall=no    take the other branch
+  //   debug=0x14e    turn on the debug flags that make arm_init chatter
+  //
+  // Both are harmless if the names mean nothing to this kernel: unknown boot-args
+  // are ignored, so a boot that behaves exactly as before still answers the
+  // question by elimination.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 xnu-stall=no debug=0x14e";
   //
   // DeviceTree must stay NULL here.
   //
