@@ -1254,26 +1254,32 @@ Boot (
         Slot    = (UINT64 *)(UINTN)(Address + SlotOffset);
         Slot[1] = Address + StubOffset;
         //
-        // Checkpoint 10, not 0.
+        // Checkpoint 1, which is the earliest one in the kernel.
         //
-        // hakios threads loader_checkpoint(n) through arm_init, and every one of
-        // them compares against this word and jumps to the stub on a match:
+        // hakios threads loader_checkpoint(n) through arm_init (10, 11, 30, 31,
+        // 32), but _start_first_cpu has its own copy of the test, four
+        // instructions in:
         //
-        //     10  the first statement of arm_init, before cpu_data_init
-        //     11  after PE_init_platform
-        //     30  after configure_timer_apple_regs
-        //     31  after wfe_timeout_configure
-        //     32  after wfe_timeout_init
+        //     0x46406c  add  x9, x9, #0x7f0     ; loader_stub_slot
+        //     0x464070  ldr  x10, [x9, #0x10]   ; slot[2]
+        //     0x464074  cmp  x10, #1
+        //     0x464078  b.ne 0x4640a4           ; not us: carry on booting
+        //     0x46407c  ... x2 = 2, x3 = 1
+        //     0x464094  msr  sctlr_el1, x11     ; it switches the MMU off itself
+        //     0x46409c  ldr  x9, [x9, #8]       ; slot[1]
+        //     0x4640a0  br   x9
         //
-        // The previous build relied on loader_return_after=15 alone and produced
-        // no band at all, which cannot distinguish "the kernel died before the
-        // timer thread started" from "the timer never fired because the kernel
-        // is waiting". Asking for 10 answers the sharper question: did the kernel
-        // even reach C code? Raising this number one step at a time walks the
-        // boot forward, and each stop hands over whatever log exists at that
-        // point.
+        // Asking for 10 produced nothing, which says the kernel never reached
+        // arm_init but not where it stopped. Asking for 1 splits that distance in
+        // two: a cyan band means _start_first_cpu ran and the stall is after it,
+        // nothing at all means the branch into the kernel did not survive even
+        // the first few instructions.
         //
-        Slot[2] = 10;
+        // This also avoids patching the kernel's code, which the previous plan
+        // called for and which would have had to replay an overwritten
+        // instruction by hand.
+        //
+        Slot[2] = 1;
         Slot[3] = Address - Kernel.Base;
 
         //
