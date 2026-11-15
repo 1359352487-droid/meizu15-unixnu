@@ -330,6 +330,81 @@ DarwinKernelReturnStubStart:
   dc civac, x9
   dsb sy
 
+  //
+  // Draw the values here as well, before anything can go wrong with the resume.
+  //
+  // The panel from the last four boots showed the magenta strip and nothing
+  // else, which is consistent with two very different states: the stub stored
+  // the values and then failed to resume, or it never found the context word and
+  // skipped the store entirely. Both leave the screen identical, and the second
+  // one is still on the table because the C side passes &DarwinSavedContext
+  // (a relocated link-time address) while this code reaches its own data with
+  // adr (PC-relative, physical once the MMU is off). If those two disagree the
+  // store lands somewhere harmless and DarwinShowKernelLog never runs.
+  //
+  // So the barcodes are drawn here, from the registers, with no dependence on
+  // the context word or the stack. Rows are above the ones DarwinTrap uses:
+  //
+  //   y = 1000   x2 (reason)      16 bits
+  //   y = 1060   x3 (ESR)         32 bits
+  //   y = 1120   x4 (ELR)         64 bits
+  //   y = 1180   x5 (FAR)         64 bits
+  //   y = 1240   marker 0x5A       8 bits
+  //
+  // DarwinTrap draws at 1400..1580 and the trampoline at the very top, so all
+  // three can appear at once without overlapping.
+  //
+  // Framebuffer base and stride come from the parameter words, which have just
+  // been proven readable: the magenta strip itself is painted from them.
+  //
+  adr x9, DarwinKernelReturnStubParameters
+  ldur x9, [x9]               // framebuffer PA
+
+  adr x10, DarwinTrapStride
+  ldr x10, [x10]
+
+  mov x11, x2                 // keep reason, x2 is the bit count register
+  mov x12, x3
+  mov x13, x4
+  mov x14, x5
+
+  // The helper must be inside the copied range: DarwinDrawBarcode sits after
+  // DarwinKernelReturnStubEnd, so it is not part of what the loader memcpy's,
+  // and a bl into it would branch to an address that only resolves while
+  // translation is on. Lstub_barcode is defined below, before the parameter
+  // words, so it travels with the copy.
+  mov x0, x11
+  mov x1, #1000
+  mov x2, #16
+  bl Lstub_barcode
+
+  mov x0, x12
+  mov x1, #1060
+  mov x2, #32
+  bl Lstub_barcode
+
+  mov x0, x13
+  mov x1, #1120
+  mov x2, #64
+  bl Lstub_barcode
+
+  mov x0, x14
+  mov x1, #1180
+  mov x2, #64
+  bl Lstub_barcode
+
+  mov x0, #0x5A
+  mov x1, #1240
+  mov x2, #8
+  bl Lstub_barcode
+
+  dsb sy
+
+  // Reload the context word: Lstub_barcode clobbers x9 and x10.
+  adr x9, DarwinKernelReturnStubParameters
+  ldur x9, [x9, #8]           // DarwinSavedContext PA
+  cbz x9, 2f
+
   // Put the translation regime back before touching the C stack: the caller's
   // frame lives at a virtual address that only resolves with its own tables.
   ldp x10, x11, [x9, #16]     // SCTLR_EL1, TTBR0_EL1
@@ -361,6 +436,69 @@ DarwinKernelReturnStubStart:
 
 2:
   b 2b
+
+// Barcode painter, copied along with the stub.
+//
+//   x0 = value, x1 = y in pixels, x2 = bit count
+//   x9 = framebuffer base, x10 = row stride in bytes
+//
+// Same layout DarwinDrawBarcode uses (see its comment): four-pixel start tick at
+// x = 0, then one eight-pixel block per bit with a one-pixel gap, twenty rows
+// tall, white for 1. Kept separate rather than shared because this one has to be
+// inside the range that gets copied to the kernel window.
+//
+// Clobbers x3..x8, x11..x15. Preserves nothing else.
+Lstub_barcode:
+  mul x3, x1, x10
+  add x3, x3, x9
+
+  mov x4, #0
+1:
+  add x5, x3, x4, lsl #2
+  mov w6, #0xFFFFFFFF
+  mov x7, #20
+2:
+  str w6, [x5]
+  add x5, x5, x10
+  subs x7, x7, #1
+  b.ne 2b
+  add x4, x4, #1
+  cmp x4, #4
+  b.lo 1b
+
+  mov x4, x2
+3:
+  cbz x4, 7f
+  sub x4, x4, #1
+
+  lsr x5, x0, x4
+  and x5, x5, #1
+  cbz x5, 3b
+
+  sub x5, x2, #1
+  sub x5, x5, x4
+  mov x6, #9
+  mul x5, x5, x6
+  add x5, x5, #8
+
+  mov x6, #0
+4:
+  add x7, x5, x6
+  add x7, x3, x7, lsl #2
+  mov w8, #0xFFFFFFFF
+  mov x11, #20
+5:
+  str w8, [x7]
+  add x7, x7, x10
+  subs x11, x11, #1
+  b.ne 5b
+  add x6, x6, #1
+  cmp x6, #8
+  b.lo 4b
+
+  b 3b
+7:
+  ret
 
   .balign 8
   .globl DarwinKernelReturnStubParameters
