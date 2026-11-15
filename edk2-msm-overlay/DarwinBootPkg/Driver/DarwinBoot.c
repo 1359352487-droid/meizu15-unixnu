@@ -860,6 +860,29 @@ AllocateWindow (KERNEL *Kernel, UINT64 WindowSize, EFI_PHYSICAL_ADDRESS *Address
     }
 
   }
+
+  //
+  // Show where the window landed and what else was on the table.
+  //
+  // 768 MiB needs 196,608 contiguous pages, which only exists in whichever
+  // region the firmware has not carved up. Printing the largest run, the highest
+  // base that would have fitted, and the base actually taken answers in one line
+  // whether a low load address is a defect or simply the only place this map
+  // allows. It goes on the framebuffer because the console copy scrolls away.
+  //
+  {
+    CHAR16 Line[96];
+    UnicodeSPrint (
+      Line,
+      sizeof (Line),
+      L"WIN %lx HIGH %lx RUN %lx @ %lx",
+      (UINT64)*Address,
+      (UINT64)Highest,
+      BestBytes,
+      BestStart
+      );
+    DiagDraw (Line, 0);
+  }
   FreePool (Map);
   return Status;
 }
