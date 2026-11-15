@@ -853,3 +853,76 @@ getvar serialno -> 881QAESM95THY     （只有这个能答）
   得读注册表或 `fltmc`/设备属性。
 - 一次只做一件事：这一天有三次因为并发第二条 fastboot 命令、或者杀掉传输进程，
   把时间线搞脏，白丢了好几轮。
+
+## 2026-11-15 15:35 — return stub 开始记录内核交还现场
+
+上一轮（`147c822`，commit 说明是 "loader: turn the checkpoint off"）在真机上把 slot 的
+word 2 设成 0，让 `LOADER_CHECKPOINT 1` 不匹配，结果是**顶部出现品红色带**。
+
+按 `Entry.S` 里的约定，这条带子只有两种可能：
+
+```
+magenta   stub 被执行，但 x2 != 2  → 走的是 start.s 的 early-exception 向量（x2 = 1）
+cyan      checkpoint 命中         → x2 == 2
+```
+
+所以内核不是「静默挂住」，而是**早期就异常了**，并且在异常向量里跳进了我们的 stub。
+这比前几十轮任何一次都更具体：内核确实跑到了 start.s 之后，只是没走到能打印的地方。
+
+### 被丢掉的那五个寄存器
+
+`start.s` 的 `Lloader_early_exception` 在跳转前这样设置参数：
+
+```
+x0 = loader_log 物理地址    x1 = 日志长度
+x2 = 1                     (early exception)
+x3 = ESR_EL1               x4 = ELR_EL1      x5 = FAR_EL1
+x6 = LR                    x7 = SP
+```
+
+也就是说，**上一次启动时屏幕上那条品红带背后，本来就带着「哪条指令崩了、碰了哪个地址」**，
+而上一版 stub 只存了 x0/x1/x2，把 x3..x7 直接扔了。
+
+### 本轮改动
+
+| 文件 | 改动 |
+|---|---|
+| `DarwinBootPkg/Driver/Entry.S` | stub 在写 reason 之后存 x3..x7 到 `DarwinSavedContext +176/+184/+192/+200/+208`；`DarwinSavedContext` 数据段从 20 个 `.quad` 补到 27 个（216 字节） |
+| `DarwinBootPkg/Driver/DarwinBoot.c` | 结构体同步 5 个字段（`FaultX3..FaultX7`）；`DarwinShowKernelLog` 在 status 行下面多画 3 行 |
+
+顺带修掉一个一直存在的越界：`DarwinSavedContext` 的汇编定义只有 20 个字（160 字节），
+而 stub 一直在写 `+160`（Returned）和 `+168`（Reason），也就是写进了后面的 `.text`。
+MMU 关掉的时候不报错，但那是运气，不是布局。
+
+### 屏幕判据（这一轮只有一台真机，必须先定好怎么读）
+
+```
+kernel returned: reason 1, log N bytes        ← 内核交还了，reason 1 = early exception
+x3 0000000096000006 x4 fffffff007...          ← ESR, ELR
+x5 ... x6 ... x7 ...
+slot magic 545352444c554e58 ...               ← 槽位四个字，magic 证明写对了地方
+```
+
+判读表：
+
+| 现象 | 结论 |
+|---|---|
+| `reason 1`，x3 的 EC（bit31:26）= `0x25` | 同 EL 数据中止：ELR 就是那条访存指令，FAR 是被访地址 |
+| EC = `0x21` | 取指中止：ELR 指到一条取不出来的指令（多半是页表/映射问题） |
+| EC = `0x00` | 未定义指令：多半是 ISA 不支持（PAN/LSE 一类）或跳飞了 |
+| x4 在 `0xFFFFFFF007xxxxxx` | 内核虚拟地址，直接对 `kernel.macho` 反汇编 |
+| x4 在 `0x00xxxxxx` / `0x8xxxxxxx` | 物理地址，说明崩在 MMU 打开之前 |
+| 顶部没有品红、也没有任何文字 | stub 没被调用：连异常向量都没进去，得从 PrePi/DXE 侧查 |
+
+拿到 x4 之后定位指令的方法（`__TEXT` vmaddr = `0xfffffff007004000`）：
+
+```
+off = (x4 - 0xfffffff007004000) + __TEXT.fileoff
+scripts/ci/find_spin.py _ci/kernel.macho <x4>     # 也用它确认不是 b . 自旋
+```
+
+### 下一步
+
+1. 推这两处改动 → CI 出新的 `boot-meizu15-payload-debug.img`。
+2. `fastboot boot` 后拍**第一屏整屏**（不只是顶部带子），读 `x3 / x4 / x5`。
+3. x4 落到哪，就去 `kernel.macho` 里看那条指令是什么——这一步之后才有得修，之前都是猜。

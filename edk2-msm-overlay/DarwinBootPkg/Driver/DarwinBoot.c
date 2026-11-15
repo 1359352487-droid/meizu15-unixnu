@@ -535,6 +535,21 @@ typedef struct {
   UINT64  LogLength;
   UINT64  Returned;
   UINT64  Reason;
+  //
+  // x3..x7 exactly as the kernel left them when it jumped to the stub.
+  //
+  // The early-exception vector sets x3 = ESR_EL1, x4 = ELR_EL1, x5 = FAR_EL1,
+  // x6 = LR, x7 = SP and branches here with x2 = 1. A checkpoint arrives with
+  // x2 = 2 and x3 = its number, and an orderly loader_return() with x2 = 0 and
+  // x3 = its code. So Reason decides how to read these, and the first three are
+  // the whole diagnosis for a fault: exception class, faulting instruction,
+  // address touched.
+  //
+  UINT64  FaultX3;
+  UINT64  FaultX4;
+  UINT64  FaultX5;
+  UINT64  FaultX6;
+  UINT64  FaultX7;
 } DARWIN_SAVED_CONTEXT;
 
 extern DARWIN_SAVED_CONTEXT  DarwinSavedContext;
@@ -731,6 +746,27 @@ DarwinShowKernelLog (
   DiagDrawRaw (Video, (CONST UINT8 *)Status, sizeof (Status), 0);
 
   //
+  // What the kernel was doing at the moment it came back.
+  //
+  // Until this line existed the panel could only say that *something* had
+  // happened: a magenta band meant the stub ran, and the photograph could not
+  // add why. On the early-exception path these five words are ESR_EL1,
+  // ELR_EL1, FAR_EL1, LR and SP, which is enough to name the faulting
+  // instruction in kernel.macho and the address it touched.
+  //
+  AsciiSPrint (
+    Status,
+    sizeof (Status),
+    "x3 %016lx x4 %016lx\r\nx5 %016lx x6 %016lx\r\nx7 %016lx\r\n",
+    DarwinSavedContext.FaultX3,
+    DarwinSavedContext.FaultX4,
+    DarwinSavedContext.FaultX5,
+    DarwinSavedContext.FaultX6,
+    DarwinSavedContext.FaultX7
+    );
+  DiagDrawRaw (Video, (CONST UINT8 *)Status, sizeof (Status), 1);
+
+  //
   // The slot words go on the panel too, on a line nothing later will touch.
   //
   // Two of them decide what happens next: the magic says the copy landed on the
@@ -748,10 +784,10 @@ DarwinShowKernelLog (
     mSlotDump[2],
     mSlotDump[3]
     );
-  DiagDrawRaw (Video, (CONST UINT8 *)Status, sizeof (Status), 1);
+  DiagDrawRaw (Video, (CONST UINT8 *)Status, sizeof (Status), 4);
 
   if ((Log == NULL) || (Length == 0)) {
-    DiagDrawRaw (Video, (CONST UINT8 *)"(log empty)\r\n", 13, 3);
+    DiagDrawRaw (Video, (CONST UINT8 *)"(log empty)\r\n", 13, 7);
     return;
   }
 
@@ -759,7 +795,7 @@ DarwinShowKernelLog (
   // The head of the log is the boot, which is what a stall this early needs.
   // DiagDrawRaw stops as soon as the panel is full.
   //
-  DiagDrawRaw (Video, Log, Length, 2);
+  DiagDrawRaw (Video, Log, Length, 6);
 }
 
 STATIC

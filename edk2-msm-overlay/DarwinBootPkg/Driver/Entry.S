@@ -306,6 +306,25 @@ DarwinKernelReturnStubStart:
   str x0, [x9, #144]          // log physical address
   str x1, [x9, #152]          // log length
   str x2, [x9, #168]          // reason, kept for the status line
+  //
+  // x3..x7 are the only description of what the kernel was doing that survives
+  // the jump here, and until now they were thrown away.
+  //
+  // The early-exception vector in start.s sets them like this before branching:
+  // x3 = ESR_EL1, x4 = ELR_EL1, x5 = FAR_EL1, x6 = LR, x7 = SP, with x2 = 1.
+  // A checkpoint sets x2 = 2 and x3 = the checkpoint number, and an orderly
+  // return from loader_return.c sets x2 = 0 / x3 = code. So the meaning is
+  // decided by reason, and storing all five unconditionally costs nothing.
+  //
+  // On a fault this is the whole diagnosis: ESR names the class, ELR the
+  // instruction that faulted, FAR the address it touched. The coloured band
+  // could only ever say "something happened".
+  //
+  str x3, [x9, #176]
+  str x4, [x9, #184]
+  str x5, [x9, #192]
+  str x6, [x9, #200]
+  str x7, [x9, #208]
   mov x16, #1
   str x16, [x9, #160]         // the kernel returned
   dc civac, x9
@@ -366,10 +385,20 @@ DarwinKernelReturnStubEnd:
 //                           +152  log length             (stub)
 //                           +160  1 = the kernel returned (stub)
 //                           +168  reason                 (stub)
+//                           +176  x3 as the kernel left it (stub)
+//                           +184  x4                     (stub)
+//                           +192  x5                     (stub)
+//                           +200  x6                     (stub)
+//                           +208  x7                     (stub)
   .section .data
   .balign 8
   .globl DarwinSavedContext
 DarwinSavedContext:
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
+  .quad 0
   .quad 0
   .quad 0
   .quad 0
