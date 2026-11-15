@@ -382,8 +382,25 @@ DarwinKernelReturnStubStart:
   //
   // Either answer ends the guessing, which is what four boots could not do.
   //
-  adr x9, DarwinKernelReturnStubParameters
-  ldur x14, [x9, #8]          // the context pointer exactly as the stub has it
+  //
+  // Read the context pointer without destroying the framebuffer base.
+  //
+  // The previous build used
+  //
+  //     adr  x9, DarwinKernelReturnStubParameters
+  //     ldur x14, [x9, #8]
+  //
+  // and x9 is the register the drawing helpers take as the framebuffer base.
+  // Loading the context into x14 therefore replaced the base with the address of
+  // the parameter block, and every barcode was painted into the 600 bytes around
+  // 0xD0134200 instead of into video memory. Nothing appeared on screen, and the
+  // picture was indistinguishable from "the draw never ran".
+  //
+  // x15 is free here: DarwinEnter used it for the kernel entry but the branch
+  // has already happened, and nothing below reads it.
+  //
+  adr x15, DarwinKernelReturnStubParameters
+  ldur x14, [x15, #8]         // the context pointer exactly as the stub has it
 
   // The helper must be inside the copied range: DarwinDrawBarcode sits after
   // DarwinKernelReturnStubEnd, so it is not part of what the loader memcpy's,
@@ -449,9 +466,9 @@ DarwinKernelReturnStubStart:
   // Drawing first costs nothing and means a bad address can only lose the store,
   // never the report. The barcodes are the only channel that survives.
   //
-  // x0/x1/x2/x3 were saved into x11..x14 before the drawing began, and
-  // Lstub_barcode clobbers x3..x8 and x11..x15 -- so the stored values come back
-  // from x11..x14 where the caller put them, not from x0..x3.
+  // The values were parked in x19..x21 before the draw began, and both helpers
+  // clobber x3..x8, x10, x11 and x14 -- so the stores below read the callee-saved
+  // copies, not x0..x3, which by now hold leftover drawing state.
   //
   adr x9, DarwinKernelReturnStubParameters
   ldur x9, [x9, #8]           // DarwinSavedContext PA
