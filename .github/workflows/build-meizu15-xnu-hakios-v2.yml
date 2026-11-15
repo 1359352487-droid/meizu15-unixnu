@@ -132,8 +132,14 @@ jobs:
         working-directory: hakios
         run: |
           set -eux
-          F=xnu-src/osfmk/arm64/loader_return.c
-          test -f "$F"
+          #
+          # apply.sh extracts the tree under xnu-src/<tag>/, not directly in
+          # xnu-src/ -- the first version of this step assumed the latter and
+          # failed on `test -f`. Find the file instead of hardcoding the tag.
+          #
+          F=$(find xnu-src -path '*/osfmk/arm64/loader_return.c' -type f | head -1)
+          test -n "$F"
+          echo "patching $F"
           grep -n 't0sz < 25' "$F"
           sed -i 's/t0sz < 25 || t0sz > 33/t0sz < 24 || t0sz > 33/' "$F"
           echo "--- after ---"
