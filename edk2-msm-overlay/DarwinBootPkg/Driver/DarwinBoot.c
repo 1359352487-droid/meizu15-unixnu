@@ -1344,6 +1344,7 @@ Boot (
     UINTN  SlotOffset;
     UINTN  StubOffset;
     UINTN  StubSize;
+    UINTN  StubSpan;
     UINTN  ParameterOffset;
     UINT64 *Slot;
 
@@ -1361,8 +1362,29 @@ Boot (
       StubSize        = (UINTN)(DarwinKernelReturnStubEnd - DarwinKernelReturnStubStart);
       ParameterOffset = (UINTN)(DarwinKernelReturnStubParameters - DarwinKernelReturnStubStart);
       StubOffset      = ALIGN_VALUE (Used, 16);
+      //
+      // The span must cover the whole stub *and* both parameter words.
+      //
+      // This used to be ALIGN_VALUE (StubSize, 16), and on this build the two
+      // numbers disagree: StubSize is 240 (0xF0) so the span ended at +0xF0,
+      // while the second parameter word is written at ParameterOffset + 8 =
+      // 0xE8 + 8 = 0xF0 for 8 bytes -- the first byte past the end.
+      //
+      // The panel proved it matters, because TopOfKernelData is exactly
+      // Address + Used and XNU allocates upwards from there:
+      //
+      //     return stub at 0x0D130000  stub 240 bytes  params +0xE8
+      //     Used  = 0x130000 + 0xF0  = 0x1300F0
+      //     ctx   = 0x0D0004000 + 0x1300F0 = 0xD01340F0 = TopOfKernelData
+      //
+      // So the context pointer was stored in the first word the kernel was free
+      // to hand out, and the return channel's own state could be overwritten
+      // before the kernel ever reached the code that reads it.
+      //
+      StubSpan = ParameterOffset + 16;
+      if (StubSpan < StubSize) { StubSpan = StubSize; }
 
-      if ((StubOffset + StubSize) > (WindowSize - BLOCK_SIZE)) {
+      if ((StubOffset + StubSpan) > (WindowSize - BLOCK_SIZE)) {
         Print (L"DARWINBOOT: no room for the return stub, staying silent\n");
       } else {
         CopyMem ((VOID *)(UINTN)(Address + StubOffset),
@@ -1389,26 +1411,30 @@ Boot (
         Slot    = (UINT64 *)(UINTN)(Address + SlotOffset);
         Slot[1] = Address + StubOffset;
         //
-        // Checkpoint off, for one experiment.
+        // Checkpoint 0: let the kernel run, and catch a real fault.
         //
-        // Asking for 1 produced no cyan band even after the window moved to
-        // 0xD0004000 (WIN == HIGH == 0xD0004000, a 2.6 GiB run at 0xD0000000),
-        // which rules out the load address, the adrp alignment, the store, the
-        // slot being overwritten by the tree, and the branch target. Every step
-        // of the arithmetic has been checked by hand and it says the compare
-        // should match.
+        // The panel from build b343381 showed a thin magenta strip across the
+        // very top, above the green band. That strip is 0x10000 bytes at
+        // framebuffer base with a 4320-byte stride -- fifteen rows out of 1920,
+        // 0.8% of the screen -- which is exactly the paint the return stub does
+        // before it reads anything else. So the channel works: the kernel
+        // faulted, the early-exception vector in start.s found a non-zero stub
+        // address, and it jumped here.
         //
-        // So the next distinction worth paying a boot for is "the value did not
-        // match" against "that code never ran". With word 2 at 0 neither
-        // _start_first_cpu test matches, the kernel boots normally, and
-        // loader_return_after=15 should fire fifteen seconds later -- as it did
-        // on the build at 0x08000000.
+        // What did not happen was the report. Stub parameters sit at
+        // ParameterOffset, and on this build that is 0xE8 past the stub start
+        // while StubSize is 0xF0:
         //
-        //   magenta or cyan band, reason 1   the channel works end to end and
-        //                                    only the match on 1 is failing
-        //   nothing at all                   the kernel never gets far enough to
-        //                                    matter, and the checkpoint was
-        //                                    never the thing to chase
+        //     fb  = Address + 0x130000 + 0xE8 = 0xD01340E8   -- inside Used
+        //     ctx = Address + 0x130000 + 0xF0 = 0xD01340F0   -- = TopOfKernelData
+        //
+        // So the framebuffer word survived, the magenta painted, and the
+        // context pointer was overwritten by the kernel's first allocation
+        // before the stub ever looked at it. StubSpan now covers both words.
+        //
+        // With the report path fixed, a checkpoint would only cut the kernel
+        // short before its own fault. Ask for 0 and read the fault instead:
+        // x3 = ESR_EL1, x4 = ELR_EL1, x5 = FAR_EL1 come back in the log.
         //
         Slot[2] = 0;
         Slot[3] = Address - Kernel.Base;
@@ -1418,7 +1444,7 @@ Boot (
         // upwards from TopOfKernelData, and a stub outside that range would be
         // handed out and overwritten before it was ever needed.
         //
-        Used = StubOffset + ALIGN_VALUE (StubSize, 16);
+        Used = StubOffset + ALIGN_VALUE (StubSpan, 16);
 
         Print (
           L"DARWINBOOT: return stub at 0x%lx, slot at file offset 0x%lx\n",
