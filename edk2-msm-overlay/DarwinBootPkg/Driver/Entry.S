@@ -260,6 +260,7 @@ ASM_FUNC(DarwinEnter)
   .globl DarwinKernelReturnStubStart
   .globl DarwinKernelReturnStubEnd
 
+  .balign 16
 DarwinKernelReturnStubStart:
   msr daifset, #0xf
 
@@ -272,7 +273,9 @@ DarwinKernelReturnStubStart:
   isb
 
   adr x10, DarwinKernelReturnStubParameters
-  ldr x10, [x10]              // framebuffer PA, filled in by the loader
+  ldur x10, [x10]             // framebuffer PA; ldur tolerates the address
+                              // alignment the linker happens to give the
+                              // parameter word
   cbz x10, 2f
 
   mov w12, #0x00FF
@@ -297,7 +300,7 @@ DarwinKernelReturnStubStart:
   // reached an orderly end. Magenta stays for anything else, including the
   // early-exception path, which arrives with no registers set at all.
   adr x9, DarwinKernelReturnStubParameters
-  ldr x9, [x9, #8]            // DarwinSavedContext PA
+  ldur x9, [x9, #8]           // DarwinSavedContext PA
   cbz x9, 2f
 
   str x0, [x9, #144]          // log physical address
