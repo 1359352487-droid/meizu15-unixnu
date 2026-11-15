@@ -103,6 +103,44 @@ jobs:
           ls xnu-src 2>/dev/null || true
         continue-on-error: true
 
+      #
+      # Relax loader_jump()'s translation-regime floor, for this board only.
+      #
+      # loader_jump() hands control back to the loader only if the current TTBR0
+      # walk can reach the stub:
+      #
+      #     t0sz = TCR_EL1 & 0x3f;
+      #     if (t0sz < 25 || t0sz > 33 || (stub >> (64 - t0sz)) != 0) return;
+      #
+      # This board enters the kernel with TCR_EL1 = 0x280803518, so t0sz is 24.
+      # Everything the kernel does before arm_vm_init() -- which is where the
+      # regime is raised to 25 -- therefore has its checkpoints accepted by
+      # loader_checkpoint() and silently dropped by loader_jump(). That is
+      # exactly the window the kernel is dying in, so the probes there are
+      # useless until the floor moves.
+      #
+      # Lowering it to 24 is safe here and the arithmetic is checked:
+      #
+      #   stub = 0x0D130000, so stub >> (64 - 24) = stub >> 40 = 0
+      #   the third condition already passes at t0sz = 24
+      #   0x0D130000 is far below 1 GiB, so the L1 index is 0
+      #
+      # Nothing else changes: the l1/l2 entries loader_jump writes are computed
+      # from the stub address, not from t0sz.
+      #
+      - name: Relax loader_jump's t0sz floor so early checkpoints can report
+        working-directory: hakios
+        run: |
+          set -eux
+          F=xnu-src/osfmk/arm64/loader_return.c
+          test -f "$F"
+          grep -n 't0sz < 25' "$F"
+          sed -i 's/t0sz < 25 || t0sz > 33/t0sz < 24 || t0sz > 33/' "$F"
+          echo "--- after ---"
+          grep -n 't0sz < 2' "$F"
+          # Fail loudly rather than silently building the old behaviour.
+          grep -q 't0sz < 24 || t0sz > 33' "$F"
+
       - name: Kernel dependencies (xnu-deps/setup.sh)
         working-directory: hakios
         run: |
