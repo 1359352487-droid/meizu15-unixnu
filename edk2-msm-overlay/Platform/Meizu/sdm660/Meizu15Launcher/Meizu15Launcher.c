@@ -301,18 +301,30 @@ Meizu15LauncherEntry (
   // have moved on, and short enough to keep each attempt tolerable.
   //
   //
-  // checkpoint=<n> makes hakios-xnu return to the loader at checkpoint n instead
-  // of running on, which turns "where does the kernel stop" into a binary search
-  // over the checkpoints that are already planted in arm_init (10..21, 30..35,
-  // 40..44). DarwinBoot reads this out of the command line and writes it into the
-  // slot's word 2; loader_checkpoint(n) fires only when the two match.
+  // checkpoint=17, not 10, and the reason is a hard constraint in the kernel.
   //
-  // 10 is the first of the series, immediately before cpu_data_init(). The panel
-  // already proved the kernel gets past do_cacheid() -- that is inside
-  // cpu_data_init -- so 10 should fire, and each later number narrows the window
-  // between "reached" and "never reached".
+  // loader_jump() refuses to hand control back unless the translation regime can
+  // reach the stub:
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=10";
+  //     tcr  = TCR_EL1;
+  //     t0sz = tcr & 0x3f;
+  //     if (t0sz < 25 || t0sz > 33 || (stub >> (64 - t0sz)) != 0) return;
+  //
+  // The panel prints TCR_EL1 = 0x280803518 on the way in, so t0sz is 24 -- below
+  // the floor. Every checkpoint that fires before arm_vm_init() rebuilds TCR_EL1
+  // is therefore accepted by loader_checkpoint() and then silently dropped by
+  // loader_jump(). That is why checkpoint=10 produced a boot with all three bands
+  // and no report at all.
+  //
+  // 17 sits immediately after arm_vm_init(), by which point the tables and TCR are
+  // the kernel's own, so the check passes. It is the first checkpoint in the series
+  // that can actually return.
+  //
+  //   17 fires   arm_vm_init() completed; whatever is wrong is later
+  //   17 silent  the kernel dies between arm_init's start and arm_vm_init, which
+  //              narrows it to the window that already shows do_cacheid()
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=17";
   //
   // DeviceTree must stay NULL here.
   //
