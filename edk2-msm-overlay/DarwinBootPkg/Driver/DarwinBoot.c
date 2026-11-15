@@ -534,6 +534,7 @@ typedef struct {
   UINT64  LogAddress;
   UINT64  LogLength;
   UINT64  Returned;
+  UINT64  Reason;
 } DARWIN_SAVED_CONTEXT;
 
 extern DARWIN_SAVED_CONTEXT  DarwinSavedContext;
@@ -692,11 +693,9 @@ DarwinShowKernelLog (
 {
   CONST UINT8  *Log;
   UINTN        Length;
+  CHAR8        Status[128];
 
   if (DarwinSavedContext.Returned == 0) {
-    return;
-  }
-  if ((DarwinSavedContext.LogAddress == 0) || (DarwinSavedContext.LogLength == 0)) {
     return;
   }
 
@@ -704,10 +703,33 @@ DarwinShowKernelLog (
   Length = (UINTN)DarwinSavedContext.LogLength;
 
   //
+  // Always draw a status line first.
+  //
+  // An empty log and "the stub never ran" are the same picture otherwise, and
+  // those need opposite responses. Reason 2 is a checkpoint, 0 an orderly end,
+  // anything else is the early-exception path arriving with whatever happened to
+  // be in the registers. AsciiSPrint is pure computation, so this works with the
+  // boot services already gone.
+  //
+  AsciiSPrint (
+    Status,
+    sizeof (Status),
+    "kernel returned: reason %lu, log %lu bytes\r\n",
+    DarwinSavedContext.Reason,
+    DarwinSavedContext.LogLength
+    );
+  DiagDrawRaw (Video, (CONST UINT8 *)Status, sizeof (Status), 0);
+
+  if ((Log == NULL) || (Length == 0)) {
+    DiagDrawRaw (Video, (CONST UINT8 *)"(log empty)\r\n", 13, 1);
+    return;
+  }
+
+  //
   // The head of the log is the boot, which is what a stall this early needs.
   // DiagDrawRaw stops as soon as the panel is full.
   //
-  DiagDrawRaw (Video, Log, Length, 0);
+  DiagDrawRaw (Video, Log, Length, 2);
 }
 
 STATIC
