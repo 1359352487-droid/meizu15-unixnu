@@ -926,3 +926,84 @@ scripts/ci/find_spin.py _ci/kernel.macho <x4>     # 也用它确认不是 b . �
 1. 推这两处改动 → CI 出新的 `boot-meizu15-payload-debug.img`。
 2. `fastboot boot` 后拍**第一屏整屏**（不只是顶部带子），读 `x3 / x4 / x5`。
 3. x4 落到哪，就去 `kernel.macho` 里看那条指令是什么——这一步之后才有得修，之前都是猜。
+
+## 2026-11-15 15:46 — 新镜像上机：故障现场已上报（等拍照）
+
+`b343381` / `95759b6` 这一版把 x3..x7 存了下来。CI 三次全绿：
+
+```
+run 43690721273  build-meizu15-fix           success
+run 43690721205  build-meizu15-edk2msm       success
+run 43690721271  build-meizu15-uefi-payload  success
+```
+
+产物 `meizu15-uefi-payload-debug-full`（5,276,597 B，artifact 14152009508），
+里面的 `boot-meizu15-payload-debug.img` = 5,574,656 B，sha256
+`A35E9E2AD8E84EBEB08DA5A1DAC5BBB154EF23978DED9B031E1DBBDFD671A7D5`。
+
+### 离线先验：镜像里到底有没有这段代码
+
+`scripts/ci/check_image_content.py` 先在这一版上跑过，因为上一轮已经踩过一次
+「以为改了、其实没进镜像」的坑。中途还修了脚本自身的一个错：新加的三行是
+`AsciiSPrint` 的 ASCII 格式串，我一开始按 UTF-16 去找，对着正确的镜像报
+`absent`——差点又白刷一次。现在是分两组检查：
+
+```
+DarwinBoot, UTF-16LE Print strings
+  return stub at                         FOUND
+  no loader_stub_slot in this kernel     FOUND
+  no room for the return stub            FOUND
+
+DarwinBoot, ASCII AsciiSPrint format strings
+  kernel returned: reason %lu, log %lu bytes  FOUND
+  x3 %016lx x4 %016lx                    FOUND      ← 新增，旧版 absent
+  x5 %016lx x6 %016lx                    FOUND      ← 新增，旧版 absent
+  x7 %016lx                              FOUND      ← 新增，旧版 absent
+```
+
+对照旧镜像 `boot-147c822.img` 跑同一脚本，后三条全是 `absent`。**判据成立。**
+
+### 上机
+
+```
+adb reboot bootloader                        → 18 s 后 fastboot 出现
+fastboot getvar product                      → product: M1881        （状态机正常）
+fastboot boot boot-meizu15-payload-debug.img
+  Sending 'boot.img' (5444 KB)  OKAY [ 0.126s]
+  Booting                       OKAY [ 0.016s]
+  约 42 MB/s，5.4 MB 用时 0.126 s
+```
+
+刷入后 22 s：`adb devices` 空、`fastboot devices` 空、Windows PnP 里
+`VID_05C6|VID_18D1|VID_2A70` 一个都没有 —— 设备停在固件里，与前几十轮一致。
+
+### 顺便确认掉的旧问题
+
+上一轮记的「fastboot 只剩 15 KB/s、`getvar product` 返回 unknown command」这次
+**没有复现**：`getvar product` 正常、`Sending` 0.126 s。那一轮是 USB 重新枚举和
+adb 状态机叠在一起，不是链路劣化。
+
+### 现在的状态：只差一张照片
+
+代码、镜像、工具三样都到位了，剩下的一步必须用相机，因为固件里没有 adb：
+
+```
+kernel returned: reason 1, log N bytes     ← reason 1 = 早期异常向量
+x3 0000....96000006 x4 fffffff007......    ← ESR_EL1, ELR_EL1
+x5 ........ x6 ........ x7 ........
+slot magic 545352444c554e58 .......
+```
+
+拿到 x4（ELR）就能直接定位到指令：
+
+```
+python scripts/ci/locate_fault.py inputs/kernel.macho <x4>
+```
+
+这个脚本本轮已经用已知值验证过：喂 `0xfffffff0074614a8`（`Entry.S` 注释里记的
+内核入口），它解出 `__TEXT_EXEC` 文件偏移 `0x45d4a8`、符号
+`_LowResetVectorEnd+0x0`、指令 `14000aed b 0xfffffff00746405c` —— 和注释里记的
+`0x14000AED`、`B over 0x2BB4` 完全对上。
+
+也就是说：**给我 x4，我就能说出内核死在哪条指令上、碰的是哪个地址。**
+在此之前不再改内核，因为没有新证据的改动都是在赌。
