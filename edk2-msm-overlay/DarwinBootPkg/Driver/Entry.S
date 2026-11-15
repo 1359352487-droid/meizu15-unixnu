@@ -467,61 +467,150 @@ DarwinVectors:
   b DarwinTrap              // 0x780 lower EL, AArch32, SError
 
 // A fault landed here, which means the kernel did not get as far as installing
-// its own vectors. Paint the exception class over the green band and stop.
+// its own vectors.
 //
-// The class comes from ESR_EL1[31:26] and each one maps to a colour:
+// This used to paint one coloured band, and that was a design error worth
+// recording: the magenta strip the return stub paints is also 0x10000 bytes at
+// the framebuffer base. A photograph of a magenta strip across the top therefore
+// cannot say whether the kernel reached the stub or died before it -- two
+// different events, one picture. Two builds were spent on that ambiguity.
 //
-//   white    EC 0x00  unknown, or an undefined instruction
-//   magenta  EC 0x21  instruction abort from the same EL
-//   cyan     EC 0x25  data abort from the same EL
-//   yellow   anything else
+// So this handler no longer paints a band. It draws the fault numbers as pixel
+// barcodes at rows nothing else writes:
 //
-// A coloured band on top of the green one is therefore not "the kernel is
-// quiet": it is a specific fault class, and the kernel died before it could say
-// anything itself.
+//   y = 1400   ESR_EL1   32 bits
+//   y = 1460   ELR_EL1   64 bits
+//   y = 1520   FAR_EL1   64 bits
+//   y = 1580   marker    8 bits, always 0xA5 if the handler got this far
+//
+// Each bit is eight pixels wide and twenty tall, white for 1 over the untouched
+// black framebuffer, followed by a one-pixel gap so adjacent ones stay
+// countable, with a four-pixel tick at x = 0 marking the start of the row.
+// Reading a row off a photo is mechanical, and this is the one channel that
+// still works with the MMU off and boot services gone.
+//
+// No stack is used: everything is inline, because at this point SP belongs to
+// whatever the kernel was doing.
 DarwinTrap:
+  msr daifset, #0xf
+
+  adr x9, DarwinTrapFramebuffer
+  ldr x9, [x9]
+  cbz x9, 9f
+
+  adr x10, DarwinTrapStride
+  ldr x10, [x10]
+  cbz x10, 9f
+
+  // x0 = value, x1 = y, x2 = bit count.
   mrs x0, esr_el1
+  mov x1, #1400
+  mov x2, #32
+  bl DarwinDrawBarcode
 
-  // Framebuffer address, written by DarwinEnter once translation is off.
-  adr x2, DarwinTrapFramebuffer
-  ldr x2, [x2]
-  cbz x2, 9f
+  mrs x0, elr_el1
+  mov x1, #1460
+  mov x2, #64
+  bl DarwinDrawBarcode
 
-  lsr x3, x0, #26
-  and x3, x3, #0x3f
+  mrs x0, far_el1
+  mov x1, #1520
+  mov x2, #64
+  bl DarwinDrawBarcode
 
-  mov w4, #0xFF00
-  movk w4, #0xFFFF, lsl #16     // yellow 0xFFFFFF00, the default
-  cmp w3, #0x21
-  b.ne 1f
-  mov w4, #0x00FF
-  movk w4, #0xFFFF, lsl #16     // magenta 0xFFFF00FF: instruction abort
-  b 8f
-1:
-  cmp w3, #0x25
-  b.ne 2f
-  mov w4, #0xFFFF
-  movk w4, #0x00FF, lsl #16     // cyan 0xFF00FFFF: data abort
-  b 8f
-2:
-  cbnz w3, 8f
-  mov w4, #0xFFFF
-  movk w4, #0xFFFF, lsl #16     // white 0xFFFFFFFF: unknown / undefined
+  mov x0, #0xA5
+  mov x1, #1580
+  mov x2, #8
+  bl DarwinDrawBarcode
 
 8:
-  // 64 KiB at the framebuffer base is well inside this panel's 8.3 MiB frame
-  // and covers the green band, so the two cannot be confused.
-  mov x5, x2
-  mov x6, #0x10000
-3:
-  stp w4, w4, [x5], #8
-  subs x6, x6, #8
-  b.hi 3b
   dsb sy
-
 9:
   b 9b
 
+// Draw one value as a barcode.
+//
+//   x0 = value, x1 = y in pixels, x2 = bit count
+//   x9 = framebuffer base (preserved), x10 = row stride in bytes (preserved)
+//
+// Clobbers x3..x8 and x11..x17. Keeps x9 and x10 so the caller can chain several
+// rows without reloading them.
+DarwinDrawBarcode:
+  // x3 = base of this row = fb + y * stride.
+  mul x3, x1, x10
+  add x3, x3, x9
+
+  // Start tick: four pixels wide, twenty rows tall, at pixel x = 0.
+  mov x4, #0
+1:
+  add x5, x3, x4, lsl #2
+  mov w6, #0xFFFFFFFF
+  mov x7, #20
+2:
+  str w6, [x5]
+  add x5, x5, x10
+  subs x7, x7, #1
+  b.ne 2b
+  add x4, x4, #1
+  cmp x4, #4
+  b.lo 1b
+
+  // Bits, most significant first.
+  mov x4, x2                  // bit index countdown
+3:
+  cbz x4, 7f
+  sub x4, x4, #1
+
+  lsr x5, x0, x4
+  and x5, x5, #1
+  cbz x5, 3b                  // a zero stays background
+
+  // Pixel x of this bit: 8 + (bitcount - 1 - index) * 9.
+  //
+  // Nine, not eight: one pixel of gap after every bit keeps two adjacent ones
+  // countable in a photograph. Reading a solid white run is otherwise a guess
+  // about where one bit ended and the next began.
+  sub x5, x2, #1
+  sub x5, x5, x4
+  mov x6, #9
+  mul x5, x5, x6
+  add x5, x5, #8
+
+  mov x6, #0
+4:
+  add x7, x5, x6
+  add x7, x3, x7, lsl #2
+  mov w8, #0xFFFFFFFF
+  mov x11, #20
+5:
+  str w8, [x7]
+  add x7, x7, x10
+  subs x11, x11, #1
+  b.ne 5b
+  add x6, x6, #1
+  cmp x6, #8
+  b.lo 4b
+
+  b 3b
+7:
+  ret
+
+// Both words the trap handler reads live in .data, not .text.
+//
+// .text is mapped read-only while translation is on, and DarwinTrapStride is
+// written from C (from Video[2]) before DarwinEnter runs -- a store into .text at
+// that moment would take a permission fault and abort the boot in the one place
+// that cannot report it. DarwinTrapFramebuffer is only ever written with
+// translation off, so it could stay in .text, but keeping the pair together
+// makes the rule easy to remember.
+  .section .data
   .balign 8
+  .globl DarwinTrapFramebuffer
 DarwinTrapFramebuffer:
   .quad 0
+  .globl DarwinTrapStride
+DarwinTrapStride:
+  .quad 4320
+  .text
+
+

@@ -555,6 +555,17 @@ typedef struct {
 extern DARWIN_SAVED_CONTEXT  DarwinSavedContext;
 
 //
+// The exception handler's row stride, in bytes.
+//
+// DarwinTrap draws its barcodes straight into the framebuffer by physical
+// address, so it has to know where one scanline ends. Video[2] is exactly that
+// (width * 4), and it is written here while translation is still on because
+// .data is reachable then and the handler is not guaranteed a working stack --
+// or even a working mapping of this image -- if the kernel faults early.
+//
+extern UINT64  DarwinTrapStride;
+
+//
 // The four slot words, kept for the return path.
 //
 // Print sends them to the console, which is fine while the boot is running and
@@ -1651,6 +1662,7 @@ Boot (
     Status = gBS->ExitBootServices (mImage, Key);
     if (!EFI_ERROR (Status)) {
       if (Excluded == NULL) {
+        DarwinTrapStride = Video[2];
         DarwinEnter (ArgsAddress, Address + Kernel.Entry - Kernel.Base, Address, WindowSize, Video[0], Video[2] * Video[4]);
         //
         // Reaching this line at all means the kernel came back through the
@@ -1668,6 +1680,7 @@ Boot (
         Cursor = DarwinRangeBase (Excluded, Index) + DarwinRangeSize (Excluded, Index);
       }
       if (Address + WindowSize > Cursor) { DarwinFlush (Cursor, Address + WindowSize - Cursor); }
+      DarwinTrapStride = Video[2];
       DarwinEnter (ArgsAddress, Address + Kernel.Entry - Kernel.Base, Address, HeadSize, Video[0], Video[2] * Video[4]);
       //
       // Same as above: only the loader-return stub gets here.
