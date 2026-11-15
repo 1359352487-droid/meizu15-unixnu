@@ -1338,6 +1338,23 @@ Boot (
           (UINT64)ParameterOffset,
           (UINT64)Video[0]
           );
+        //
+        // The load address and its alignment, in full.
+        //
+        // Every kernel access to the slot goes through adrp, which works from
+        // the page of the current PC. If the window base is not 4 KiB aligned
+        // the page arithmetic lands elsewhere, the load returns something that
+        // is not 1, and _start_first_cpu quietly takes the boot path instead of
+        // the checkpoint. That failure is indistinguishable from "the kernel
+        // never ran", so the value is worth printing rather than inferring from
+        // delta and the stub address.
+        //
+        Print (
+          L"DARWINBOOT: load 0x%016lx stuboff 0x%lx low 0x%lx\n",
+          (UINT64)Address,
+          (UINT64)StubOffset,
+          (UINT64)Address & 0xFFF
+          );
         Print (
           L"DARWINBOOT: stub reads back fb 0x%lx ctx 0x%lx\n",
           ReadUnaligned64 ((UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset)),
