@@ -373,10 +373,10 @@ DarwinKernelReturnStubStart:
   // Drawing a fault that never happened was wasting the channel. These rows now
   // answer the questions that are actually open:
   //
-  //   y = 1700   x0  log physical address
-  //   y = 1742   x1  log length in bytes
-  //   y = 1784   x2  reason               (0 = orderly)
-  //   y = 1826   x3  code
+  //   y = 1700   x0   log physical address
+  //   y = 1742   x1   log length in bytes
+  //   y = 1784   x2   reason (0 = orderly)
+  //   y = 1826   ctx  the context pointer the stub will store into
   //   y = 1868   marker 0x5A
   //
   // If x1 is non-zero the log exists and the task is only to get it on screen.
@@ -384,7 +384,26 @@ DarwinKernelReturnStubStart:
   mov x11, x0                 // log address
   mov x12, x1                 // log length
   mov x13, x2                 // reason
-  mov x14, x3                 // code
+  //
+  // The fifth row carries the context pointer the stub will store into, not the
+  // code the kernel returned.
+  //
+  // The panel printed "log 0+0 ctx CB045088" from C while these same barcodes
+  // showed x0 = 0xD0BB89C0 and x1 = 0xC0: the stub had a 192-byte log and C saw
+  // zeros. Two writers looking at different memory is the only shape that fits,
+  // and ctx is the address that decides it.
+  //
+  // Two candidates exist and this row separates them:
+  //
+  //   ctx == CB04....   the address is inside the image, C is reading some other
+  //                     copy of the structure
+  //   ctx == CB045088   it matches what C printed, so the address itself is
+  //                     wrong -- outside DarwinBoot.efi entirely
+  //
+  // Either answer ends the guessing, which is what four boots could not do.
+  //
+  adr x9, DarwinKernelReturnStubParameters
+  ldur x14, [x9, #8]          // the context pointer exactly as the stub has it
 
   // The helper must be inside the copied range: DarwinDrawBarcode sits after
   // DarwinKernelReturnStubEnd, so it is not part of what the loader memcpy's,
@@ -425,7 +444,7 @@ DarwinKernelReturnStubStart:
   mov x1, #1820
   bl Lstub_calbar
   mov x1, #1826
-  mov x2, #16
+  mov x2, #64
   bl Lstub_barcode
 
   mov x0, #0x5A
