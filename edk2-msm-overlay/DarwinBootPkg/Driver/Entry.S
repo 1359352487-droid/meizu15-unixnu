@@ -302,6 +302,7 @@ DarwinKernelReturnStubStart:
 
   str x0, [x9, #144]          // log physical address
   str x1, [x9, #152]          // log length
+  str x2, [x9, #168]          // reason, kept for the status line
   mov x16, #1
   str x16, [x9, #160]         // the kernel returned
   dc civac, x9
@@ -361,10 +362,12 @@ DarwinKernelReturnStubEnd:
 //   +48   MAIR_EL1          +144  log physical address   (stub)
 //                           +152  log length             (stub)
 //                           +160  1 = the kernel returned (stub)
+//                           +168  reason                 (stub)
   .section .data
   .balign 8
   .globl DarwinSavedContext
 DarwinSavedContext:
+  .quad 0
   .quad 0
   .quad 0
   .quad 0
