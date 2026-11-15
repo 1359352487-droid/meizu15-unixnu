@@ -539,6 +539,16 @@ typedef struct {
 
 extern DARWIN_SAVED_CONTEXT  DarwinSavedContext;
 
+//
+// The four slot words, kept for the return path.
+//
+// Print sends them to the console, which is fine while the boot is running and
+// useless by the time it matters: dozens of MZ15>> ReadBlocks lines follow and
+// push them off the top. Storing them here lets DarwinShowKernelLog draw them
+// once the kernel comes back, on a framebuffer nothing else will touch.
+//
+STATIC UINT64  mSlotDump[4];
+
 STATIC CONST UINT64 mDiagFont[] = GLYPH_FONT;
 
 STATIC
@@ -720,8 +730,28 @@ DarwinShowKernelLog (
     );
   DiagDrawRaw (Video, (CONST UINT8 *)Status, sizeof (Status), 0);
 
+  //
+  // The slot words go on the panel too, on a line nothing later will touch.
+  //
+  // Two of them decide what happens next: the magic says the copy landed on the
+  // real slot rather than a lookalike, and checkpoint says whether the kernel
+  // saw the value that was written. Print already emits them, but dozens of
+  // MZ15>> ReadBlocks lines follow and push that off the top of the screen long
+  // before anyone can photograph it.
+  //
+  AsciiSPrint (
+    Status,
+    sizeof (Status),
+    "slot magic %016lx stub %016lx\r\ncheckpoint %lu delta %016lx\r\n",
+    mSlotDump[0],
+    mSlotDump[1],
+    mSlotDump[2],
+    mSlotDump[3]
+    );
+  DiagDrawRaw (Video, (CONST UINT8 *)Status, sizeof (Status), 1);
+
   if ((Log == NULL) || (Length == 0)) {
-    DiagDrawRaw (Video, (CONST UINT8 *)"(log empty)\r\n", 13, 1);
+    DiagDrawRaw (Video, (CONST UINT8 *)"(log empty)\r\n", 13, 3);
     return;
   }
 
@@ -1330,6 +1360,7 @@ Boot (
           Slot[2],
           Slot[3]
           );
+        CopyMem (mSlotDump, Slot, sizeof (mSlotDump));
       }
     }
   }
