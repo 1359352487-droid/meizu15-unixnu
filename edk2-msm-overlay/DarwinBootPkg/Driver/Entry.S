@@ -358,10 +358,8 @@ DarwinKernelReturnStubStart:
   // been proven readable: the magenta strip itself is painted from them.
   //
   adr x9, DarwinKernelReturnStubParameters
+  ldur x10, [x9, #16]         // row stride in bytes, travels with the copy
   ldur x9, [x9]               // framebuffer PA
-
-  adr x10, DarwinTrapStride
-  ldr x10, [x10]
 
   mov x11, x2                 // keep reason, x2 is the bit count register
   mov x12, x3
@@ -505,6 +503,7 @@ Lstub_barcode:
 DarwinKernelReturnStubParameters:
   .quad 0                     // framebuffer PA, written after the copy
   .quad 0                     // DarwinSavedContext PA, written after the copy
+  .quad 0                     // row stride in bytes, written after the copy
 DarwinKernelReturnStubEnd:
 
 // What it takes to resume the C caller after the kernel hands control back.

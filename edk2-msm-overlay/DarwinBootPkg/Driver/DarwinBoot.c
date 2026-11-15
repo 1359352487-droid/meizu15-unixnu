@@ -1392,7 +1392,7 @@ Boot (
       // to hand out, and the return channel's own state could be overwritten
       // before the kernel ever reached the code that reads it.
       //
-      StubSpan = ParameterOffset + 16;
+      StubSpan = ParameterOffset + 24;      // three words: fb, context, stride
       if (StubSpan < StubSize) { StubSpan = StubSize; }
 
       if ((StubOffset + StubSpan) > (WindowSize - BLOCK_SIZE)) {
@@ -1417,6 +1417,24 @@ Boot (
         WriteUnaligned64 (
           (UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset + 8),
           (UINT64)(UINTN)&DarwinSavedContext
+          );
+        //
+        // The row stride travels with the copy for a reason worth writing down.
+        //
+        // The stub is memcpy'd to the kernel window and executes from there. Any
+        // `adr` inside it encodes a PC-relative offset, so after the copy it
+        // resolves against the new address -- which is fine for labels inside the
+        // copied block and wrong for anything outside it. The last build read
+        // DarwinTrapStride (a .data word, far outside) that way: the value was
+        // garbage, the row arithmetic went off the end of the framebuffer, and no
+        // barcode appeared even though the magenta strip did.
+        //
+        // So the stride goes in the third parameter word, which is part of the
+        // copied block and reachable with ldur.
+        //
+        WriteUnaligned64 (
+          (UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset + 16),
+          Video[2]
           );
 
         Slot    = (UINT64 *)(UINTN)(Address + SlotOffset);
