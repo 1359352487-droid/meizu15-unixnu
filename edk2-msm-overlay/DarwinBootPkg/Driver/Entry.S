@@ -371,28 +371,47 @@ DarwinKernelReturnStubStart:
   // and a bl into it would branch to an address that only resolves while
   // translation is on. Lstub_barcode is defined below, before the parameter
   // words, so it travels with the copy.
+  // Rows go at the bottom of the panel, not the middle.
+  //
+  // The first attempt used 1000..1240, which lands exactly on the
+  // "SetUefiImageMemoryAttributes" lines the firmware is still printing. A photo
+  // of that region cannot separate a white bit-block from a white glyph, and the
+  // whole point of barcodes is to be unambiguous -- that boot showed the blocks
+  // but they were unreadable.
+  //
+  // 1700..1888 is black on this panel: the last console line sits around 1650.
+  mov x1, #1694
+  bl Lstub_calbar
   mov x0, x11
-  mov x1, #1000
+  mov x1, #1700
   mov x2, #16
   bl Lstub_barcode
 
   mov x0, x12
-  mov x1, #1060
+  mov x1, #1736
+  bl Lstub_calbar
+  mov x1, #1742
   mov x2, #32
   bl Lstub_barcode
 
   mov x0, x13
-  mov x1, #1120
+  mov x1, #1778
+  bl Lstub_calbar
+  mov x1, #1784
   mov x2, #64
   bl Lstub_barcode
 
   mov x0, x14
-  mov x1, #1180
+  mov x1, #1820
+  bl Lstub_calbar
+  mov x1, #1826
   mov x2, #64
   bl Lstub_barcode
 
   mov x0, #0x5A
-  mov x1, #1240
+  mov x1, #1862
+  bl Lstub_calbar
+  mov x1, #1868
   mov x2, #8
   bl Lstub_barcode
 
@@ -496,6 +515,38 @@ Lstub_barcode:
 
   b 3b
 7:
+  ret
+
+// Calibration bar: a solid white run of a known length, above each barcode row.
+//
+// A photograph of a phone screen has unknown scale and perspective, so measuring
+// a bit block in absolute pixels says nothing. This bar is always 400 pixels
+// wide and always starts at x = 0, so the ratio (bar width in the photo) to 400
+// is the scale for that row. Four rows tall so it survives downsampling.
+//
+//   x1 = y in pixels
+//   x9 = framebuffer base, x10 = row stride
+//
+// Clobbers x3..x6. Preserves x0, x1, x2 and the rest of the caller's set.
+Lstub_calbar:
+  mul x3, x1, x10
+  add x3, x3, x9
+
+  mov x4, #0                 // row counter within the bar
+1:
+  mov x5, #400               // pixels across
+2:
+  mov w6, #0xFFFFFFFF
+  str w6, [x3], #4
+  subs x5, x5, #1
+  b.ne 2b
+
+  // Next bar row: the pointer is 400 * 4 bytes past the row start.
+  sub x3, x3, #1600
+  add x3, x3, x10
+  add x4, x4, #1
+  cmp x4, #4
+  b.lo 1b
   ret
 
   .balign 8
