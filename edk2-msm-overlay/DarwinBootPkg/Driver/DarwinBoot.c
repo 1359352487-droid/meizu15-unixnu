@@ -1313,6 +1313,23 @@ Boot (
           ReadUnaligned64 ((UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset)),
           ReadUnaligned64 ((UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset + 8))
           );
+        //
+        // Read the slot back too, and the magic with it.
+        //
+        // _start_first_cpu tests slot word 2 against 1 four instructions in, and
+        // a value other than 1 there is the only remaining explanation for a
+        // build that paints three bands and no cyan one. Printing all four words
+        // separates "the store did not land" from "the kernel read somewhere
+        // else", and the magic proves the copy landed on the slot rather than on
+        // a lookalike.
+        //
+        Print (
+          L"DARWINBOOT: slot magic 0x%lx stub 0x%lx checkpoint %lu delta 0x%lx\n",
+          Slot[0],
+          Slot[1],
+          Slot[2],
+          Slot[3]
+          );
       }
     }
   }
