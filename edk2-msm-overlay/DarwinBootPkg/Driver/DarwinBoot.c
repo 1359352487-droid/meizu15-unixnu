@@ -1231,7 +1231,27 @@ Boot (
 
         Slot    = (UINT64 *)(UINTN)(Address + SlotOffset);
         Slot[1] = Address + StubOffset;
-        Slot[2] = 0;
+        //
+        // Checkpoint 10, not 0.
+        //
+        // hakios threads loader_checkpoint(n) through arm_init, and every one of
+        // them compares against this word and jumps to the stub on a match:
+        //
+        //     10  the first statement of arm_init, before cpu_data_init
+        //     11  after PE_init_platform
+        //     30  after configure_timer_apple_regs
+        //     31  after wfe_timeout_configure
+        //     32  after wfe_timeout_init
+        //
+        // The previous build relied on loader_return_after=15 alone and produced
+        // no band at all, which cannot distinguish "the kernel died before the
+        // timer thread started" from "the timer never fired because the kernel
+        // is waiting". Asking for 10 answers the sharper question: did the kernel
+        // even reach C code? Raising this number one step at a time walks the
+        // boot forward, and each stop hands over whatever log exists at that
+        // point.
+        //
+        Slot[2] = 10;
         Slot[3] = Address - Kernel.Base;
 
         //
@@ -1245,6 +1265,25 @@ Boot (
           L"DARWINBOOT: return stub at 0x%lx, slot at file offset 0x%lx\n",
           (UINT64)(Address + StubOffset),
           (UINT64)SlotOffset
+          );
+        //
+        // Read back what the stub will actually see. The previous build set the
+        // slot and produced no magenta band, which is either "the kernel never
+        // called the stub" or "the stub ran, found a zero parameter word, and
+        // skipped the paint". The size and the parameter offset come from symbol
+        // arithmetic; the readback proves the values landed where the copy put
+        // them.
+        //
+        Print (
+          L"DARWINBOOT: stub %lu bytes, params +0x%lx, fb 0x%lx\n",
+          (UINT64)StubSize,
+          (UINT64)ParameterOffset,
+          (UINT64)Video[0]
+          );
+        Print (
+          L"DARWINBOOT: stub reads back fb 0x%lx ctx 0x%lx\n",
+          ReadUnaligned64 ((UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset)),
+          ReadUnaligned64 ((UINT64 *)(UINTN)(Address + StubOffset + ParameterOffset + 8))
           );
       }
     }
