@@ -470,20 +470,29 @@ DarwinKernelReturnStubStart:
   // clobber x3..x8, x10, x11 and x14 -- so the stores below read the callee-saved
   // copies, not x0..x3, which by now hold leftover drawing state.
   //
+  //
+  // Record the log *after* translation is restored, not before.
+  //
+  // This is the bug that cost the most boots. The barcodes proved the parameter
+  // block is correct -- decoding the context row geometrically gives
+  // 0x00000000CB045088, exactly the value C printed -- so the stub was reading
+  // and writing the right *address*. What was wrong was the state it wrote in:
+  // translation is off here, so `str x19, [x9, #144]` addressed physical memory
+  // 0xCB045118, while DarwinSavedContext lives at virtual 0xCB045088 and C reads
+  // it with the MMU back on. The store went to whatever physical page happens to
+  // sit there, Returned stayed 0, and DarwinShowKernelLog returned early.
+  //
+  // Everything needed to resume is already in the context, so the sequence is:
+  // restore the translation registers, then store, then restore the registers.
+  // x9 still holds the context address throughout -- it is only reloaded from
+  // [x9, #56] onwards.
+  //
   adr x9, DarwinKernelReturnStubParameters
-  ldur x9, [x9, #8]           // DarwinSavedContext PA
+  ldur x9, [x9, #8]           // DarwinSavedContext address
   cbz x9, 2f
 
-  str x19, [x9, #144]         // log physical address
-  str x20, [x9, #152]         // log length
-  str x21, [x9, #168]         // reason
-  mov x16, #1
-  str x16, [x9, #160]         // the kernel returned
-  dc civac, x9
-  dsb sy
-
-  // Put the translation regime back before touching the C stack: the caller's
-  // frame lives at a virtual address that only resolves with its own tables.
+  // Put the translation regime back first: the context lives at a virtual
+  // address, and so does the C stack that will read it.
   ldp x10, x11, [x9, #16]     // SCTLR_EL1, TTBR0_EL1
   ldp x12, x13, [x9, #32]     // TTBR1_EL1, TCR_EL1
   ldr x14, [x9, #48]          // MAIR_EL1
@@ -496,6 +505,21 @@ DarwinKernelReturnStubStart:
   tlbi vmalle1
   dsb sy
   isb
+
+  //
+  // Now the stores go to the address C will read.
+  //
+  // x19..x21 survived the drawing because they are callee-saved and the helpers
+  // do not touch them; x9 is still the context address, which resolves correctly
+  // now that the tables are back.
+  //
+  str x19, [x9, #144]         // log address
+  str x20, [x9, #152]         // log length
+  str x21, [x9, #168]         // reason
+  mov x16, #1
+  str x16, [x9, #160]         // the kernel returned
+  dc civac, x9
+  dsb sy
 
   // Restore the callee-saved set last, and nothing may write to them after
   // this point. x9 stays usable: it is caller-saved.
