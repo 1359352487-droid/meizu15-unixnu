@@ -1353,32 +1353,28 @@ Boot (
         Slot    = (UINT64 *)(UINTN)(Address + SlotOffset);
         Slot[1] = Address + StubOffset;
         //
-        // Checkpoint 1, which is the earliest one in the kernel.
+        // Checkpoint off, for one experiment.
         //
-        // hakios threads loader_checkpoint(n) through arm_init (10, 11, 30, 31,
-        // 32), but _start_first_cpu has its own copy of the test, four
-        // instructions in:
+        // Asking for 1 produced no cyan band even after the window moved to
+        // 0xD0004000 (WIN == HIGH == 0xD0004000, a 2.6 GiB run at 0xD0000000),
+        // which rules out the load address, the adrp alignment, the store, the
+        // slot being overwritten by the tree, and the branch target. Every step
+        // of the arithmetic has been checked by hand and it says the compare
+        // should match.
         //
-        //     0x46406c  add  x9, x9, #0x7f0     ; loader_stub_slot
-        //     0x464070  ldr  x10, [x9, #0x10]   ; slot[2]
-        //     0x464074  cmp  x10, #1
-        //     0x464078  b.ne 0x4640a4           ; not us: carry on booting
-        //     0x46407c  ... x2 = 2, x3 = 1
-        //     0x464094  msr  sctlr_el1, x11     ; it switches the MMU off itself
-        //     0x46409c  ldr  x9, [x9, #8]       ; slot[1]
-        //     0x4640a0  br   x9
+        // So the next distinction worth paying a boot for is "the value did not
+        // match" against "that code never ran". With word 2 at 0 neither
+        // _start_first_cpu test matches, the kernel boots normally, and
+        // loader_return_after=15 should fire fifteen seconds later -- as it did
+        // on the build at 0x08000000.
         //
-        // Asking for 10 produced nothing, which says the kernel never reached
-        // arm_init but not where it stopped. Asking for 1 splits that distance in
-        // two: a cyan band means _start_first_cpu ran and the stall is after it,
-        // nothing at all means the branch into the kernel did not survive even
-        // the first few instructions.
+        //   magenta or cyan band, reason 1   the channel works end to end and
+        //                                    only the match on 1 is failing
+        //   nothing at all                   the kernel never gets far enough to
+        //                                    matter, and the checkpoint was
+        //                                    never the thing to chase
         //
-        // This also avoids patching the kernel's code, which the previous plan
-        // called for and which would have had to replay an overwritten
-        // instruction by hand.
-        //
-        Slot[2] = 1;
+        Slot[2] = 0;
         Slot[3] = Address - Kernel.Base;
 
         //
