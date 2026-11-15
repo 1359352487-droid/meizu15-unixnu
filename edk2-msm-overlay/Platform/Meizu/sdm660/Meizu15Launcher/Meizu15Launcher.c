@@ -275,7 +275,32 @@ Meizu15LauncherEntry (
   // BootArgs.h asserts those offsets, so both arguments reach
   // PE_parse_boot_argn intact.
   //
-  Request.BootArgs       = L"-v loader_return_after=15";
+  //
+  // loader_return_after is a bring-up aid, not a boot argument anyone ships.
+  //
+  // It asks hakios-xnu to hand control back after that many seconds whatever the
+  // kernel is doing, which is the only way to read a log from a board with no
+  // serial port. Fifteen proved the channel works: the panel showed
+  //
+  //     kernel returned: reason 0, log 192 bytes
+  //     --- kernel message buffer ---
+  //     [  65.892252]: vm_cache_geometry_colors: 16
+  //
+  // so the next question is what the kernel does when nothing interrupts it. A
+  // longer window is the cheapest way to ask: the timer fires only if the kernel
+  // is still alive at that point, and if it panics instead the panic path appends
+  // the panic buffer to the same log and returns anyway.
+  //
+  //   still returns, log longer   the kernel ran on and got further
+  //   still returns, log same     it reached the same place and waited
+  //   nothing at all              it died without reaching either path -- the
+  //                               panel then shows only the bands, which is
+  //                               itself the answer
+  //
+  // Sixty seconds is comfortably past the point where a working early-boot would
+  // have moved on, and short enough to keep each attempt tolerable.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60";
   //
   // DeviceTree must stay NULL here.
   //
