@@ -171,10 +171,28 @@ jobs:
       - name: Pack the payload volume (kernel + ADT)
         run: |
           set -eux
+          #
+          # Pick the linked kernel, not the copy inside its .dSYM bundle.
+          #
+          # `-not -name '*.dSYM'` never matched anything: find applies -name to
+          # the file, and the DWARF payload inside the bundle is called
+          #   mach.development.bcm2837.dSYM/Contents/Resources/DWARF/mach.development.bcm2837
+          # -- same basename, so it sorted first and was shipped as the kernel.
+          # The payload therefore carried a 66 MB debug image instead of the
+          # 15.8 MB linked kernel, which is why the last two firmware builds
+          # booted exactly as before: the t0sz change was never in the image.
+          #
+          # -not -path '*.dSYM/*' is the condition that actually excludes it.
+          #
           K=$(find hakios/xnu-src -name 'mach.development.bcm2837' -type f \
-                -not -name '*.dSYM' -not -name '*.link' -not -name '*.yml' | head -1)
-          [ -n "$K" ] || K=$(find hakios/xnu-src -name 'mach.development.bcm2837.unstripped' -type f | head -1)
+                -not -path '*.dSYM/*' -not -name '*.link' -not -name '*.yml' | head -1)
+          [ -n "$K" ] || K=$(find hakios/xnu-src -name 'mach.development.bcm2837.unstripped' -type f \
+                -not -path '*.dSYM/*' | head -1)
+          case "$K" in
+            *.dSYM/*) echo "::error::picked a dSYM payload: $K"; exit 1 ;;
+          esac
           echo "kernel: $K"
+          echo "kernel size: $(wc -c < "$K")"
           ls -la "$K"
           cp "$K" /tmp/kernel.macho
           cp meizu15/inputs/meizu15-8plus.adt /tmp/kernel.macho.adt
