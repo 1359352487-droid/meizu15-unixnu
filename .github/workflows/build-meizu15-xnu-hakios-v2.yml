@@ -163,7 +163,7 @@ jobs:
         working-directory: hakios
         run: |
           set -eux
-          python3 meizu15/scripts/ci/apply_nonapple_guards.py "$PWD/xnu-src"
+          python3 ../meizu15/scripts/ci/apply_nonapple_guards.py "$PWD/xnu-src"
 
       - name: Kernel dependencies (xnu-deps/setup.sh)
         working-directory: hakios
