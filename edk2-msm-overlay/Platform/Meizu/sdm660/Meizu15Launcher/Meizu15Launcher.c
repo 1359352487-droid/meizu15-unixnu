@@ -350,41 +350,37 @@ Meizu15LauncherEntry (
   // question by elimination.
   //
   //
-  // checkpoint=44 -- bisecting the stretch between 34 and arm_vm_init().
+  // checkpoint=15 -- the middle of what is left.
   //
-  // checkpoint=17 did not fire (`reason 0`, log still 192 bytes, still only
-  // do_cacheid), so the kernel never finishes arm_vm_init(). Combined with the
-  // earlier result, the window is now bounded on both sides:
+  // The window is closing fast now. Four probes have fired or stayed silent:
   //
-  //   34   fires   -- platform_stall_panic_or_spin() returned
-  //   17   silent  -- arm_vm_init() never completed
+  //   11  reason 2   PE_init_platform() done
+  //   34  reason 2   configure_*, platform_stall_panic_or_spin() done
+  //   44  reason 2   thread_bootstrap() and its setup done
+  //   17  reason 0   arm_vm_init() never completed
   //
-  // Everything between them, in source order:
+  // So the fault is in this stretch, which holds four probes and five calls:
   //
-  //   35  chosen = NULL; dt_entry_size = 0;
-  //       ml_parse_cpu_topology();            12
-  //       master_cpu = ml_get_boot_cpu_number();  40
-  //       assert(master_cpu ...);  BootCpuData.cpu_number = ...;  41
-  //       thread = thread_bootstrap();        42  43  44
-  //       cpu_bootstrap();                    13
-  //       rtclock_early_init();               14
-  //       kernel_debug_string_early("kernel_startup_bootstrap");
-  //       kernel_startup_bootstrap();         15
-  //       timer_call_init(); cpu_init();      16
-  //       processor_bootstrap();
-  //       arm_vm_init(xmaxmem, args);         <- never completed
-  //   17  silent
+  //   cp44 *
+  //        cpu_bootstrap();                     13
+  //        rtclock_early_init();                14
+  //        kernel_debug_string_early("kernel_startup_bootstrap");
+  //        kernel_startup_bootstrap();          15
+  //        timer_call_init();  cpu_init();      16
+  //        processor_bootstrap();
+  //        arm_vm_init(xmaxmem, args);          17  (never reached)
   //
-  // 44 is the midpoint, so it halves the window regardless of the answer. The
-  // log staying at 192 bytes is itself a useful constraint: nothing in this
-  // stretch has written to msgbuf yet, which means the kernel has not reached
-  // kernel_debug_string_early() at 14 either.
+  // 15 halves it, and it carries a second signal worth having: the log is still
+  // `log 0 bytes` at 44, and kernel_debug_string_early() runs just before 14. If
+  // 15 fires and the log is still empty, then that call produced nothing either,
+  // which points at the console rather than at the code between the probes. If
+  // the log grows, the kernel is finally talking and the text itself is the
+  // finding.
   //
-  //   reason 2   the fault is 44 -> 17 (cpu_bootstrap, rtclock, startup, cpu_init,
-  //              processor_bootstrap or arm_vm_init itself)
-  //   reason 0   the fault is 34 -> 44 (topology parse, the assert, thread_bootstrap)
+  //   reason 2   the fault is 15 -> 17 (cpu_init, processor_bootstrap, arm_vm_init)
+  //   reason 0   the fault is 44 -> 15 (cpu_bootstrap, rtclock, kernel_startup_bootstrap)
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=44";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=15";
   //
   // DeviceTree must stay NULL here.
   //
