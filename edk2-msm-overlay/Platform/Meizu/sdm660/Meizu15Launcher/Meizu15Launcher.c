@@ -350,37 +350,30 @@ Meizu15LauncherEntry (
   // question by elimination.
   //
   //
-  // checkpoint=17 -- back to the one that has been silent, now that the Apple-only
-  // monitor call in front of the VM bootstrap is guarded off.
+  // checkpoint=45 -- the probe added for exactly this moment.
   //
-  // The bisection ran out of planted probes here:
+  // Guarding ml_enable_monitor() did not move the wall. checkpoint 17 is still
+  // `reason 0` with 192 bytes of log, so arm_vm_init() still does not finish, and
+  // the monitor call was not what stopped it.
   //
-  //   11  reason 2   PE_init_platform() done
-  //   34  reason 2   configure_*, platform_stall_panic_or_spin() done
-  //   44  reason 2   thread_bootstrap() done
-  //   15  reason 2   kernel_startup_bootstrap() done
-  //   16  reason 2   timer_call_init() and cpu_init() done
-  //   17  reason 0   arm_vm_init() never completed
+  // That leaves the last two calls between 16 and 17 still merged, which is what
+  // 45 was added for:
   //
-  // Between 16 and 17 sit exactly two calls:
+  //   cp16  *
+  //         processor_bootstrap();
+  //   cp45  ?
+  //         arm_vm_init(xmaxmem, args);
+  //   cp17  silent
   //
-  //   processor_bootstrap();
-  //   arm_vm_init(xmaxmem, args);
+  //   reason 2   processor_bootstrap() is fine; the fault is inside
+  //              arm_vm_init() and needs finer probes within it
+  //   reason 0   the fault is processor_bootstrap(), which nothing has exercised
+  //              yet
   //
-  // and arm_vm_init() begins with ml_enable_monitor(), which UniXNU guards behind
-  // #if XNU_MONITOR because there is no page protection layer on this kind of
-  // SoC. That is now guarded here too, and checkpoint 45 was added between the
-  // two calls.
+  // No kernel rebuild is needed for this one: 45 is already in the kernel that is
+  // in inputs/kernel.macho, so only the payload changes.
   //
-  //   reason 2   arm_vm_init() completed -- the monitor call was the blocker, and
-  //              arm_init() is done. This is the first time arm_vm_init() would
-  //              have finished on this board.
-  //   reason 0   still stuck. Boot once with checkpoint=45: firing means
-  //              processor_bootstrap() is fine and arm_vm_init() has more wrong
-  //              with it than the monitor call; silence means processor_bootstrap()
-  //              is the one to look at.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=17";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=45";
   //
   // DeviceTree must stay NULL here.
   //
