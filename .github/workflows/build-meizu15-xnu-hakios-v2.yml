@@ -22,6 +22,9 @@ on:
   push:
     paths:
       - '.github/workflows/build-meizu15-xnu-hakios-v2.yml'
+      # The steps below rewrite the kernel source, so a change to one of these
+      # scripts rebuilds the kernel and not just the payload.
+      - 'scripts/ci/apply_nonapple_guards.py'
 
 jobs:
   kernel:
