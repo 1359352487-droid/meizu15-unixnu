@@ -349,7 +349,28 @@ Meizu15LauncherEntry (
   // are ignored, so a boot that behaves exactly as before still answers the
   // question by elimination.
   //
-  Request.BootArgs       = L"-v loader_return_after=60 xnu-stall=no debug=0x14e";
+  //
+  // checkpoint=11, the first probe after the point where output stops.
+  //
+  // The last boot settled two things: the kernel inside the image really is the
+  // one with loader_jump's t0sz floor lowered (sha256 167066da... read back out
+  // of the payload FAT), and it still stops right after do_cacheid() with
+  // exactly 192 bytes of log. So relaxing the floor did not, by itself, make the
+  // early probes work -- that boot carried no checkpoint= at all, which is why.
+  //
+  // Number choice matters here:
+  //
+  //   10  sits before cpu_data_init(), and the panel already proves do_cacheid()
+  //       (inside cpu_data_init) ran. 10 would fire no matter what, so it says
+  //       almost nothing.
+  //   11  sits after PE_init_platform(), and the log shows nothing at all after
+  //       do_cacheid(). Whether 11 fires splits that gap in two.
+  //
+  //   reason 2 + checkpoint 11   PE_init_platform() completed; the fault is later
+  //   reason 0                   it never got there; the fault is between
+  //                              cpu_data_init() and PE_init_platform()
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=11";
   //
   // DeviceTree must stay NULL here.
   //
