@@ -350,30 +350,34 @@ Meizu15LauncherEntry (
   // question by elimination.
   //
   //
-  // checkpoint=48 -- inside arm_vm_init(), immediately before pmap_bootstrap().
+  // checkpoint=47 -- stepping back into the first third of arm_vm_init().
   //
-  // Probe 45 fired, so processor_bootstrap() is cleared and the fault is inside
-  // arm_vm_init(). Four probes were planted in it this round so the whole
-  // function is divided in one build:
+  // 48 stayed silent (`reason 0`, log still 192 bytes), so the fault is before
+  // pmap_bootstrap() rather than in it. Against 45 firing:
   //
-  //   arm_vm_init()
-  //       46  before arm_set_user_tbi()        first ~300 lines done
-  //       47  after kva_active = TRUE          physmap + set_mmu_ttb +
-  //                                            flush_mmu_tlb + the switch off the
-  //                                            bootstrap tables all done
-  //       48  before pmap_bootstrap()          AuxKC and arm_vm_map block done
-  //       49  after pmap_bootstrap()           pmap_bootstrap done
+  //   45  reason 2   arm_vm_init() was entered
+  //   46  ?          before arm_set_user_tbi()            (~300 lines in)
+  //   47  ?          after kva_active = TRUE               physmap, both
+  //                                                       set_mmu_ttb calls,
+  //                                                       flush_mmu_tlb and the
+  //                                                       switch off the bootstrap
+  //                                                       tables all done
+  //   48  reason 0   so it dies between 45 and 48
   //
-  // 48 is the quarter to test first. Everything up to it is plain page table
-  // work; pmap_bootstrap() is where the pmap itself is created and where the
-  // `Unknown cache` report (32K+32K, 16-way, 64 B lines -- a combination no real
-  // silicon has) would first matter.
+  // 47 splits what is left:
   //
-  //   reason 2   pmap_bootstrap() is the blocker, or the block before it finished
-  //              and the fault is later still
-  //   reason 0   47/46 narrow which part of the first 400 lines it is
+  //   reason 2   the switch off the bootstrap page tables worked; the fault is
+  //              between kva_active and pmap_bootstrap -- the AuxKC block and the
+  //              arm_vm_map loop
+  //   reason 0   it never got that far; 46 then separates "the first 300 lines"
+  //              from "physmap / set_mmu_ttb / flush"
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=48";
+  // Worth noting the shape of the failure: the log is still exactly the 192 bytes
+  // written by do_cacheid, so nothing after arm_init's early part has managed to
+  // print. That holds whether the stop is a hang or a quiet panic, since msgbuf
+  // is only useful once kprintf is up.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=47";
   //
   // DeviceTree must stay NULL here.
   //
