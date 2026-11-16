@@ -1839,3 +1839,84 @@ loader_checkpoint(uint64_t n)
 | `reason 2` + `checkpoint 11` | 门槛通了，`PE_init_platform` 跑完了，故障在更后面 |
 | `reason 0` | 11 没命中，故障在 `cpu_data_init` 和 `PE_init_platform` 之间 |
 | 没有返回 | 内核死在更早，或 `loader_jump` 仍被拒 |
+
+## 2026-11-16 20:42 — checkpoint 11 命中：t0sz 放宽生效了
+
+这是整条链路上第一个真正的 `reason 2`。
+
+### 屏幕
+
+```
+kernel returned: reason 2, log 0 bytes
+x3 0000000000000000  x4 0000000000000000
+x5 0000000000000000  x6 0000000000000000
+x7 0000000000000000
+slot magic 545352444C554E58  stub 0000000D1304000
+checkpoint 11 delta 00000010C900000
+(log empty)
+```
+
+参数是 `-v loader_return_after=60 checkpoint=11`。
+
+### 三个结论
+
+**1. `t0sz` 放宽真的起作用了**
+
+前四次上机拿到的都是 `reason 0`（`halt_all_cpus` 路径），这次是 `reason 2`
+（`loader_checkpoint` 路径）。`loader_jump()` 里的
+
+```c
+if (t0sz < 25 || t0sz > 33 || (stub >> (64 - t0sz)) != 0) return;
+```
+
+在所有早期检测点上都会直接 return，因为内核进来时 `TCR_EL1 = 0x280803518`，
+`t0sz = 24`。把下限改成 24 之后，这道门才开。
+
+**2. 内核确实走到了 `PE_init_platform()` 之后**
+
+`loader_checkpoint(11)` 在 `PE_init_platform(FALSE, args)` 的下一行。
+它能命中，说明：
+
+- `cpu_data_init(&BootCpuData)` 跑完了（`do_cacheid()` 在里面，日志也印证过）
+- `PE_init_platform()` 跑完了
+
+之前所有「内核可能死在 arm_init 之前」的猜测全部作废。
+
+**3. `log 0 bytes` 是正常的，不是坏消息**
+
+`msgbuf` 在 `kprintf` 初始化之前是空的，而 `kprintf` 要到 checkpoint 18/19
+之后才建立（`kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF)`）。
+11 在那么早的位置，日志当然是空的。
+
+屏幕上的 `(log empty)` 就是 `DarwinShowKernelLog` 对空日志的分支。
+
+### 检测点序列更新
+
+```
+PE_init_platform()                已过
+cp11                              ★ 命中
+configure_timer_apple_regs()      cp30
+wfe_timeout_configure()           cp31
+wfe_timeout_init()                cp32
+configure_misc_apple_boot_args()  (无检测点)
+configure_misc_apple_regs()       (无检测点)
+cp33
+platform_stall_panic_or_spin()    ← 唯一的静默嫌疑
+cp34                              ← 下一个目标
+cp35
+ml_parse_cpu_topology()
+cp12
+cp40..44
+arm_vm_init()
+cp17
+```
+
+### 下一步：直接跳 34
+
+不逐个走 30/31/32/33，而是一次跨到 34，因为它卡在 `platform_stall_panic_or_spin()`
+后面——那正是这段里唯一能不报错就静默停住的地方。
+
+| 34 的结果 | 含义 |
+|---|---|
+| `reason 2` | `configure_*` 全部跑完，stall 也过了；故障在 34 之后 |
+| `reason 0` | 没到 34；用 30/31/32/33 把剩下那段切开 |
