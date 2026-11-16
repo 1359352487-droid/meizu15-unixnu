@@ -350,27 +350,35 @@ Meizu15LauncherEntry (
   // question by elimination.
   //
   //
-  // checkpoint=11, the first probe after the point where output stops.
+  // checkpoint=34 -- the last probe before arm_vm_init(), and the widest step.
   //
-  // The last boot settled two things: the kernel inside the image really is the
-  // one with loader_jump's t0sz floor lowered (sha256 167066da... read back out
-  // of the payload FAT), and it still stops right after do_cacheid() with
-  // exactly 192 bytes of log. So relaxing the floor did not, by itself, make the
-  // early probes work -- that boot carried no checkpoint= at all, which is why.
+  // checkpoint=11 came back as `reason 2`, `log 0 bytes`, which changes the
+  // picture completely: loader_jump() no longer refuses to hand control back, so
+  // lowering its t0sz floor did work, and the kernel really does reach
+  // PE_init_platform(). Every earlier conclusion of the form "the kernel is
+  // probably dead before arm_init" is now off the table.
   //
-  // Number choice matters here:
+  // An empty log at 11 is expected rather than ominous: msgbuf has nothing in it
+  // until kprintf is initialised around checkpoints 18/19, which is far later.
   //
-  //   10  sits before cpu_data_init(), and the panel already proves do_cacheid()
-  //       (inside cpu_data_init) ran. 10 would fire no matter what, so it says
-  //       almost nothing.
-  //   11  sits after PE_init_platform(), and the log shows nothing at all after
-  //       do_cacheid(). Whether 11 fires splits that gap in two.
+  // 34 rather than 30, because one boot should eliminate as much as possible:
   //
-  //   reason 2 + checkpoint 11   PE_init_platform() completed; the fault is later
-  //   reason 0                   it never got there; the fault is between
-  //                              cpu_data_init() and PE_init_platform()
+  //   11        reached
+  //   30 31 32  configure_timer_apple_regs / wfe_timeout_configure / wfe_timeout_init
+  //   33        after configure_misc_apple_boot_args + configure_misc_apple_regs
+  //   ---       platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_ARM_INIT)
+  //   34        reached?
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=11";
+  // The stall call sits directly in front of 34 and is the one thing in this
+  // stretch that can go quiet without a panic, which is exactly the symptom.
+  // So 34 answers two questions at once:
+  //
+  //   reason 2   the configure_* calls and the stall check all completed;
+  //              whatever is wrong lives after 34 (35, 12, 40..44, arm_vm_init)
+  //   reason 0   it never got there; either configure_* or the stall ate it,
+  //              and 30/31/32/33 split that remainder
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=34";
   //
   // DeviceTree must stay NULL here.
   //
