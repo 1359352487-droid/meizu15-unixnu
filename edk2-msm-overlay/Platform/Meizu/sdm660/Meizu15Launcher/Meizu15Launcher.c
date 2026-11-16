@@ -350,36 +350,41 @@ Meizu15LauncherEntry (
   // question by elimination.
   //
   //
-  // checkpoint=17 -- past arm_vm_init(), and the first probe that can show a log.
+  // checkpoint=44 -- bisecting the stretch between 34 and arm_vm_init().
   //
-  // Two probes have now fired, both with `reason 2`:
+  // checkpoint=17 did not fire (`reason 0`, log still 192 bytes, still only
+  // do_cacheid), so the kernel never finishes arm_vm_init(). Combined with the
+  // earlier result, the window is now bounded on both sides:
   //
-  //   checkpoint 11   PE_init_platform() completed
-  //   checkpoint 34   configure_timer_apple_regs, wfe_timeout_configure,
-  //                   wfe_timeout_init, configure_misc_apple_boot_args,
-  //                   configure_misc_apple_regs and platform_stall_panic_or_spin
-  //                   all completed
+  //   34   fires   -- platform_stall_panic_or_spin() returned
+  //   17   silent  -- arm_vm_init() never completed
   //
-  // That last one matters more than it looks. platform_stall_panic_or_spin() was
-  // the leading suspect for a stall that produces no panic and no output, and it
-  // is now cleared: the kernel walks straight past it. The whole first half of
-  // arm_init is healthy.
+  // Everything between them, in source order:
   //
-  // 17 rather than 35/12/40..44/13..16, because it buys the most per boot:
+  //   35  chosen = NULL; dt_entry_size = 0;
+  //       ml_parse_cpu_topology();            12
+  //       master_cpu = ml_get_boot_cpu_number();  40
+  //       assert(master_cpu ...);  BootCpuData.cpu_number = ...;  41
+  //       thread = thread_bootstrap();        42  43  44
+  //       cpu_bootstrap();                    13
+  //       rtclock_early_init();               14
+  //       kernel_debug_string_early("kernel_startup_bootstrap");
+  //       kernel_startup_bootstrap();         15
+  //       timer_call_init(); cpu_init();      16
+  //       processor_bootstrap();
+  //       arm_vm_init(xmaxmem, args);         <- never completed
+  //   17  silent
   //
-  //   * it sits immediately after arm_vm_init(), so firing proves the VM
-  //     bootstrap completed -- the remaining unknown in arm_init
-  //   * kprintf is initialised around checkpoints 18/19, which is before 17, so a
-  //     firing 17 should finally show a non-empty log instead of `log 0 bytes`
+  // 44 is the midpoint, so it halves the window regardless of the answer. The
+  // log staying at 192 bytes is itself a useful constraint: nothing in this
+  // stretch has written to msgbuf yet, which means the kernel has not reached
+  // kernel_debug_string_early() at 14 either.
   //
-  //   reason 2 + a real log   arm_init() finished; the problem is in
-  //                           machine_startup() or later
-  //   reason 2 + empty log    the kernel reached arm_vm_init() but kprintf never
-  //                           came up, which is its own finding
-  //   reason 0                it dies between 34 and arm_vm_init(); the 35 / 12 /
-  //                           40..44 / 13..16 probes bisect that stretch
+  //   reason 2   the fault is 44 -> 17 (cpu_bootstrap, rtclock, startup, cpu_init,
+  //              processor_bootstrap or arm_vm_init itself)
+  //   reason 0   the fault is 34 -> 44 (topology parse, the assert, thread_bootstrap)
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=17";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=44";
   //
   // DeviceTree must stay NULL here.
   //
