@@ -350,30 +350,30 @@ Meizu15LauncherEntry (
   // question by elimination.
   //
   //
-  // checkpoint=45 -- the probe added for exactly this moment.
+  // checkpoint=48 -- inside arm_vm_init(), immediately before pmap_bootstrap().
   //
-  // Guarding ml_enable_monitor() did not move the wall. checkpoint 17 is still
-  // `reason 0` with 192 bytes of log, so arm_vm_init() still does not finish, and
-  // the monitor call was not what stopped it.
+  // Probe 45 fired, so processor_bootstrap() is cleared and the fault is inside
+  // arm_vm_init(). Four probes were planted in it this round so the whole
+  // function is divided in one build:
   //
-  // That leaves the last two calls between 16 and 17 still merged, which is what
-  // 45 was added for:
+  //   arm_vm_init()
+  //       46  before arm_set_user_tbi()        first ~300 lines done
+  //       47  after kva_active = TRUE          physmap + set_mmu_ttb +
+  //                                            flush_mmu_tlb + the switch off the
+  //                                            bootstrap tables all done
+  //       48  before pmap_bootstrap()          AuxKC and arm_vm_map block done
+  //       49  after pmap_bootstrap()           pmap_bootstrap done
   //
-  //   cp16  *
-  //         processor_bootstrap();
-  //   cp45  ?
-  //         arm_vm_init(xmaxmem, args);
-  //   cp17  silent
+  // 48 is the quarter to test first. Everything up to it is plain page table
+  // work; pmap_bootstrap() is where the pmap itself is created and where the
+  // `Unknown cache` report (32K+32K, 16-way, 64 B lines -- a combination no real
+  // silicon has) would first matter.
   //
-  //   reason 2   processor_bootstrap() is fine; the fault is inside
-  //              arm_vm_init() and needs finer probes within it
-  //   reason 0   the fault is processor_bootstrap(), which nothing has exercised
-  //              yet
+  //   reason 2   pmap_bootstrap() is the blocker, or the block before it finished
+  //              and the fault is later still
+  //   reason 0   47/46 narrow which part of the first 400 lines it is
   //
-  // No kernel rebuild is needed for this one: 45 is already in the kernel that is
-  // in inputs/kernel.macho, so only the payload changes.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=45";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=48";
   //
   // DeviceTree must stay NULL here.
   //
