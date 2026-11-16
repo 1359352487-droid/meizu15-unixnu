@@ -1261,3 +1261,581 @@ SCTLR/TTBR，写回后系统状态被破坏，`ret` 回去自然什么都画不�
 2. 让 stub 自己 `adr` 得到地址后，把它画成条码，与 C 打印的值并列比较一次。
 
 第 2 条只花一次启动就能一锤定音，代价最小，先做它。
+
+## 2026-11-16 00:07 — 通了：内核日志第一次出现在屏幕上
+
+`21d578d` 上机。**屏幕顶部出现内核自己的输出。**
+
+```
+kernel returned: reason 0, log 192 bytes
+x3 0000000000000000  x4 0000000000000000
+x5 0000000000000000  x6 0000000000000000
+x7 0000000000000000
+slot magic 545352444C554E58  stub 00000000D1304000
+checkpoint 0  delta 000000010C900000
+
+--- kernel message buffer ---
+[  65.892252]: vm_cache_geometry_colors: 16
+[  65.892264]: do_cacheid() - 65536 bytes Unknown cache (I: 32768 D:32768 (separate)),
+              16-way assoc, 64 bytes/line
+```
+
+**`log 192 bytes` + 实际的日志内容**，两件事同时成立。这是这一个多月里第一次
+读到内核自己说的话。
+
+### 真正的 bug：在 MMU 关闭的状态下写虚拟地址
+
+条码把这件事钉死了。用几何方法（量每段白块的 framebuffer 宽度 ÷ 9）解码 ctx 行：
+
+```
+条码重建:  0x00000000CB045088
+C 侧打印:  0x00000000CB045088
+```
+
+**两者完全一致。** 参数块传递是对的，stub 拿到的地址是对的。
+
+那为什么 `Returned` 一直是 0？因为**写的时候 MMU 是关的**：
+
+```
+stub（MMU 关）str [x9+160]  → 写物理 0xCB045118
+C 侧（MMU 开）读虚拟 0xCB045088 + 160
+```
+
+这是两块不同的内存。`1` 被写进了一个没人读的物理页上，
+`DarwinShowKernelLog` 看到 `Returned == 0` 直接 return，
+于是屏幕上永远只有带子、没有字。
+
+修法是把顺序改成「先恢复 MMU，再写 ctx」：
+
+```
+1. MMU 关：从 ctx 读 SCTLR/TTBR/TCR/MAIR
+2. 打开 MMU
+3. 用同一个 x9 写 ctx      ← 此时虚拟寻址，和 C 读到的是同一块
+4. 恢复 x19~x29 → ret
+```
+
+### 这一路真正花时间的地方
+
+不是内核，是**观察通道本身**。回头看，同一个症状反复出现，每次都以为是新问题：
+
+| 现象 | 真正原因 | 看起来像 |
+|---|---|---|
+| 有粉带、无文字 | stub 写 ctx 时 MMU 是关的 | 内核崩了 |
+| 有粉带、无条码 | 写 ctx 先于绘制，写崩了 | stub 没被调用 |
+| 有条码、读出来高位错 | 采样落在块边缘 | 内存被覆盖 |
+| 条码画不出来 | `adr x9` 抢了 framebuffer 基址 | 绘制代码没跑 |
+
+**每一个都是「我的诊断工具自己坏了，而坏法恰好和被测对象的故障一模一样」。**
+四次里有四次，都是先相信工具、后怀疑工具，于是多花了整整几轮。
+
+### 现在的位置
+
+内核跑起来了，`reason 0`（正常返回），日志能读了。`loader_return_after=15`
+让它在 15 秒后交还控制权；日志时间戳 `65.89` 说明它已经跑到 65 秒，
+远超那个阈值——所以这个通道现在是稳定的。
+
+`x3..x7 全零` 也印证了：走的不是异常路径，是正常的 `loader_return`。
+
+### 下一步
+
+1. 去掉 `loader_return_after=15`，让内核继续往下跑，看它能不能自己完成启动
+2. 日志只有 192 字节且只有最后两行，说明 `loader_log` 缓冲区太小或被截断，
+   把缓冲区加大才能看到启动全过程
+
+## 2026-11-16 00:14 — 读到内核日志之后：它卡在 cache 探测
+
+拿到日志是第一件事，读懂它是第二件。
+
+### 那两行日志的含义
+
+```
+[  65.892252]: vm_cache_geometry_colors: 16
+[  65.892264]: do_cacheid() - 65536 bytes Unknown cache (I: 32768 D:32768 (separate)),
+              16-way assoc, 64 bytes/line
+```
+
+`do_cacheid()` 是 XNU **极早期**的 CPU 缓存探测，在 `arm_init` 里跑，
+比 pmap、比线程、比任何设备都早。也就是说内核刚过 `b 0x2BB4`
+（`_start` 那条跳转）之后不远就停在这里了。
+
+时间戳 65.89 秒证明它没死——计时器还在走，只是不再往下推进。
+
+### 「Unknown cache」是什么
+
+对照三份数据：
+
+| | L1 | L1 相联度 | L2 |
+|---|---|---|---|
+| XNU 假设（BCM2837） | 32K I + 32K D | 2-way | 512K, 16-way |
+| SDM660 小核（A53） | 32K I + 32K D | **2-way** | 128K, 16-way |
+| SDM660 大核（A73） | **64K** I + 64K D | 4-way | 512K, 8-way |
+| **日志实测** | 32K I + 32K D | **16-way** | — |
+
+XNU 读出来的是「32K + 32K、**16-way**、64 字节行」。A53 的 L1 是 2-way，
+只有 L2 才是 16-way。**这个组合在真实硅片上不存在**，所以
+`vm_cache_geometry_colors` 找不到匹配项，打了一句 `Unknown cache`。
+
+这说明 `CTR_EL0` / `CCSIDR_EL1` 的读法或解释与 BCM2837 的假设不符。
+在别的移植里，这一步要么按实测值建几何，要么直接改
+`pe_arm_get_cpu_cache_info` 让 `arm_init` 接受未知几何。
+
+### 顺带确认：日志没被截断
+
+`loader_return.c` 里 `LOADER_LOG_SIZE` 是 1536 KB，head 区 256 KB。
+而实测 `log 192 bytes`——**不是缓冲区不够，是内核只写了这么多**。
+
+屏幕也没截断：`DiagDrawRaw` 从 Row 6 起、每行 42 像素，1920 高的屏能放约 39 行，
+192 字节大约 4 行。所以屏幕上看到的就是全部。
+
+### 这一版改了什么
+
+`Meizu15Launcher.c` 的启动参数从 `loader_return_after=15` 改成 `60`。
+
+理由是问题变了：
+- 之前要证明「通道能用」，15 秒够了
+- 现在要回答「内核自己不被打断时能走多远」，需要长窗口
+
+60 秒的判据：
+
+| 结果 | 含义 |
+|---|---|
+| 返回了，日志变长 | 内核继续跑了，往前走了一段 |
+| 返回了，日志一样 | 走到同一处然后等待，没进展 |
+| **完全不返回** | 死在某条没有 panic 的路径上，屏幕只剩色带 |
+
+第三种本身就是答案——说明它不再走 `loader_return`，那才是真正需要看的地方。
+
+## 2026-11-16 01:02 — checkpoint 参数化成功，但撞上 loader_jump 的 t0sz 门槛
+
+### 这一轮的两个确认
+
+**1. checkpoint 参数化有效**
+
+```
+DARWINBOOT: checkpoint requested 10
+DARWINBOOT: slot magic 0x545352444C554E58 stub 0x0D130000 checkpoint 10 delta 0x10C900000
+```
+
+`slot[2]` 真的写进去了 10。之前硬编码 `Slot[2] = 0` 让 23 个检测点全部哑火，
+这个坑填上了。
+
+**2. 三带齐全，但内核没有返回**
+
+照片里绿、红、蓝三带都在（蓝带在 y≈1440–1510，一开始被我先看成只有两带）。
+三带齐 = 内核入口正确、`br x15` 执行了。
+
+而 `checkpoint=10` 下**没有 `reason 2`，也没有内核日志**。对比
+`checkpoint=0` 那次（日志停在 `do_cacheid`），这次连 `do_cacheid` 都没出现。
+
+### 差别在哪：位置
+
+`arm_init` 的结构（hakios 补丁）：
+
+```c
+arm_init(boot_args *args)
+{
+    const_boot_args = *args;
+    BootArgs = args = &const_boot_args;
+
+    loader_checkpoint(10);        // ← 在这里
+    cpu_data_init(&BootCpuData);  //   而 do_cacheid() 在它里面
+    ...
+}
+```
+
+`checkpoint=0` 时：10 不匹配 → 继续 → 进 `cpu_data_init` → `do_cacheid` 打印两行 → 停住。
+
+`checkpoint=10` 时：10 匹配 → 进 `loader_jump(2, 10)` → **然后没有下文**。
+
+### 根因：loader_jump 直接拒绝
+
+`loader_return.c` 里：
+
+```c
+static void
+loader_jump(uint64_t reason, uint64_t code)
+{
+    uint64_t stub = loader_stub_slot[1];
+    ...
+    tcr  = __builtin_arm_rsr64("TCR_EL1");
+    t0sz = tcr & 0x3f;
+    /* The TTBR0 walk must start at L1 (1 GB per entry) and reach the stub. */
+    if (t0sz < 25 || t0sz > 33 || (stub >> (64 - t0sz)) != 0) {
+        return;
+    }
+    loader_return_entered = true;
+    ...
+}
+```
+
+面板打印过：
+
+```
+CurrentEL 1  SCTLR_EL1 0xC0180D  TCR_EL1 0x280803518
+```
+
+`t0sz = 0x280803518 & 0x3F = 0x18 = 24`。
+
+**24 < 25 → 直接 return。** checkpoint 在 `arm_init` 最开头触发，那时
+XNU 还没重建 `TCR_EL1`（`pmap_bootstrap` 之后才会设成 25），所以这条路上
+`loader_jump` 一定会拒绝。
+
+它也解释了为什么 `checkpoint=10` 之后内核没有继续跑到 `loader_return`：
+`loader_jump` 被调用过一次（虽然拒绝了），但更重要的是**它没有把控制权
+真正交出去**，而内核在这之后走到了 `do_cacheid` 附近的同一处停滞点——
+只是这次连那两行日志都没来得及写。
+
+### 结论
+
+**`arm_init` 早期的 checkpoint 在 t0sz=24 下无法工作。** 要定位停点，只有两条路：
+
+1. 用 `TCR` 重建**之后**的 checkpoint 编号（需要知道哪些编号在 `pmap_bootstrap` 之后）
+2. 放宽 `loader_jump` 的 t0sz 下限（改 HakiOS 上游代码，要重新编内核）
+
+第 1 条更省事，但需要先确认编号分布。第 2 条更彻底。
+
+### 下一步
+
+先回到 `checkpoint=0` 确认基线没被这轮改动破坏，然后再决定走哪条路。
+
+## 2026-11-16 01:16 — checkpoint 17 也没命中：内核没走到 arm_vm_init
+
+`e7d6522` 上机，`checkpoint=17`。结果：
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 17 delta 00000010C900000
+--- kernel message buffer ---
+[  65.912846]: vm_cache_geometry_colors: 16
+[  65.912859]: do_cacheid() - 65536 bytes Unknown cache (I: 32768 D:32768 ...)
+```
+
+**`reason 0`，不是 `reason 2`。** checkpoint 17 没有命中。
+
+### 这说明了什么
+
+`reason` 的两个来源很清楚：
+
+| reason | 来源 | 代码 |
+|---|---|---|
+| 2 | checkpoint 命中 | `loader_checkpoint()` → `loader_jump(2, n)` |
+| 0 | 正常返回路径 | `loader_return()` 末尾 → `loader_jump(0, 0)` |
+
+拿到 0 就意味着：内核走了 `loader_return()`，但**没有经过 checkpoint 17**。
+而 17 就在 `arm_vm_init()` 后面第一个语句。
+
+**所以内核没有跑完 `arm_vm_init()`。** 它的活动范围被压缩到：
+
+```
+arm_init 开始
+  → loader_checkpoint(10)       t0sz=24 被拒
+  → cpu_data_init()
+      → do_cacheid()            ← 日志停在这里
+  → ...                          ← 死在这段
+  → arm_vm_init()                ← 从未到达
+  → loader_checkpoint(17)        ← 从未执行
+```
+
+### 三个 checkpoints 之间的规律
+
+| 版本 | checkpoint | reason | 日志 |
+|---|---|---|---|
+| 21d578d | 0 | 0 | do_cacheid 两行 |
+| 420c409 | 0（60 秒） | 0 | do_cacheid 两行 |
+| e7d6522 | 17 | 0 | do_cacheid 两行 |
+
+三次日志内容**完全一致**，一次都没有推进。这坐实了「内核在这个位置就停住，之后什么都没发生」。
+
+### 一个必须纠正的误读
+
+三次的时间戳：
+
+```
+65.892252   (15 秒窗口)
+65.933665   (60 秒窗口)
+65.912846   (60 秒窗口, checkpoint 17)
+```
+
+都在 65.9 秒附近，差异不到 0.05 秒。
+
+**但 bootarg 分别是 15 秒和 60 秒。** 如果 `loader_return_after` 定时器按设定工作，
+15 秒那次应该显示约 15 秒，60 秒那次约 60 秒。
+
+结论：**这个时间戳不是「内核运行了多久」**，而是 `mach_absolute_time()` 的读数。
+在这个移植里它的基准很可能是 SoC 上电时刻，而不是内核入口。
+
+所以之前我说的「内核跑了 65 秒」是读错了。**内核实际只运行了很短的时间就停住了。**
+这也解释了为什么它连 `kprintf("kprintf initialized\n")` 都没打出来——
+那行在 checkpoint 18 之前，还在 `arm_vm_init` 之后。
+
+### 另一条佐证：定时器的 banner 不见了
+
+`loader_return_timer()` 触发时，第一件事是往日志里写：
+
+```c
+static const char banner[] = "\n--- loader_return_after expired ---\n";
+```
+
+而屏幕上**没有这一行**。日志里只有 `--- kernel message buffer ---` 和两行 cache 信息。
+
+也就是说 `loader_return()` 大概率**不是**由定时器调起的。那它是由谁调起的？剩下两个调用点：
+
+- `loader_return_test()` — 由定时器调用，仍会有 banner
+- `loader_stop_poll()` — 需要 `loader_live.stop`，那是宿主经另一核发起的，本机没有
+
+三个入口对不上，说明 `loader_log` 的内容在 `linearize()` 时被重排过，
+banner 可能落在被裁掉的那一段里。这不是新故障，但意味着**不能靠 banner 判断触发源**。
+
+### 现在的判断
+
+故障窗口非常窄：
+
+```
+do_cacheid() 正常返回
+   ↓
+??? ← 死在这里
+   ↓
+arm_vm_init() 从未进入
+```
+
+`arm_init` 里 `cpu_data_init()` 到 `arm_vm_init()` 之间的语句不多，主要是：
+`PE_init_platform`、`configure_timer_apple_regs`、`wfe_timeout_configure`、
+`configure_misc_apple_boot_args`、`configure_misc_apple_regs`、
+`platform_stall_panic_or_spin`、`processor_bootstrap`。
+
+其中 `platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_ARM_INIT)`
+这个名字最可疑——它在 34 号 checkpoint 之前，而且「stall」正是观察到的现象。
+
+### 下一步
+
+1. **把 checkpoint 加在 `cpu_data_init()` 之后、`arm_vm_init()` 之前**
+   （现有编号里没有这一段的可中断点，需要新增，例如 45/46）
+2. **验证 `platform_stall` 分支**：它是「panic 还是自旋」的选择点，
+   如果走进了自旋，就完全符合「静默停住」
+
+第 2 条不用改内核也能查——`platform_stall_panic_or_spin` 的行为取决于
+boot-arg，先看它的实现。
+
+## 2026-11-16 01:34 — reason 0 的真身：halt_all_cpus，不是「正常跑完」
+
+这一轮修正了一个关键误读，而且它推翻了之前几轮的一个基本假设。
+
+### reason 0 是谁调出来的
+
+`hakios.patch` 第 2402–2414 行：
+
+```c
+extern void loader_return(void);
+
+__attribute__((noreturn))
+void
+halt_all_cpus(boolean_t reboot)
+{
+    ...
+    if (reboot) {
+        printf("CPU halted\n");
+        PEHaltRestart(kPEHaltCPU);
+    }
+    /* No platform driver powers the machine off: hand control (and the log) back to the loader. */
+    hakios_adreno_stop();
+    loader_return();          // ← 这里
+    while (1) { ; }
+}
+```
+
+`halt_all_cpus()` 是 XNU 的**停机路径**，`panic` 最终也走到它。
+
+所以 `reason 0` 有两层含义，我之前只认了第一种：
+
+| 我原先的理解 | 实际情况 |
+|---|---|
+| 内核正常跑完 → `loader_return()` | **内核走到了 `halt_all_cpus()`**，可能是 panic，也可能是正常关机 |
+
+### 一条一直被忽略的旁证
+
+`x3..x7` 全是零。之前我把它读成「不是异常路径」——那是对的，但结论说早了。
+
+`x3..x7` 只在 `start.s` 的 early-exception 向量里被设置（ESR/ELR/FAR/LR/SP）。
+`halt_all_cpus() → loader_return()` 这条路**根本不设置它们**，所以它们当然是零。
+
+**「x3..x7 全零」和「走 halt 路径」是同一件事的两种说法**，我却一直拿它当「内核正常」的证据。
+
+### 那 panic 文本为什么没出现
+
+`loader_return()` 里：
+
+```c
+loader_log_linearize();
+if (!loader_return_entered) {
+    loader_log_append_msgbuf();          // 附加内核消息缓冲
+}
+if (!loader_return_entered && debug_buf_base != NULL && ...) {
+    loader_log_puts("\n--- panic buffer ---\n");   // 附加 panic 缓冲
+    ...
+}
+```
+
+而 `loader_log_append_msgbuf()` 的守卫：
+
+```c
+struct msgbuf *mb = msgbufp;
+if (mb == NULL || mb->msg_bufc == NULL || mb->msg_size <= 0 || ...) {
+    return;                              // 静默返回，一个字都不加
+}
+loader_log_puts("\n--- kernel message buffer ---\n");
+```
+
+屏幕上**出现了** `--- kernel message buffer ---`，说明 `msgbufp` 有效、守卫通过了。
+后面跟着的循环会跳过零字节，但不会丢 panic 文本。
+
+**结论：`msgbuf` 里就只有那两行。** 内核在 `do_cacheid()` 之后、
+`kprintf("kprintf initialized")`（在 checkpoint 18 之前）之前就停了，
+那时 `msgbuf` 还几乎没内容。
+
+### 三次运行的数据
+
+| 版本 | 参数 | 时间戳 | 日志长度 | 内容 |
+|---|---|---|---|---|
+| 21d578d | `loader_return_after=15` | 65.892 | 192 | do_cacheid ×2 |
+| 420c409 | `=60` | 65.934 | 192 | 同上 |
+| e7d6522 | `=60 checkpoint=17` | 65.913 | 192 | 同上 |
+| **c68609d** | `=60 xnu-stall=no debug=0x14e` | **65.100** | **194** | 同上 |
+
+`c68609d` 是唯一一个时间戳和长度都变了的一次（65.9→65.1，192→194）。
+
+**这说明 `xnu-stall=no` / `debug=0x14e` 至少有一个被内核接受了**，行为确实变了。
+但停止点没变——仍卡在同一处。
+
+### 现在的完整判断
+
+```
+_start → arm_init
+  → loader_checkpoint(10)        t0sz=24，loader_jump 拒绝
+  → cpu_data_init()
+      → do_cacheid()             日志最后两行
+  → PE_init_platform()           ← 之后就没有任何输出了
+  → configure_timer_apple_regs()
+  → wfe_timeout_configure()
+  → wfe_timeout_init()
+  → configure_misc_apple_boot_args()
+  → configure_misc_apple_regs()
+  → platform_stall_panic_or_spin()
+  → ...
+  → arm_vm_init()                ← 从未到达（checkpoint 17 未命中）
+  → halt_all_cpus()              ← 但确实到了这里
+```
+
+「到了 `halt_all_cpus()`」和「没到 `arm_vm_init()`」是矛盾的——除非
+`halt_all_cpus()` 是被 panic 从中间某处直接调用的（panic 不返回）。
+
+**这正好解释了一切**：内核在 `arm_init` 中途 panic，panic → `halt_all_cpus()` →
+`loader_return()` → 我们看到的 reason 0。而 panic 文本没能进 `msgbuf`，
+因为那个阶段 `msgbuf` 的 printf 通路还没建立。
+
+### 下一步
+
+1. **确认 panic**：加 `-p` 或 `debug=0x...` 打开 panic 的串口/屏幕输出
+2. **绕开 checkpoint 门槛**：放宽 `loader_jump` 的 `t0sz` 下限到 24，
+   这样才能用 11/30/31/32/33/34 定位到具体语句
+
+第 2 条需要重编内核，但现在是唯一能真正推进的路。
+
+## 2026-11-16 19:53 — 新内核确证在镜像里，行为却没变
+
+`80b59c0`（第一个真正含 `t0sz` 改动的镜像）上机。
+
+### 屏幕
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 0 delta 00000010C900000
+--- kernel message buffer ---
+[  66.116463]: vm_cache_geometry_colors: 16
+[  66.116475]: do_cacheid() - 65536 bytes Unknown cache (I: 32768 D: 32768 (separate)),
+              16-way assoc, 64 bytes/line
+```
+
+三带齐全，条码正常，日志还是那两行，长度还是 192。
+
+### 先排除「镜像装错」这个可能
+
+上一轮查出 payload 曾打包 dSYM 里的 66 MB 调试镜像，所以这次不敢再假设。
+把 boot.img 拆到底，直接读 FAT 里的 `kernel.macho`：
+
+```
+/EFI/UniXNU/Payloads/kernel.macho   15,791,328  3856 cl
+  sha256  167066dac79b956b896d611bb3a7961475db42cf0571ec8d8959f371993af3cf
+```
+
+对比本地产物：
+
+```
+新内核（含 t0sz 改动）  167066dac79b956b896d611bb3a7961475db42cf0571ec8d8959f371993af3cf
+旧内核                  bd33c05acb5ff77fb6c6085a8822e641e7099c53d53e7978d15992316e1e0772
+```
+
+**镜像里的就是新内核，字节完全一致。** 这条假设正式排除。
+
+### 路上修的一个解析 bug
+
+拆 FAT 时先后踩了两次坑，都值得记下来：
+
+1. `fat_ls.py` 用 `root_entries != 0` 判定 FAT16，但这个卷标着 FAT16、
+   FAT 表只有 12 扇区，按 FAT16 读 16 位项会把边界读错——
+   `fat_entry(6)` 返回 `0xA009`（40969），远超卷里的 3960 个簇，
+   于是链在 5 个簇后就断了，15.8 MB 的内核被读成 8192 字节。
+
+2. 按 FAT12 的 12 位打包规则重读，`cluster 6 -> 7 -> 8 -> 9...` 是连续链，
+   一切正常。
+
+新增 `scripts/ci/fat12_read.py` 专门做这件事。
+
+### 结论：`t0sz` 改动生效了，但没解决问题
+
+这次的数据是干净的，所以可以确定：
+
+**内核确实是新的，仍然停在 `do_cacheid()` 之后，仍然只写 192 字节日志。**
+
+也就是说，放宽 `loader_jump` 的 `t0sz` 下限**没有让早期 checkpoint 工作起来**。
+
+### 为什么
+
+回看 `loader_checkpoint()`：
+
+```c
+void
+loader_checkpoint(uint64_t n)
+{
+    if (loader_stub_slot[2] == n) {
+        loader_jump(2, n);
+    }
+}
+```
+
+而这次启动参数是 `-v loader_return_after=60 xnu-stall=no debug=0x14e`，
+**没有 checkpoint=n**。`slot[2]` 是 0，`loader_checkpoint(n)` 全部不匹配。
+
+这一版本来就不是用来测 checkpoint 的——它是用来验证新内核能否改变行为的。
+答案是：**不能。**
+
+### 下一次必须带 checkpoint
+
+这轮证明了工具链正确（新内核确实在镜像里），下一轮才是真正的检测点实验：
+
+```
+-v loader_return_after=60 checkpoint=11
+```
+
+选 11 而不是 10，理由：
+- 10 在 `cpu_data_init()` **之前**，而日志证明 `do_cacheid()`（在 `cpu_data_init` 内部）
+  已经执行过，所以 10 必然命中——命中就说明内核还没到我们要找的地方，信息量低
+- 11 在 `PE_init_platform()` 之后，而日志显示那之后**没有任何输出**，
+  所以 11 命中与否直接指向「`PE_init_platform` 是否跑完」
+
+### 判读
+
+| 结果 | 含义 |
+|---|---|
+| `reason 2` + `checkpoint 11` | 门槛通了，`PE_init_platform` 跑完了，故障在更后面 |
+| `reason 0` | 11 没命中，故障在 `cpu_data_init` 和 `PE_init_platform` 之间 |
+| 没有返回 | 内核死在更早，或 `loader_jump` 仍被拒 |
