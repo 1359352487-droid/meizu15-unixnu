@@ -350,34 +350,39 @@ Meizu15LauncherEntry (
   // question by elimination.
   //
   //
-  // checkpoint=47 -- stepping back into the first third of arm_vm_init().
-  //
-  // 48 stayed silent (`reason 0`, log still 192 bytes), so the fault is before
-  // pmap_bootstrap() rather than in it. Against 45 firing:
+  // checkpoint=46 -- the last planted split of arm_vm_init().
   //
   //   45  reason 2   arm_vm_init() was entered
-  //   46  ?          before arm_set_user_tbi()            (~300 lines in)
-  //   47  ?          after kva_active = TRUE               physmap, both
-  //                                                       set_mmu_ttb calls,
-  //                                                       flush_mmu_tlb and the
-  //                                                       switch off the bootstrap
-  //                                                       tables all done
-  //   48  reason 0   so it dies between 45 and 48
+  //   47  reason 0   kva_active = TRUE was never reached
+  //   48  reason 0   (already known)
   //
-  // 47 splits what is left:
+  // So the fault is in the first stretch of the function, before the kernel
+  // switches off the bootstrap page tables. 46 sits just before arm_set_user_tbi()
+  // and divides that stretch in two:
   //
-  //   reason 2   the switch off the bootstrap page tables worked; the fault is
-  //              between kva_active and pmap_bootstrap -- the AuxKC block and the
-  //              arm_vm_map loop
-  //   reason 0   it never got that far; 46 then separates "the first 300 lines"
-  //              from "physmap / set_mmu_ttb / flush"
+  //   cp45 *
+  //        ~325 lines: cpu_ttep / invalid_ttep setup, arm_vm_map calls that
+  //        extend the bootstrap tables -- the probes are silent through all of it
+  //   cp46   before arm_set_user_tbi()
+  //          arm_set_user_tbi();
+  //          arm_vm_physmap_init(args);
+  //          set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
+  //          ml_enable_monitor();            (guarded off; cleared earlier)
+  //          set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
+  //          flush_mmu_tlb();
+  //          kva_active = TRUE;
+  //   cp47   silent
   //
-  // Worth noting the shape of the failure: the log is still exactly the 192 bytes
-  // written by do_cacheid, so nothing after arm_init's early part has managed to
-  // print. That holds whether the stop is a hang or a quiet panic, since msgbuf
-  // is only useful once kprintf is up.
+  //   reason 2   the first 325 lines are fine; the fault is in the seven calls
+  //              between 46 and 47, all of which touch the live page tables
+  //   reason 0   the fault is in the first 325 lines, and the next round plants
+  //              probes inside them
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=47";
+  // This is the last question the existing probes can answer. Either way the
+  // following round needs a kernel change, so the four probes already inside
+  // arm_vm_init() have done their job.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=46";
   //
   // DeviceTree must stay NULL here.
   //
