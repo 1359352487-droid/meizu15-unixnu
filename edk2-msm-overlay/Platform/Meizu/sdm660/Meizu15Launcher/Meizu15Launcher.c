@@ -350,35 +350,36 @@ Meizu15LauncherEntry (
   // question by elimination.
   //
   //
-  // checkpoint=34 -- the last probe before arm_vm_init(), and the widest step.
+  // checkpoint=17 -- past arm_vm_init(), and the first probe that can show a log.
   //
-  // checkpoint=11 came back as `reason 2`, `log 0 bytes`, which changes the
-  // picture completely: loader_jump() no longer refuses to hand control back, so
-  // lowering its t0sz floor did work, and the kernel really does reach
-  // PE_init_platform(). Every earlier conclusion of the form "the kernel is
-  // probably dead before arm_init" is now off the table.
+  // Two probes have now fired, both with `reason 2`:
   //
-  // An empty log at 11 is expected rather than ominous: msgbuf has nothing in it
-  // until kprintf is initialised around checkpoints 18/19, which is far later.
+  //   checkpoint 11   PE_init_platform() completed
+  //   checkpoint 34   configure_timer_apple_regs, wfe_timeout_configure,
+  //                   wfe_timeout_init, configure_misc_apple_boot_args,
+  //                   configure_misc_apple_regs and platform_stall_panic_or_spin
+  //                   all completed
   //
-  // 34 rather than 30, because one boot should eliminate as much as possible:
+  // That last one matters more than it looks. platform_stall_panic_or_spin() was
+  // the leading suspect for a stall that produces no panic and no output, and it
+  // is now cleared: the kernel walks straight past it. The whole first half of
+  // arm_init is healthy.
   //
-  //   11        reached
-  //   30 31 32  configure_timer_apple_regs / wfe_timeout_configure / wfe_timeout_init
-  //   33        after configure_misc_apple_boot_args + configure_misc_apple_regs
-  //   ---       platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_ARM_INIT)
-  //   34        reached?
+  // 17 rather than 35/12/40..44/13..16, because it buys the most per boot:
   //
-  // The stall call sits directly in front of 34 and is the one thing in this
-  // stretch that can go quiet without a panic, which is exactly the symptom.
-  // So 34 answers two questions at once:
+  //   * it sits immediately after arm_vm_init(), so firing proves the VM
+  //     bootstrap completed -- the remaining unknown in arm_init
+  //   * kprintf is initialised around checkpoints 18/19, which is before 17, so a
+  //     firing 17 should finally show a non-empty log instead of `log 0 bytes`
   //
-  //   reason 2   the configure_* calls and the stall check all completed;
-  //              whatever is wrong lives after 34 (35, 12, 40..44, arm_vm_init)
-  //   reason 0   it never got there; either configure_* or the stall ate it,
-  //              and 30/31/32/33 split that remainder
+  //   reason 2 + a real log   arm_init() finished; the problem is in
+  //                           machine_startup() or later
+  //   reason 2 + empty log    the kernel reached arm_vm_init() but kprintf never
+  //                           came up, which is its own finding
+  //   reason 0                it dies between 34 and arm_vm_init(); the 35 / 12 /
+  //                           40..44 / 13..16 probes bisect that stretch
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=34";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=17";
   //
   // DeviceTree must stay NULL here.
   //
