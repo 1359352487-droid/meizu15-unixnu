@@ -350,37 +350,37 @@ Meizu15LauncherEntry (
   // question by elimination.
   //
   //
-  // checkpoint=16 -- the last planted probe, and the last free bisection step.
+  // checkpoint=17 -- back to the one that has been silent, now that the Apple-only
+  // monitor call in front of the VM bootstrap is guarded off.
+  //
+  // The bisection ran out of planted probes here:
   //
   //   11  reason 2   PE_init_platform() done
   //   34  reason 2   configure_*, platform_stall_panic_or_spin() done
   //   44  reason 2   thread_bootstrap() done
   //   15  reason 2   kernel_startup_bootstrap() done
+  //   16  reason 2   timer_call_init() and cpu_init() done
   //   17  reason 0   arm_vm_init() never completed
   //
-  // What is left is three calls with one probe among them:
+  // Between 16 and 17 sit exactly two calls:
   //
-  //   cp15 *
-  //        timer_call_init();
-  //        cpu_init();                     16
-  //        processor_bootstrap();
-  //        arm_vm_init(xmaxmem, args);     17  (never reached)
+  //   processor_bootstrap();
+  //   arm_vm_init(xmaxmem, args);
   //
-  //   reason 2   the fault is in processor_bootstrap() or arm_vm_init()
-  //   reason 0   the fault is in timer_call_init() or cpu_init()
+  // and arm_vm_init() begins with ml_enable_monitor(), which UniXNU guards behind
+  // #if XNU_MONITOR because there is no page protection layer on this kind of
+  // SoC. That is now guarded here too, and checkpoint 45 was added between the
+  // two calls.
   //
-  // There are no more planted probes past 16, so whichever way this goes the
-  // next step is a kernel change rather than another boot arg. The likely shape
-  // of that change is a pair of probes around whichever function this names.
+  //   reason 2   arm_vm_init() completed -- the monitor call was the blocker, and
+  //              arm_init() is done. This is the first time arm_vm_init() would
+  //              have finished on this board.
+  //   reason 0   still stuck. Boot once with checkpoint=45: firing means
+  //              processor_bootstrap() is fine and arm_vm_init() has more wrong
+  //              with it than the monitor call; silence means processor_bootstrap()
+  //              is the one to look at.
   //
-  // Worth noting while reading the screen: the log has stayed at `log 0 bytes`
-  // through every probe, including 15, which sits after
-  // kernel_debug_string_early("kernel_startup_bootstrap"). That call therefore
-  // produced nothing either. The console is not alive this early -- kprintf and
-  // PE_init_printf come later -- so the stack trace we want will have to come
-  // from a probe, not from the kernel's own printing.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=16";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=17";
   //
   // DeviceTree must stay NULL here.
   //

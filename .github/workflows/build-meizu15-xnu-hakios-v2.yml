@@ -147,6 +147,24 @@ jobs:
           # Fail loudly rather than silently building the old behaviour.
           grep -q 't0sz < 24 || t0sz > 33' "$F"
 
+      #
+      # Two things the UniXNU port does that this build does not, both from
+      # UniXNU/UniXNU -- see docs/xnu/four-k-page-tables.md and
+      # patches/xnu/non-apple-cache-monitor.patch.
+      #
+      #   * arm_vm_init() calls ml_enable_monitor() unconditionally, and it is
+      #     the first thing that function does. That is exactly where the boot
+      #     stops: checkpoint 16 fires, checkpoint 17 never does, and the only
+      #     calls between them are processor_bootstrap() and arm_vm_init().
+      #   * The planted probes end at 16, so checkpoint 45 is added between
+      #     processor_bootstrap() and arm_vm_init() to keep the two apart.
+      #
+      - name: Guard the Apple-only monitor call, and add one more probe
+        working-directory: hakios
+        run: |
+          set -eux
+          python3 meizu15/scripts/ci/apply_nonapple_guards.py "$PWD/xnu-src"
+
       - name: Kernel dependencies (xnu-deps/setup.sh)
         working-directory: hakios
         run: |
