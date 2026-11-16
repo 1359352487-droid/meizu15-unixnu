@@ -350,37 +350,37 @@ Meizu15LauncherEntry (
   // question by elimination.
   //
   //
-  // checkpoint=15 -- the middle of what is left.
-  //
-  // The window is closing fast now. Four probes have fired or stayed silent:
+  // checkpoint=16 -- the last planted probe, and the last free bisection step.
   //
   //   11  reason 2   PE_init_platform() done
   //   34  reason 2   configure_*, platform_stall_panic_or_spin() done
-  //   44  reason 2   thread_bootstrap() and its setup done
+  //   44  reason 2   thread_bootstrap() done
+  //   15  reason 2   kernel_startup_bootstrap() done
   //   17  reason 0   arm_vm_init() never completed
   //
-  // So the fault is in this stretch, which holds four probes and five calls:
+  // What is left is three calls with one probe among them:
   //
-  //   cp44 *
-  //        cpu_bootstrap();                     13
-  //        rtclock_early_init();                14
-  //        kernel_debug_string_early("kernel_startup_bootstrap");
-  //        kernel_startup_bootstrap();          15
-  //        timer_call_init();  cpu_init();      16
+  //   cp15 *
+  //        timer_call_init();
+  //        cpu_init();                     16
   //        processor_bootstrap();
-  //        arm_vm_init(xmaxmem, args);          17  (never reached)
+  //        arm_vm_init(xmaxmem, args);     17  (never reached)
   //
-  // 15 halves it, and it carries a second signal worth having: the log is still
-  // `log 0 bytes` at 44, and kernel_debug_string_early() runs just before 14. If
-  // 15 fires and the log is still empty, then that call produced nothing either,
-  // which points at the console rather than at the code between the probes. If
-  // the log grows, the kernel is finally talking and the text itself is the
-  // finding.
+  //   reason 2   the fault is in processor_bootstrap() or arm_vm_init()
+  //   reason 0   the fault is in timer_call_init() or cpu_init()
   //
-  //   reason 2   the fault is 15 -> 17 (cpu_init, processor_bootstrap, arm_vm_init)
-  //   reason 0   the fault is 44 -> 15 (cpu_bootstrap, rtclock, kernel_startup_bootstrap)
+  // There are no more planted probes past 16, so whichever way this goes the
+  // next step is a kernel change rather than another boot arg. The likely shape
+  // of that change is a pair of probes around whichever function this names.
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=15";
+  // Worth noting while reading the screen: the log has stayed at `log 0 bytes`
+  // through every probe, including 15, which sits after
+  // kernel_debug_string_early("kernel_startup_bootstrap"). That call therefore
+  // produced nothing either. The console is not alive this early -- kprintf and
+  // PE_init_printf come later -- so the stack trace we want will have to come
+  // from a probe, not from the kernel's own printing.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=16";
   //
   // DeviceTree must stay NULL here.
   //
