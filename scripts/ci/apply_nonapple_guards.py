@@ -7,7 +7,7 @@ guarded off.
 
 Probe map (all inside osfmk/arm64/arm_vm_init.c unless noted):
 
-    45  arm_init.c, between processor_bootstrap() and arm_vm_init()   -- fires
+    45  arm_init.c, between processor_bootstrap() and arm_vm_init()   -- FIRES
     46  before arm_set_user_tbi()                                     -- silent
     47  after kva_active = TRUE                                       -- silent
     48  before pmap_bootstrap()                                       -- silent
@@ -16,35 +16,38 @@ Probe map (all inside osfmk/arm64/arm_vm_init.c unless noted):
     51  before init_ptpages(cpu_tte, gVirtBase, ...)                  -- silent
     52  after that init_ptpages()                                     -- silent
     53  after arm_vm_prot_init()
+    54  after gPhysSize = mem_size = ...                              -- SILENT
+    55  before physmap_base = phystokv(...)                           -- silent
+    56  after physmap_base += physmap_slide                           -- silent
+    57  before the dynamic_memory_begin range check
 
-Everything from 46 rightwards is silent, and 50 is the earliest of them, so the
-kernel stops inside the first 98 lines of the function. Four more probes cut that
-stretch up:
+54 was the last split worth making, and it came back silent. That is the striking
+part: between 45 firing and 54 sitting silent there is nothing but four field
+reads and integer arithmetic --
 
-    45 *
-        gVirtBase = args->virtBase;
-        gPhysBase = args->physBase;
-        real_phys_size = args->memSize;
-        gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
-    54  <- after the size arithmetic
-        if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2))
-            panic("Unsupported memory configuration %lx", mem_size);
-    55  <- before the physmap base
-        physmap_base = phystokv(args->topOfKernelData);
-        physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;
-        assert(physmap_slide < ARM64_PHYSMAP_SLIDE_RANGE);
-        physmap_base += physmap_slide;
-    56  <- after the slide
-        static_memory_end = physmap_base + mem_size + (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE);
-        physmap_end = physmap_base + real_phys_size + (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE);
-        dynamic_memory_begin = static_memory_end;
-    57  <- before the range check
-        if (dynamic_memory_begin > VM_MAX_KERNEL_ADDRESS)
-            panic("Unsupported memory configuration %lx", mem_size);
-    50  <- silent
+    gVirtBase      = args->virtBase;
+    gPhysBase      = args->physBase;
+    real_phys_size = args->memSize;
+    gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
 
-55 and 56 bracket phystokv() and early_random(), which are the only two calls in
-the whole stretch -- everything else is arithmetic on boot_args.
+-- with no calls, no loops and no branches. A function that faults there has not
+failed at its work; it has failed at arriving. Two things can do that:
+
+  * the stack. XNU's default kernel stack is 4*4096 = 16 KiB, and its own comment
+    in osfmk/mach/arm/vm_param.h warns that -O0 builds overflow it:
+        "adding -DKERNEL_STACK_MULTIPLIER=2 helps avoid kernel stack overflows
+         when compiling with -O0"
+    This build is KERNEL_CONFIGS=DEVELOPMENT. arm_init() additionally keeps the
+    0x480-byte boot_args copy on its stack and hands its address to arm_vm_init(),
+    which is a large function. Probe 45 runs in arm_init's shallower frame and
+    fires; 54 runs one frame deeper and does not. That pattern fits.
+
+  * args. If the pointer were bad, the first read at 1831 would fault, and 45
+    would still fire because it happens before the call.
+
+This change raises the stack fourfold (64 KiB) so the two explanations separate in
+one boot. Nothing about the ABI depends on it -- KERNEL_STACK_SIZE only sizes the
+allocation.
 
 Idempotent: each edit checks for its own result before applying.
 
@@ -54,6 +57,8 @@ import sys
 from pathlib import Path
 
 EXTERN_DECL = "\nextern void loader_checkpoint(uint64_t n);\n"
+
+STACK_MULTIPLIER = 4
 
 # (line substring, "before"|"after", probe number). Applied in one pass, so a line
 # can carry a probe on each side.
@@ -80,6 +85,22 @@ def find(root, suffix):
     if not matches:
         raise SystemExit("not found under %s: %s" % (root, suffix))
     return matches[0]
+
+
+def raise_kernel_stack(path):
+    text = path.read_text(encoding="utf-8")
+    old = "#define KERNEL_STACK_MULTIPLIER (1)"
+    new = "#define KERNEL_STACK_MULTIPLIER (%d)" % STACK_MULTIPLIER
+    if new in text:
+        print("  stack already x%d" % STACK_MULTIPLIER)
+        return False
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit("%s: expected one '%s', found %d" % (path, old, count))
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    print("  KERNEL_STACK_MULTIPLIER -> %d (stack %d KiB)"
+          % (STACK_MULTIPLIER, 4 * 4 * STACK_MULTIPLIER))
+    return True
 
 
 def guard_monitor(path):
@@ -173,8 +194,10 @@ def main(argv):
 
     vm = find(root, "osfmk/arm64/arm_vm_init.c")
     init = find(root, "osfmk/arm/arm_init.c")
+    vmp = find(root, "osfmk/mach/arm/vm_param.h")
 
     changed = 0
+    changed += raise_kernel_stack(vmp)
     changed += guard_monitor(vm)
     changed += add_extern(vm)
     changed += add_vm_probes(vm)
@@ -192,7 +215,11 @@ def main(argv):
     if "loader_checkpoint(45)" not in init.read_text(encoding="utf-8"):
         raise SystemExit("verification failed in arm_init.c: checkpoint 45")
 
-    print("done (%d change(s), %d probes)" % (changed, len(EXPECTED)))
+    if "KERNEL_STACK_MULTIPLIER (%d)" % STACK_MULTIPLIER not in vmp.read_text(encoding="utf-8"):
+        raise SystemExit("verification failed in vm_param.h: stack multiplier")
+
+    print("done (%d change(s), %d probes, stack x%d)"
+          % (changed, len(EXPECTED), STACK_MULTIPLIER))
     return 0
 
 
