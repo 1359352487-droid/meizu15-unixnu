@@ -262,41 +262,43 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=55 -- the line before phystokv() and early_random().
+  // checkpoint=54 -- after the four assignments, before the size checks.
   //
   //   45  reason 2   arm_vm_init() was entered
-  //   56  reason 0   the physmap slide was never applied
+  //   55  reason 0   physmap_base = phystokv(...) was never reached
+  //   56  reason 0
   //   50  reason 0
   //
-  // 56 sits right after "physmap_base += physmap_slide;". It stayed silent, so the
-  // kernel never finished the three statements above it:
+  // Between 45 and 55 there is nothing but field reads and integer arithmetic:
   //
-  //   physmap_base  = phystokv(args->topOfKernelData);                         call 1
-  //   physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;  call 2
-  //   assert(physmap_slide < ARM64_PHYSMAP_SLIDE_RANGE);
-  //   physmap_base += physmap_slide;
+  //   gVirtBase      = args->virtBase;
+  //   gPhysBase      = args->physBase;
+  //   real_phys_size = args->memSize;
+  //   gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
+  //   mem_actual = args->memSizeActual ? args->memSizeActual : mem_size;
+  //   if ((memory_size != 0) && (mem_size > memory_size)) { ... }
+  //   if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2))
+  //       panic("Unsupported memory configuration %lx", mem_size);
   //
-  // Those are the only two calls in the whole 98-line stretch. Everything else is
-  // arithmetic on boot_args, and that arithmetic has been checked against the values
-  // the panel prints -- WindowSize 0x30000000, gVirtBase 0xFFFFFFF007004000 -- with
-  // no case found that can panic:
+  // No function calls. Every value involved has been checked against the panel
+  // (WindowSize 0x30000000, gVirtBase 0xFFFFFFF007004000) and the arithmetic cannot
+  // trip either branch. If 54 stays silent as well, then a plain assignment is
+  // faulting, which points at the two things assignments can still do wrong here:
   //
-  //   mem_size 0x30000000 against a threshold of half the kernel VA space (~60 GB)
-  //   gVirtBase inside 0xFFFFFFE000000000 .. 0xFFFFFFFBFFFFFFFF
-  //   /chosen/random-seed present in the ADT with 64 real bytes
+  //   1. args itself. arm_init() rebinds args to a stack copy:
+  //          const_boot_args = *args;
+  //          BootArgs = args = &const_boot_args;
+  //      and hand--passes &const_boot_args to arm_vm_init(). boot_args is 0x480
+  //      bytes. If arm_init's frame is too small for that copy, the later reads
+  //      through args fetch garbage or fault.
+  //   2. the stack the call arrives on. arm_vm_init() declares a dozen locals and
+  //      runs on whatever the 4 KiB build gives it; an overflow here would corrupt
+  //      the return path silently, before any print.
   //
-  //   reason 2   both calls returned; the fault is in the static_memory_end /
-  //              physmap_end arithmetic between 56 and 57
-  //   reason 0   one of the two never came back; 54 then says whether the kernel
-  //              even got this far
+  //   reason 2   the assignments are fine and the fault is between 54 and 55
+  //   reason 0   the fault is in the assignments themselves -- stack or args
   //
-  // If 55 fires while 56 stays silent, the next probe goes between the two calls.
-  // early_random() is the likelier of the pair to fail quietly: its bootseed path
-  // ends in panic("ccdrbg_init() returned %d", rc), and a panic here prints nothing
-  // because kprintf does not come up until around checkpoint 18 -- long after
-  // arm_vm_init().
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=55";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=54";
   //
   // DeviceTree must stay NULL here.
   //
