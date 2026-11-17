@@ -262,36 +262,45 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=58 -- the first statement of arm_vm_init's body.
+  // checkpoint=49 -- the far end: after pmap_bootstrap(), near the end of arm_vm_init.
   //
-  //  45  reason 2   arm_init() reached the call
-  //  54  reason 0   gPhysSize = mem_size = ... never completed
+  // The wall is down. With PAN disabled the kernel reached inside arm_vm_init for
+  // the first time in twenty rounds:
   //
-  // Between them: the call, the prologue, and four stores. Two explanations were
-  // tested and cleared this round:
+  //   checkpoint 58   reason 2    <- the body was entered
   //
-  //   stack        KERNEL_STACK_MULTIPLIER 1 -> 4 (16 KiB -> 64 KiB); 54 stayed silent
-  //   write perm   the four globals sit in __DATA_CONST (gVirtBase 0xFFFFFFF0071B5110,
-  //                gPhysBase 0xFFFFFFF0071B5100, real_phys_size 0xFFFFFFF0071B5108,
-  //                gPhysSize 0xFFFFFFF0071B5120), but ARM_TTE_BOOT_BLOCK has no AP
-  //                field, so AP = 0 = AP_RWNA and the bootstrap tables are writable
+  // Before this, every probe from 46 onward came back `reason 0` with a 192-byte
+  // log, because arm_init() executed `msr pan, #1` -- a register Kryo 260 does not
+  // have. SDM660 is four Cortex-A73 plus four Cortex-A53, all ARMv8.0; PAN is an
+  // ARMv8.1 optional feature. hakios enabled it for Cortex-A55/A78.
   //
-  // So the stores are split four ways, and 58 answers the question that changes the
-  // direction of the investigation:
+  // Everything below was measured while that instruction was still there, so every
+  // one of those results is void and has to be taken again. Rather than walk the
+  // probes in order, start at the far end:
   //
-  //   58  before gVirtBase = args->virtBase;
+  //   58  before gVirtBase = args->virtBase;            reason 2  (known)
   //   59  after  gPhysBase = args->physBase;
   //   60  before gPhysSize = mem_size = ...
   //   54  after  gPhysSize = ...
+  //   55  before physmap_base = phystokv(...)
+  //   56  after  physmap_base += physmap_slide
+  //   57  before the dynamic_memory_begin range check
+  //   50  before boot_tte = &bootstrap_pagetables
+  //   51  before init_ptpages(cpu_tte, gVirtBase, ...)
+  //   52  after  that init_ptpages()
+  //   53  after  arm_vm_prot_init(args)
+  //   46  before arm_set_user_tbi()
+  //   47  after  kva_active = TRUE
+  //   48  before pmap_bootstrap(dynamic_memory_begin)
+  //   49  after  pmap_bootstrap(...)        <- here
   //
-  //   reason 2   the body was entered; the fault is in one of the four stores, and
-  //              59 / 60 / 54 narrow it to a single line
-  //   reason 0   the body was never entered. Then it is not a store at all: the call
-  //              or the prologue is wrong, and the next thing to examine is how
-  //              arm_init() passes xmaxmem and the address of its stack copy of
-  //              boot_args
+  //   reason 2 at 49   arm_vm_init() ran to completion; the wall was only ever PAN,
+  //                    and the next work is arm_init()'s remaining code and the
+  //                    first task
+  //   reason 0 at 49   something in the middle still fails; bisect between 58 and
+  //                    49 with 53 first
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=58";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=49";
   //
   // DeviceTree must stay NULL here.
   //
