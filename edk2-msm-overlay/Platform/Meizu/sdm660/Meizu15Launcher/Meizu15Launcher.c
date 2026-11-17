@@ -262,58 +262,41 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=56 -- immediately after early_random() and the physmap slide.
-  //
-  // The bisection is down to the first 98 lines of arm_vm_init():
+  // checkpoint=55 -- the line before phystokv() and early_random().
   //
   //   45  reason 2   arm_vm_init() was entered
-  //   50  reason 0   boot_tte was never reached
-  //   51  reason 0
-  //   52  reason 0
-  //   46  reason 0
+  //   56  reason 0   the physmap slide was never applied
+  //   50  reason 0
   //
-  // Every candidate in that stretch was checked against the shipped inputs and
-  // cleared:
+  // 56 sits right after "physmap_base += physmap_slide;". It stayed silent, so the
+  // kernel never finished the three statements above it:
   //
-  //   mem_size          WindowSize is 0x30000000 (768 MB) on the panel, so the
-  //                     ">= half the kernel VA space" panic cannot fire
-  //   random-seed       the ADT does carry /chosen/random-seed, 64 real bytes
-  //                     (40 00 00 00 then a full seed), so PE_get_random_seed()
-  //                     returns 64 and bootseed_init_bootloader() does not panic
-  //   VM range          gVirtBase 0xFFFFFFF007004000 sits inside
-  //                     0xFFFFFFE000000000 .. 0xFFFFFFFBFFFFFFFF
+  //   physmap_base  = phystokv(args->topOfKernelData);                         call 1
+  //   physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;  call 2
+  //   assert(physmap_slide < ARM64_PHYSMAP_SLIDE_RANGE);
+  //   physmap_base += physmap_slide;
   //
-  // That leaves arithmetic and two calls, so four probes now cut the 98 lines up:
+  // Those are the only two calls in the whole 98-line stretch. Everything else is
+  // arithmetic on boot_args, and that arithmetic has been checked against the values
+  // the panel prints -- WindowSize 0x30000000, gVirtBase 0xFFFFFFF007004000 -- with
+  // no case found that can panic:
   //
-  //   45 *
-  //        gVirtBase / gPhysBase / real_phys_size
-  //        gPhysSize = mem_size = ((gPhysBase + memSize) & ~PAGE_MASK) - gPhysBase;
-  //   54 *  after the size arithmetic
-  //        if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2))
-  //            panic(...)
-  //   55 *  before the physmap base
-  //        physmap_base = phystokv(args->topOfKernelData);
-  //        physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;
-  //        assert(physmap_slide < ARM64_PHYSMAP_SLIDE_RANGE);
-  //        physmap_base += physmap_slide;
-  //   56 *  <- here
-  //        static_memory_end = physmap_base + mem_size + (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE);
-  //        physmap_end      = physmap_base + real_phys_size + (...);
-  //        dynamic_memory_begin = static_memory_end;
-  //   57 *  before the range check
-  //        if (dynamic_memory_begin > VM_MAX_KERNEL_ADDRESS) panic(...)
-  //   50 *  silent
+  //   mem_size 0x30000000 against a threshold of half the kernel VA space (~60 GB)
+  //   gVirtBase inside 0xFFFFFFE000000000 .. 0xFFFFFFFBFFFFFFFF
+  //   /chosen/random-seed present in the ADT with 64 real bytes
   //
-  // phystokv() and early_random() are the only two calls in the whole stretch.
-  // 55 and 56 bracket them, which is why 56 is the one to boot first:
+  //   reason 2   both calls returned; the fault is in the static_memory_end /
+  //              physmap_end arithmetic between 56 and 57
+  //   reason 0   one of the two never came back; 54 then says whether the kernel
+  //              even got this far
   //
-  //   reason 2   both calls returned and the slide was applied; the fault is in the
-  //              static_memory_end / physmap_end arithmetic between 56 and 57
-  //   reason 0   one of those two calls never came back -- phystokv() with a bad
-  //              topOfKernelData, or early_random() panicking inside ccdrbg_init()
-  //              where nothing can print. 55 then says which side of the pair.
+  // If 55 fires while 56 stays silent, the next probe goes between the two calls.
+  // early_random() is the likelier of the pair to fail quietly: its bootseed path
+  // ends in panic("ccdrbg_init() returned %d", rc), and a panic here prints nothing
+  // because kprintf does not come up until around checkpoint 18 -- long after
+  // arm_vm_init().
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=56";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=55";
   //
   // DeviceTree must stay NULL here.
   //
