@@ -262,40 +262,58 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=51 -- the line immediately before init_ptpages().
+  // checkpoint=50 -- the only probe left before boot_tte.
   //
   //   45  reason 2   arm_vm_init() was entered
-  //   52  reason 0   the first init_ptpages() never returned
-  //   46  reason 0   (and everything after it, so the fault is early)
+  //   51  reason 0   the line above init_ptpages() was never reached
+  //   52  reason 0   (already known)
+  //   46  reason 0
   //
-  // 52 sits directly after init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin,
-  // TRUE, ...). It stayed silent, so that call -- or something before it -- is where
-  // the kernel stops. 51 is the line above it and separates the two:
+  // init_ptpages() is therefore innocent: the kernel stops before even getting to
+  // the statement in front of it. What is left is the first 98 lines of the
+  // function, and 50 marks the end of them:
   //
   //   cp45 *
-  //        98 lines: boot_args geometry, real_phys_size, gPhysSize, physmap_base,
-  //        early_random() for the physmap slide, the physmap_end arithmetic
-  //   cp50   boot_tte = (tt_entry_t *)&bootstrap_pagetables;
-  //        alloc_ptpage() for invalid_tte and cpu_tte, both bzero'd
-  //   cp51   <- here
-  //        init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin, TRUE, ...)
-  //   cp52   silent
-  //        segment lookup, vm_set_page_size, arm_vm_prot_init, second init_ptpages
-  //   cp53   before arm_set_user_tbi()
-  //   cp46   silent
+  //        gVirtBase = args->virtBase;
+  //        gPhysBase = args->physBase;
+  //        real_phys_size = args->memSize;
+  //        gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
+  //        if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2))
+  //            panic("Unsupported memory configuration %lx", mem_size);
+  //        physmap_base = phystokv(args->topOfKernelData);
+  //        physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;
+  //        physmap_base += physmap_slide;
+  //        static_memory_end = physmap_base + mem_size + (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE);
+  //        dynamic_memory_begin = static_memory_end;
+  //   cp50   <- here
+  //        boot_tte = (tt_entry_t *)&bootstrap_pagetables;
+  //        alloc_ptpage() for invalid_tte and cpu_tte
+  //   cp51   silent
   //
-  //   reason 2   init_ptpages() itself is the blocker. It walks from gVirtBase to
-  //              dynamic_memory_begin a gigabyte at a time, and for each empty L1
-  //              entry takes a page with alloc_ptpage(TRUE) and bzero()s it. On this
-  //              build alloc_ptpage() cannot honour the "static" request -- without
-  //              KERNEL_INTEGRITY_KTRR/CTRR it forces map_static = FALSE and falls
-  //              into the branch that has no bound check at all, so a bad page
-  //              address goes straight into bzero().
-  //   reason 0   the fault is before the call; 50 then says whether it is the
-  //              arithmetic above it (early_random, physmap_base) or the two
-  //              alloc_ptpage() calls
+  //   reason 2   the arithmetic is fine; the fault is in boot_tte, the two
+  //              alloc_ptpage() calls, or the DEVELOPMENT-only BOOTSTRAP_TABLE_SIZE
+  //              check between them
+  //   reason 0   the fault is in the first 98 lines. early_random() is then the
+  //              first thing to look at -- see below.
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=51";
+  // Why early_random() leads if 50 stays silent:
+  //
+  //   uint64_t physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;
+  //
+  // and early_random()'s lazy init ends in
+  //
+  //   rc = ccdrbg_init(&erandom.drbg_info, ..., sizeof(bootseed), bootseed, ...);
+  //   if (rc != CCDRBG_STATUS_OK)
+  //       panic("ccdrbg_init() returned %d", rc);
+  //
+  // A panic at this point prints nothing -- kprintf does not come up until around
+  // checkpoint 18, which is after arm_vm_init() -- so the machine simply goes quiet,
+  // exactly as observed. The counter-argument is that ccdrbg_init() only needs
+  // ccsha256_ltc_di, which is linked in and needs no provider registration, so the
+  // call is expected to succeed on a zero seed. Both the panic path and the
+  // arithmetic in front of it are worth checking before the next build.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=50";
   //
   // DeviceTree must stay NULL here.
   //
