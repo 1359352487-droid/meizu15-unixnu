@@ -262,58 +262,58 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=50 -- the only probe left before boot_tte.
+  // checkpoint=56 -- immediately after early_random() and the physmap slide.
+  //
+  // The bisection is down to the first 98 lines of arm_vm_init():
   //
   //   45  reason 2   arm_vm_init() was entered
-  //   51  reason 0   the line above init_ptpages() was never reached
-  //   52  reason 0   (already known)
+  //   50  reason 0   boot_tte was never reached
+  //   51  reason 0
+  //   52  reason 0
   //   46  reason 0
   //
-  // init_ptpages() is therefore innocent: the kernel stops before even getting to
-  // the statement in front of it. What is left is the first 98 lines of the
-  // function, and 50 marks the end of them:
+  // Every candidate in that stretch was checked against the shipped inputs and
+  // cleared:
   //
-  //   cp45 *
-  //        gVirtBase = args->virtBase;
-  //        gPhysBase = args->physBase;
-  //        real_phys_size = args->memSize;
-  //        gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
+  //   mem_size          WindowSize is 0x30000000 (768 MB) on the panel, so the
+  //                     ">= half the kernel VA space" panic cannot fire
+  //   random-seed       the ADT does carry /chosen/random-seed, 64 real bytes
+  //                     (40 00 00 00 then a full seed), so PE_get_random_seed()
+  //                     returns 64 and bootseed_init_bootloader() does not panic
+  //   VM range          gVirtBase 0xFFFFFFF007004000 sits inside
+  //                     0xFFFFFFE000000000 .. 0xFFFFFFFBFFFFFFFF
+  //
+  // That leaves arithmetic and two calls, so four probes now cut the 98 lines up:
+  //
+  //   45 *
+  //        gVirtBase / gPhysBase / real_phys_size
+  //        gPhysSize = mem_size = ((gPhysBase + memSize) & ~PAGE_MASK) - gPhysBase;
+  //   54 *  after the size arithmetic
   //        if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2))
-  //            panic("Unsupported memory configuration %lx", mem_size);
+  //            panic(...)
+  //   55 *  before the physmap base
   //        physmap_base = phystokv(args->topOfKernelData);
   //        physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;
+  //        assert(physmap_slide < ARM64_PHYSMAP_SLIDE_RANGE);
   //        physmap_base += physmap_slide;
+  //   56 *  <- here
   //        static_memory_end = physmap_base + mem_size + (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE);
+  //        physmap_end      = physmap_base + real_phys_size + (...);
   //        dynamic_memory_begin = static_memory_end;
-  //   cp50   <- here
-  //        boot_tte = (tt_entry_t *)&bootstrap_pagetables;
-  //        alloc_ptpage() for invalid_tte and cpu_tte
-  //   cp51   silent
+  //   57 *  before the range check
+  //        if (dynamic_memory_begin > VM_MAX_KERNEL_ADDRESS) panic(...)
+  //   50 *  silent
   //
-  //   reason 2   the arithmetic is fine; the fault is in boot_tte, the two
-  //              alloc_ptpage() calls, or the DEVELOPMENT-only BOOTSTRAP_TABLE_SIZE
-  //              check between them
-  //   reason 0   the fault is in the first 98 lines. early_random() is then the
-  //              first thing to look at -- see below.
+  // phystokv() and early_random() are the only two calls in the whole stretch.
+  // 55 and 56 bracket them, which is why 56 is the one to boot first:
   //
-  // Why early_random() leads if 50 stays silent:
+  //   reason 2   both calls returned and the slide was applied; the fault is in the
+  //              static_memory_end / physmap_end arithmetic between 56 and 57
+  //   reason 0   one of those two calls never came back -- phystokv() with a bad
+  //              topOfKernelData, or early_random() panicking inside ccdrbg_init()
+  //              where nothing can print. 55 then says which side of the pair.
   //
-  //   uint64_t physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;
-  //
-  // and early_random()'s lazy init ends in
-  //
-  //   rc = ccdrbg_init(&erandom.drbg_info, ..., sizeof(bootseed), bootseed, ...);
-  //   if (rc != CCDRBG_STATUS_OK)
-  //       panic("ccdrbg_init() returned %d", rc);
-  //
-  // A panic at this point prints nothing -- kprintf does not come up until around
-  // checkpoint 18, which is after arm_vm_init() -- so the machine simply goes quiet,
-  // exactly as observed. The counter-argument is that ccdrbg_init() only needs
-  // ccsha256_ltc_di, which is linked in and needs no provider registration, so the
-  // call is expected to succeed on a zero seed. Both the panic path and the
-  // arithmetic in front of it are worth checking before the next build.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=50";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=56";
   //
   // DeviceTree must stay NULL here.
   //

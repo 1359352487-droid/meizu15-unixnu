@@ -5,47 +5,46 @@ and `patches/xnu/non-apple-cache-monitor.patch`. This kernel is also built for
 BCM2837 with 4 KiB pages on a non-Apple SoC, so the Apple-only paths have to be
 guarded off.
 
-1. osfmk/arm64/arm_vm_init.c -- guard ml_enable_monitor()
+Probe map (all inside osfmk/arm64/arm_vm_init.c unless noted):
 
-   arm_vm_init() calls it unconditionally and it is the first thing the function
-   does after arm_vm_physmap_init(). On Apple silicon it turns on the page
-   protection layer; this SoC has none. Guarding it did not move the wall, but it
-   removes a call that is known to be wrong here.
+    45  arm_init.c, between processor_bootstrap() and arm_vm_init()   -- fires
+    46  before arm_set_user_tbi()                                     -- silent
+    47  after kva_active = TRUE                                       -- silent
+    48  before pmap_bootstrap()                                       -- silent
+    49  after pmap_bootstrap()
+    50  before boot_tte = &bootstrap_pagetables                       -- silent
+    51  before init_ptpages(cpu_tte, gVirtBase, ...)                  -- silent
+    52  after that init_ptpages()                                     -- silent
+    53  after arm_vm_prot_init()
 
-2. osfmk/arm/arm_init.c -- checkpoint 45
+Everything from 46 rightwards is silent, and 50 is the earliest of them, so the
+kernel stops inside the first 98 lines of the function. Four more probes cut that
+stretch up:
 
-   Between the planted probes 16 and 17 sit exactly two calls:
+    45 *
+        gVirtBase = args->virtBase;
+        gPhysBase = args->physBase;
+        real_phys_size = args->memSize;
+        gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
+    54  <- after the size arithmetic
+        if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2))
+            panic("Unsupported memory configuration %lx", mem_size);
+    55  <- before the physmap base
+        physmap_base = phystokv(args->topOfKernelData);
+        physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;
+        assert(physmap_slide < ARM64_PHYSMAP_SLIDE_RANGE);
+        physmap_base += physmap_slide;
+    56  <- after the slide
+        static_memory_end = physmap_base + mem_size + (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE);
+        physmap_end = physmap_base + real_phys_size + (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE);
+        dynamic_memory_begin = static_memory_end;
+    57  <- before the range check
+        if (dynamic_memory_begin > VM_MAX_KERNEL_ADDRESS)
+            panic("Unsupported memory configuration %lx", mem_size);
+    50  <- silent
 
-       processor_bootstrap();
-       arm_vm_init(xmaxmem, args);
-
-   45 goes between them. It fired, which cleared processor_bootstrap().
-
-3. osfmk/arm64/arm_vm_init.c -- checkpoints 46..53
-
-   Everything after arm_vm_init() was entered is still unverified. The probes cut
-   the function into sections so one build answers several boots' worth of
-   questions:
-
-       45  fired    arm_vm_init() was entered
-       -- first 325 lines --
-       50  boot_tte assignment           physical memory sizing, early_random(),
-                                         physmap_base and the physmap_end
-                                         arithmetic are done
-       -- page table page allocation --
-       51  before the first init_ptpages argument list is evaluated
-       52  after that init_ptpages() call  the primary page tables are built
-       53  after arm_vm_prot_init()       segment lookup and protection init done
-       46  fired?   before arm_set_user_tbi()
-       -- the live table switch --
-       47  fired?   after kva_active = TRUE
-       48  fired?   before pmap_bootstrap()
-       49  fired?   after pmap_bootstrap()
-       17  silent   arm_vm_init() never returns
-
-   52 is the interesting one: it isolates init_ptpages(), which walks the segment
-   list and builds every L1/L2 entry the kernel will run on after it leaves the
-   bootstrap tables.
+55 and 56 bracket phystokv() and early_random(), which are the only two calls in
+the whole stretch -- everything else is arithmetic on boot_args.
 
 Idempotent: each edit checks for its own result before applying.
 
@@ -59,6 +58,10 @@ EXTERN_DECL = "\nextern void loader_checkpoint(uint64_t n);\n"
 # (line substring, "before"|"after", probe number). Applied in one pass, so a line
 # can carry a probe on each side.
 VM_PROBES = [
+    ("gPhysSize = mem_size", "after", 54),
+    ("physmap_base = phystokv(args->topOfKernelData);", "before", 55),
+    ("physmap_base += physmap_slide;", "after", 56),
+    ("if (dynamic_memory_begin > VM_MAX_KERNEL_ADDRESS)", "before", 57),
     ("boot_tte = (tt_entry_t *)&bootstrap_pagetables;", "before", 50),
     ("init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin", "before", 51),
     ("init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin", "after", 52),
@@ -68,6 +71,8 @@ VM_PROBES = [
     ("pmap_bootstrap(dynamic_memory_begin);", "before", 48),
     ("pmap_bootstrap(dynamic_memory_begin);", "after", 49),
 ]
+
+EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57)
 
 
 def find(root, suffix):
@@ -177,9 +182,9 @@ def main(argv):
 
     # Verify rather than trust: a silent no-op would cost a full build and boot.
     vm_text = vm.read_text(encoding="utf-8")
-    for number in (46, 47, 48, 49, 50, 51, 52, 53):
-        if "loader_checkpoint(%d)" % number not in vm_text:
-            raise SystemExit("verification failed: checkpoint %d missing" % number)
+    missing = [n for n in EXPECTED if "loader_checkpoint(%d)" % n not in vm_text]
+    if missing:
+        raise SystemExit("verification failed: probes missing %s" % missing)
     for marker in ("extern void loader_checkpoint", "#if XNU_MONITOR"):
         if marker not in vm_text:
             raise SystemExit("verification failed in arm_vm_init.c: %s" % marker)
@@ -187,7 +192,7 @@ def main(argv):
     if "loader_checkpoint(45)" not in init.read_text(encoding="utf-8"):
         raise SystemExit("verification failed in arm_init.c: checkpoint 45")
 
-    print("done (%d change(s))" % changed)
+    print("done (%d change(s), %d probes)" % (changed, len(EXPECTED)))
     return 0
 
 
