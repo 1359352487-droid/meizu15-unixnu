@@ -1642,7 +1642,41 @@ Boot (
   Args->MemorySizeActual = WindowSize;
   Args->TopOfKernelData = Address + Used;
   CopyMem (Args->Video, Video, sizeof (Video));
-  Args->DeviceTree = Kernel.Base + TreeAddress - Address;
+  //
+  // A physical address, not a virtual one, and this line is why the kernel used
+  // to stop dead between probe 45 and probe 58.
+  //
+  // arm_init() runs long before arm_vm_init() builds the kernel's own tables, so
+  // it executes with the loader's identity mapping still in force. In that mode a
+  // KVA like 0xFFFFFFF007004000 is simply not addressable. XNU expects exactly
+  // that: PE_init_platform() stores the pointer verbatim --
+  //
+  //     PE_state.deviceTreeHead = boot_args_ptr->deviceTreeP;
+  //
+  // -- and the conversion to a virtual address happens much later, inside
+  // arm_vm_init() itself:
+  //
+  //     arm_vm_physmap_slide(temp_ptov_table, end_kern, ...);
+  //     if (!SecureDTIsLockedDown()) {
+  //         PE_slide_devicetree(temp_ptov_table[ptov_index - 1].va - end_kern);
+  //     }
+  //
+  // So deviceTreeP has to be the address the tree is reachable at *before* the
+  // switch. Handing over Kernel.Base + TreeAddress - Address meant every device
+  // tree read before arm_vm_init() touched an unmapped address.
+  //
+  // The read that killed it was PE_get_default("hw.memsize", ...), which sits
+  // between processor_bootstrap() and arm_vm_init() and does walk the tree:
+  //
+  //     if (PE_parse_boot_argn("maxmem", ...))            { xmaxmem = ...; }
+  //     else if (PE_get_default("hw.memsize", &memsize, ...)) { xmaxmem = memsize; }
+  //     else                                              { xmaxmem = 0; }
+  //
+  // A data abort there is a panic, a panic before kprintf is up prints nothing,
+  // and halt_all_cpus() hands back `reason 0` with a 192-byte log -- which is the
+  // signature every probe after that point produced.
+  //
+  Args->DeviceTree = TreeAddress;
   Args->DeviceTreeLength = (UINT32)TreeSize;
   CopyMem (Args->CommandLine, CommandLine, sizeof (CommandLine));
   CopyMem ((VOID *)(UINTN)TreeAddress, Tree, TreeSize);
