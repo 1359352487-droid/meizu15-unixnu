@@ -262,45 +262,45 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=49 -- the far end: after pmap_bootstrap(), near the end of arm_vm_init.
+  // checkpoint=52 -- after the first init_ptpages(), the middle of arm_vm_init.
   //
-  // The wall is down. With PAN disabled the kernel reached inside arm_vm_init for
-  // the first time in twenty rounds:
+  // PAN is gone and the function finally runs:
   //
-  //   checkpoint 58   reason 2    <- the body was entered
+  //   58  reason 2   before gVirtBase = args->virtBase;        <- entered
+  //   49  reason 0   after pmap_bootstrap()                    <- still silent
   //
-  // Before this, every probe from 46 onward came back `reason 0` with a 192-byte
-  // log, because arm_init() executed `msr pan, #1` -- a register Kryo 260 does not
-  // have. SDM660 is four Cortex-A73 plus four Cortex-A53, all ARMv8.0; PAN is an
-  // ARMv8.1 optional feature. hakios enabled it for Cortex-A55/A78.
+  // The log is 192 bytes again, the two do_cacheid() lines, so the failure is a
+  // panic inside arm_vm_init() before kprintf comes up.
   //
-  // Everything below was measured while that instruction was still there, so every
-  // one of those results is void and has to be taken again. Rather than walk the
-  // probes in order, start at the far end:
+  // Probe order in the function:
   //
-  //   58  before gVirtBase = args->virtBase;            reason 2  (known)
-  //   59  after  gPhysBase = args->physBase;
-  //   60  before gPhysSize = mem_size = ...
-  //   54  after  gPhysSize = ...
-  //   55  before physmap_base = phystokv(...)
-  //   56  after  physmap_base += physmap_slide
-  //   57  before the dynamic_memory_begin range check
-  //   50  before boot_tte = &bootstrap_pagetables
-  //   51  before init_ptpages(cpu_tte, gVirtBase, ...)
-  //   52  after  that init_ptpages()
-  //   53  after  arm_vm_prot_init(args)
-  //   46  before arm_set_user_tbi()
-  //   47  after  kva_active = TRUE
-  //   48  before pmap_bootstrap(dynamic_memory_begin)
-  //   49  after  pmap_bootstrap(...)        <- here
+  //   58 1833  before gVirtBase = args->virtBase;          reason 2
+  //   59 1836  after  gPhysBase = args->physBase;
+  //   60 1851  before gPhysSize = mem_size = ...
+  //   54 1853  after  gPhysSize = ...
+  //   55 1868  before physmap_base = phystokv(...)
+  //   56 1877  after  physmap_base += physmap_slide
+  //   57 1915  before the dynamic_memory_begin range check
+  //   50 1916  before boot_tte = &bootstrap_pagetables
+  //   51 1976  before init_ptpages(cpu_tte, gVirtBase, ...)
+  //   52 1978  after  that init_ptpages()          <- here
+  //   53 2103  after  arm_vm_prot_init(args)
+  //   46 2147  before arm_set_user_tbi()
+  //   47 2159  after  kva_active = TRUE
+  //   48 2255  before pmap_bootstrap(dynamic_memory_begin)
+  //   49 2257  after  pmap_bootstrap(...)                   reason 0
   //
-  //   reason 2 at 49   arm_vm_init() ran to completion; the wall was only ever PAN,
-  //                    and the next work is arm_init()'s remaining code and the
-  //                    first task
-  //   reason 0 at 49   something in the middle still fails; bisect between 58 and
-  //                    49 with 53 first
+  //   reason 2 at 52   the page-table setup finished; the fault is between 53 and 49
+  //                    (arm_vm_prot_init, arm_set_user_tbi, kva_active, pmap_bootstrap)
+  //   reason 0 at 52   the fault is in the page-table setup itself, between 58 and 52,
+  //                    and the next split is 55 or 50
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=49";
+  // One likely candidate once 52 fires: alloc_ptpage()'s dynamic branch has no bound
+  // check -- map_static is forced FALSE because KERNEL_INTEGRITY_KTRR/CTRR are not
+  // defined for this SoC -- so nothing stops the allocation from walking past the
+  // region the loader reserved for it.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=52";
   //
   // DeviceTree must stay NULL here.
   //
