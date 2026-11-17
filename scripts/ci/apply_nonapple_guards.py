@@ -37,6 +37,7 @@ Idempotent: each edit checks for its own result before applying.
 
     python apply_nonapple_guards.py <hakios/xnu-src root>
 """
+import re
 import sys
 from pathlib import Path
 
@@ -71,6 +72,43 @@ def find(root, suffix):
         raise SystemExit("not found under %s: %s" % (root, suffix))
     return matches[0]
 
+
+def raise_int_stacks(path):
+    """The stack arm_init() actually runs on.
+
+    start.s sets SP to intstack_top before handing control to arm_init():
+
+        adrp x0, EXT(intstack_top)@page
+        add  x0, x0, EXT(intstack_top)@pageoff
+        msr  SPSel, #0
+        mov  sp, x0
+        adrp lr, EXT(arm_init)@page
+
+    So the whole bring-up -- arm_init(), its 0x480-byte copy of boot_args, and
+    arm_vm_init() with its large frame -- lives on INTSTACK_SIZE, not on the
+    per-thread KERNEL_STACK_SIZE. Growing KERNEL_STACK_MULTIPLIER therefore cannot
+    help, which is exactly what the last boot showed.
+
+    A prologue that pushes past the bottom of a guard-paged stack faults on the
+    first store, before any statement in the body runs. Probe 58 sits on that first
+    statement and never fired.
+    """
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for name in ("INTSTACK_SIZE", "EXCEPSTACK_SIZE"):
+        pattern = re.compile(r"^#define\s+%s\s+\(4\*4096\)" % name, re.M)
+        replacement = "#define %-23s (16*4096)" % name
+        if "(16*4096)" in text and re.search(re.escape(replacement), text):
+            print("  %s already 64 KiB" % name)
+            continue
+        if not pattern.search(text):
+            raise SystemExit("%s: no '#define %s (4*4096)' to replace" % (path, name))
+        text = pattern.sub(replacement, text, count=1)
+        print("  %s -> 64 KiB" % name)
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
 
 def raise_kernel_stack(path):
     text = path.read_text(encoding="utf-8")
@@ -181,6 +219,7 @@ def main(argv):
 
     changed = 0
     changed += raise_kernel_stack(vmp)
+    changed += raise_int_stacks(vmp)
     changed += guard_monitor(vm)
     changed += add_extern(vm)
     changed += add_vm_probes(vm)
