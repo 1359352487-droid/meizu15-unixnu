@@ -262,39 +262,40 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  //
-  // checkpoint=52 -- immediately after the first init_ptpages() call.
+  // checkpoint=51 -- the line immediately before init_ptpages().
   //
   //   45  reason 2   arm_vm_init() was entered
-  //   46  reason 0   arm_set_user_tbi() never reached
-  //   47  reason 0   kva_active = TRUE never reached
-  //   48  reason 0   pmap_bootstrap() never reached
+  //   52  reason 0   the first init_ptpages() never returned
+  //   46  reason 0   (and everything after it, so the fault is early)
   //
-  // So the fault is in the first 325 lines, before anything switches page
-  // tables. Four more probes now cut that stretch up:
+  // 52 sits directly after init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin,
+  // TRUE, ...). It stayed silent, so that call -- or something before it -- is where
+  // the kernel stops. 51 is the line above it and separates the two:
   //
   //   cp45 *
   //        98 lines: boot_args geometry, real_phys_size, gPhysSize, physmap_base,
   //        early_random() for the physmap slide, the physmap_end arithmetic
   //   cp50   boot_tte = (tt_entry_t *)&bootstrap_pagetables;
   //        alloc_ptpage() for invalid_tte and cpu_tte, both bzero'd
-  //   cp51   init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin, TRUE, ...)
-  //   cp52   <- here
+  //   cp51   <- here
+  //        init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin, TRUE, ...)
+  //   cp52   silent
   //        segment lookup, vm_set_page_size, arm_vm_prot_init, second init_ptpages
   //   cp53   before arm_set_user_tbi()
-  //        ... rest of the function ...
   //   cp46   silent
   //
-  // 52 splits what is left roughly in half and isolates the call that matters:
-  // init_ptpages() walks the segment list and builds every L1/L2 entry the kernel
-  // runs on once it leaves the bootstrap tables. 51 firing while 52 stays silent
-  // would name that call exactly.
+  //   reason 2   init_ptpages() itself is the blocker. It walks from gVirtBase to
+  //              dynamic_memory_begin a gigabyte at a time, and for each empty L1
+  //              entry takes a page with alloc_ptpage(TRUE) and bzero()s it. On this
+  //              build alloc_ptpage() cannot honour the "static" request -- without
+  //              KERNEL_INTEGRITY_KTRR/CTRR it forces map_static = FALSE and falls
+  //              into the branch that has no bound check at all, so a bad page
+  //              address goes straight into bzero().
+  //   reason 0   the fault is before the call; 50 then says whether it is the
+  //              arithmetic above it (early_random, physmap_base) or the two
+  //              alloc_ptpage() calls
   //
-  //   reason 2   the primary page tables were built; look further right
-  //   reason 0   50 and 51 then say whether it is init_ptpages() or the
-  //              arithmetic before it (early_random, physmap_base, alloc_ptpage)
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=52";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=51";
   //
   // DeviceTree must stay NULL here.
   //
