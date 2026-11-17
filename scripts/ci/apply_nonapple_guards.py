@@ -1,53 +1,37 @@
 """Changes the UniXNU port made, plus the probes that finish the bisection.
 
-The UniXNU items come from `UniXNU/UniXNU` -- see `docs/xnu/four-k-page-tables.md`
-and `patches/xnu/non-apple-cache-monitor.patch`. This kernel is also built for
-BCM2837 with 4 KiB pages on a non-Apple SoC, so the Apple-only paths have to be
-guarded off.
-
-Probe map (all inside osfmk/arm64/arm_vm_init.c unless noted):
+Probe map (osfmk/arm64/arm_vm_init.c unless noted):
 
     45  arm_init.c, between processor_bootstrap() and arm_vm_init()   -- FIRES
-    46  before arm_set_user_tbi()                                     -- silent
-    47  after kva_active = TRUE                                       -- silent
-    48  before pmap_bootstrap()                                       -- silent
-    49  after pmap_bootstrap()
-    50  before boot_tte = &bootstrap_pagetables                       -- silent
-    51  before init_ptpages(cpu_tte, gVirtBase, ...)                  -- silent
-    52  after that init_ptpages()                                     -- silent
-    53  after arm_vm_prot_init()
-    54  after gPhysSize = mem_size = ...                              -- SILENT
-    55  before physmap_base = phystokv(...)                           -- silent
-    56  after physmap_base += physmap_slide                           -- silent
-    57  before the dynamic_memory_begin range check
+    46..53                                                  -- all silent
+    54  after gPhysSize = mem_size = ...                     -- SILENT
+    55..57  later in the function                           -- silent
 
-54 was the last split worth making, and it came back silent. That is the striking
-part: between 45 firing and 54 sitting silent there is nothing but four field
-reads and integer arithmetic --
+45 fires and 54 does not, and everything between them is four field reads and one
+integer arithmetic. Two explanations were tested and cleared:
 
-    gVirtBase      = args->virtBase;
-    gPhysBase      = args->physBase;
-    real_phys_size = args->memSize;
-    gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
+  * stack -- KERNEL_STACK_MULTIPLIER went 1 -> 4 (16 KiB -> 64 KiB) and probe 54
+    stayed silent, so it is not stack exhaustion.
+  * __DATA_CONST write permission -- the four globals live there:
+        gVirtBase      0xFFFFFFF0071B5110  __DATA_CONST
+        gPhysBase      0xFFFFFFF0071B5100  __DATA_CONST
+        gPhysSize      0xFFFFFFF0071B5120  __DATA_CONST
+        real_phys_size 0xFFFFFFF0071B5108  __DATA_CONST
+    but ARM_TTE_BOOT_BLOCK carries no AP field, so AP = 0 = AP_RWNA and the
+    bootstrap tables are read-write. Not it either.
 
--- with no calls, no loops and no branches. A function that faults there has not
-failed at its work; it has failed at arriving. Two things can do that:
+So the four assignments are cut into four sections:
 
-  * the stack. XNU's default kernel stack is 4*4096 = 16 KiB, and its own comment
-    in osfmk/mach/arm/vm_param.h warns that -O0 builds overflow it:
-        "adding -DKERNEL_STACK_MULTIPLIER=2 helps avoid kernel stack overflows
-         when compiling with -O0"
-    This build is KERNEL_CONFIGS=DEVELOPMENT. arm_init() additionally keeps the
-    0x480-byte boot_args copy on its stack and hands its address to arm_vm_init(),
-    which is a large function. Probe 45 runs in arm_init's shallower frame and
-    fires; 54 runs one frame deeper and does not. That pattern fits.
+    58  before gVirtBase = args->virtBase;
+    59  after  gPhysBase = args->physBase;
+    60  before gPhysSize = mem_size = ...
+    54  after  gPhysSize = ...
 
-  * args. If the pointer were bad, the first read at 1831 would fault, and 45
-    would still fire because it happens before the call.
-
-This change raises the stack fourfold (64 KiB) so the two explanations separate in
-one boot. Nothing about the ABI depends on it -- KERNEL_STACK_SIZE only sizes the
-allocation.
+  reason 2 at 58   arm_vm_init() body was entered; the fault is at or after 59
+  reason 2 at 59   gVirtBase and gPhysBase stored fine
+  reason 2 at 60   real_phys_size stored fine
+  reason 2 at 54   only gPhysSize's arithmetic is left
+  silence at 58    the body was never entered -- prologue or the call itself
 
 Idempotent: each edit checks for its own result before applying.
 
@@ -60,9 +44,10 @@ EXTERN_DECL = "\nextern void loader_checkpoint(uint64_t n);\n"
 
 STACK_MULTIPLIER = 4
 
-# (line substring, "before"|"after", probe number). Applied in one pass, so a line
-# can carry a probe on each side.
 VM_PROBES = [
+    ("gVirtBase = args->virtBase;", "before", 58),
+    ("gPhysBase = args->physBase;", "after", 59),
+    ("gPhysSize = mem_size", "before", 60),
     ("gPhysSize = mem_size", "after", 54),
     ("physmap_base = phystokv(args->topOfKernelData);", "before", 55),
     ("physmap_base += physmap_slide;", "after", 56),
@@ -77,7 +62,7 @@ VM_PROBES = [
     ("pmap_bootstrap(dynamic_memory_begin);", "after", 49),
 ]
 
-EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57)
+EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60)
 
 
 def find(root, suffix):
@@ -98,8 +83,7 @@ def raise_kernel_stack(path):
     if count != 1:
         raise SystemExit("%s: expected one '%s', found %d" % (path, old, count))
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
-    print("  KERNEL_STACK_MULTIPLIER -> %d (stack %d KiB)"
-          % (STACK_MULTIPLIER, 4 * 4 * STACK_MULTIPLIER))
+    print("  KERNEL_STACK_MULTIPLIER -> %d" % STACK_MULTIPLIER)
     return True
 
 
@@ -121,7 +105,6 @@ def guard_monitor(path):
 
 
 def add_extern(path):
-    """loader_checkpoint() is declared in arm_init.c by the hakios patch, not here."""
     text = path.read_text(encoding="utf-8")
     if "extern void loader_checkpoint" in text:
         print("  extern already present")
@@ -203,7 +186,6 @@ def main(argv):
     changed += add_vm_probes(vm)
     changed += add_arm_init_probe(init)
 
-    # Verify rather than trust: a silent no-op would cost a full build and boot.
     vm_text = vm.read_text(encoding="utf-8")
     missing = [n for n in EXPECTED if "loader_checkpoint(%d)" % n not in vm_text]
     if missing:
@@ -218,8 +200,7 @@ def main(argv):
     if "KERNEL_STACK_MULTIPLIER (%d)" % STACK_MULTIPLIER not in vmp.read_text(encoding="utf-8"):
         raise SystemExit("verification failed in vm_param.h: stack multiplier")
 
-    print("done (%d change(s), %d probes, stack x%d)"
-          % (changed, len(EXPECTED), STACK_MULTIPLIER))
+    print("done (%d change(s), %d probes)" % (changed, len(EXPECTED)))
     return 0
 
 

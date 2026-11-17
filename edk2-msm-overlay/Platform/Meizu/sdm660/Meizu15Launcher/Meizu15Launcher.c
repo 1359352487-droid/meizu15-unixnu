@@ -262,43 +262,36 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=54 -- after the four assignments, before the size checks.
+  // checkpoint=58 -- the first statement of arm_vm_init's body.
   //
-  //   45  reason 2   arm_vm_init() was entered
-  //   55  reason 0   physmap_base = phystokv(...) was never reached
-  //   56  reason 0
-  //   50  reason 0
+  //  45  reason 2   arm_init() reached the call
+  //  54  reason 0   gPhysSize = mem_size = ... never completed
   //
-  // Between 45 and 55 there is nothing but field reads and integer arithmetic:
+  // Between them: the call, the prologue, and four stores. Two explanations were
+  // tested and cleared this round:
   //
-  //   gVirtBase      = args->virtBase;
-  //   gPhysBase      = args->physBase;
-  //   real_phys_size = args->memSize;
-  //   gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
-  //   mem_actual = args->memSizeActual ? args->memSizeActual : mem_size;
-  //   if ((memory_size != 0) && (mem_size > memory_size)) { ... }
-  //   if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2))
-  //       panic("Unsupported memory configuration %lx", mem_size);
+  //   stack        KERNEL_STACK_MULTIPLIER 1 -> 4 (16 KiB -> 64 KiB); 54 stayed silent
+  //   write perm   the four globals sit in __DATA_CONST (gVirtBase 0xFFFFFFF0071B5110,
+  //                gPhysBase 0xFFFFFFF0071B5100, real_phys_size 0xFFFFFFF0071B5108,
+  //                gPhysSize 0xFFFFFFF0071B5120), but ARM_TTE_BOOT_BLOCK has no AP
+  //                field, so AP = 0 = AP_RWNA and the bootstrap tables are writable
   //
-  // No function calls. Every value involved has been checked against the panel
-  // (WindowSize 0x30000000, gVirtBase 0xFFFFFFF007004000) and the arithmetic cannot
-  // trip either branch. If 54 stays silent as well, then a plain assignment is
-  // faulting, which points at the two things assignments can still do wrong here:
+  // So the stores are split four ways, and 58 answers the question that changes the
+  // direction of the investigation:
   //
-  //   1. args itself. arm_init() rebinds args to a stack copy:
-  //          const_boot_args = *args;
-  //          BootArgs = args = &const_boot_args;
-  //      and hand--passes &const_boot_args to arm_vm_init(). boot_args is 0x480
-  //      bytes. If arm_init's frame is too small for that copy, the later reads
-  //      through args fetch garbage or fault.
-  //   2. the stack the call arrives on. arm_vm_init() declares a dozen locals and
-  //      runs on whatever the 4 KiB build gives it; an overflow here would corrupt
-  //      the return path silently, before any print.
+  //   58  before gVirtBase = args->virtBase;
+  //   59  after  gPhysBase = args->physBase;
+  //   60  before gPhysSize = mem_size = ...
+  //   54  after  gPhysSize = ...
   //
-  //   reason 2   the assignments are fine and the fault is between 54 and 55
-  //   reason 0   the fault is in the assignments themselves -- stack or args
+  //   reason 2   the body was entered; the fault is in one of the four stores, and
+  //              59 / 60 / 54 narrow it to a single line
+  //   reason 0   the body was never entered. Then it is not a store at all: the call
+  //              or the prologue is wrong, and the next thing to examine is how
+  //              arm_init() passes xmaxmem and the address of its stack copy of
+  //              boot_args
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=54";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=58";
   //
   // DeviceTree must stay NULL here.
   //
