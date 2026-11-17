@@ -253,6 +253,19 @@ jobs:
           gh release create "$TAG" $FILES --title "$TAG" \
             --notes "XNU 8796 (BCM2837 / ARMv8.0) for the Meizu 15, and the UniXNU ESP built from it. Download through a mirror: https://ghfast.top/https://github.com/1359352487-droid/meizu15-unixnu/releases/download/$TAG/<file>"
 
+      #
+      # A kernel-only artefact, because the full one is 160 MB and the link to it
+      # runs at tens of KB/s -- an hour per round. kernel.macho.gz is the file the
+      # next step actually needs, and gzip gets it to about 24 MB.
+      #
+      - name: Upload the kernel alone
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meizu15-kernel
+          path: /tmp/kernel.macho.gz
+          if-no-files-found: warn
+
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
@@ -261,6 +274,7 @@ jobs:
           path: |
             hakios/hakios-kernel
             hakios/**/mach.development*
+            !hakios/**/*.dSYM*
             /tmp/unixnu-esp.img.gz
             /tmp/kernel.macho.gz
           if-no-files-found: warn
