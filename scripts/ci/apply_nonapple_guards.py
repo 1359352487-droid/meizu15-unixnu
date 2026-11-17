@@ -1,16 +1,16 @@
 """Changes the UniXNU port made, plus the probes that finish the bisection.
 
-Two of these come from `UniXNU/UniXNU` -- see `docs/xnu/four-k-page-tables.md`
-and `patches/xnu/non-apple-cache-monitor.patch`. The reasoning carries over
-because this kernel is also built for BCM2837 with 4 KiB pages on a non-Apple
-SoC, so the Apple-only paths have to be guarded off.
+The UniXNU items come from `UniXNU/UniXNU` -- see `docs/xnu/four-k-page-tables.md`
+and `patches/xnu/non-apple-cache-monitor.patch`. This kernel is also built for
+BCM2837 with 4 KiB pages on a non-Apple SoC, so the Apple-only paths have to be
+guarded off.
 
 1. osfmk/arm64/arm_vm_init.c -- guard ml_enable_monitor()
 
    arm_vm_init() calls it unconditionally and it is the first thing the function
    does after arm_vm_physmap_init(). On Apple silicon it turns on the page
-   protection layer; this SoC has none. Guarding it did not move the wall (probe
-   17 stayed silent) but it costs nothing and removes a known-wrong call.
+   protection layer; this SoC has none. Guarding it did not move the wall, but it
+   removes a call that is known to be wrong here.
 
 2. osfmk/arm/arm_init.c -- checkpoint 45
 
@@ -21,27 +21,33 @@ SoC, so the Apple-only paths have to be guarded off.
 
    45 goes between them. It fired, which cleared processor_bootstrap().
 
-3. osfmk/arm64/arm_vm_init.c -- checkpoints 46, 47, 48, 49
+3. osfmk/arm64/arm_vm_init.c -- checkpoints 46..53
 
-   The failure is inside arm_vm_init(). That function is 580 lines and its
-   milestones are:
+   Everything after arm_vm_init() was entered is still unverified. The probes cut
+   the function into sections so one build answers several boots' worth of
+   questions:
 
-       2141  arm_set_user_tbi();
-       2143  arm_vm_physmap_init(args);
-       2148  set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
-       2150  flush_mmu_tlb();
-       2151  kva_active = TRUE;          <- the switch off the bootstrap tables
-       2247  pmap_bootstrap(dynamic_memory_begin);
+       45  fired    arm_vm_init() was entered
+       -- first 325 lines --
+       50  boot_tte assignment           physical memory sizing, early_random(),
+                                         physmap_base and the physmap_end
+                                         arithmetic are done
+       -- page table page allocation --
+       51  before the first init_ptpages argument list is evaluated
+       52  after that init_ptpages() call  the primary page tables are built
+       53  after arm_vm_prot_init()       segment lookup and protection init done
+       46  fired?   before arm_set_user_tbi()
+       -- the live table switch --
+       47  fired?   after kva_active = TRUE
+       48  fired?   before pmap_bootstrap()
+       49  fired?   after pmap_bootstrap()
+       17  silent   arm_vm_init() never returns
 
-   The probes sit so that one boot divides the function into quarters:
+   52 is the interesting one: it isolates init_ptpages(), which walks the segment
+   list and builds every L1/L2 entry the kernel will run on after it leaves the
+   bootstrap tables.
 
-       46  before arm_set_user_tbi()      -> the first ~300 lines are done
-       47  after kva_active = TRUE        -> physmap, both set_mmu_ttb,
-                                             flush_mmu_tlb and the switch are done
-       48  before pmap_bootstrap()        -> the AuxKC and arm_vm_map block is done
-       49  after pmap_bootstrap()         -> pmap_bootstrap itself is done
-
-Idempotent: every edit checks for its own result before applying.
+Idempotent: each edit checks for its own result before applying.
 
     python apply_nonapple_guards.py <hakios/xnu-src root>
 """
@@ -50,28 +56,17 @@ from pathlib import Path
 
 EXTERN_DECL = "\nextern void loader_checkpoint(uint64_t n);\n"
 
-# Probe insertions against osfmk/arm64/arm_vm_init.c, in source order.
-# Each entry is (anchor, replacement, marker-that-proves-it-is-done).
+# (line substring, "before"|"after", probe number). Applied in one pass, so a line
+# can carry a probe on each side.
 VM_PROBES = [
-    (
-        "\tarm_set_user_tbi();\n",
-        "\tloader_checkpoint(46);\n"
-        "\tarm_set_user_tbi();\n",
-        "loader_checkpoint(46)",
-    ),
-    (
-        "\tkva_active = TRUE;\n",
-        "\tkva_active = TRUE;\n"
-        "\tloader_checkpoint(47);\n",
-        "loader_checkpoint(47)",
-    ),
-    (
-        "\tpmap_bootstrap(dynamic_memory_begin);\n",
-        "\tloader_checkpoint(48);\n"
-        "\tpmap_bootstrap(dynamic_memory_begin);\n"
-        "\tloader_checkpoint(49);\n",
-        "loader_checkpoint(48)",
-    ),
+    ("boot_tte = (tt_entry_t *)&bootstrap_pagetables;", "before", 50),
+    ("init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin", "before", 51),
+    ("init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin", "after", 52),
+    ("arm_vm_prot_init(args);", "after", 53),
+    ("arm_set_user_tbi();", "before", 46),
+    ("kva_active = TRUE;", "after", 47),
+    ("pmap_bootstrap(dynamic_memory_begin);", "before", 48),
+    ("pmap_bootstrap(dynamic_memory_begin);", "after", 49),
 ]
 
 
@@ -118,22 +113,31 @@ def add_extern(path):
 
 def add_vm_probes(path):
     text = path.read_text(encoding="utf-8")
+    lines = text.split("\n")
+
     changed = 0
-    for anchor, replacement, marker in VM_PROBES:
-        if marker in text:
-            print("  already present: %s" % marker)
-            continue
-        count = text.count(anchor)
-        if count != 1:
-            raise SystemExit(
-                "%s: anchor for %s matched %d times, expected 1"
-                % (path, marker, count)
-            )
-        text = text.replace(anchor, replacement, 1)
-        print("  added %s" % marker)
-        changed += 1
+    out = []
+    for line in lines:
+        before, after = [], []
+        for needle, position, number in VM_PROBES:
+            if needle not in line:
+                continue
+            if "loader_checkpoint(%d)" % number in text:
+                continue
+            (before if position == "before" else after).append(number)
+
+        for number in before:
+            out.append("\tloader_checkpoint(%d);" % number)
+            print("  added loader_checkpoint(%d)" % number)
+            changed += 1
+        out.append(line)
+        for number in after:
+            out.append("\tloader_checkpoint(%d);" % number)
+            print("  added loader_checkpoint(%d)" % number)
+            changed += 1
+
     if changed:
-        path.write_text(text, encoding="utf-8")
+        path.write_text("\n".join(out), encoding="utf-8")
     return changed
 
 
@@ -173,9 +177,10 @@ def main(argv):
 
     # Verify rather than trust: a silent no-op would cost a full build and boot.
     vm_text = vm.read_text(encoding="utf-8")
-    for marker in ("loader_checkpoint(46)", "loader_checkpoint(47)",
-                   "loader_checkpoint(48)", "loader_checkpoint(49)",
-                   "extern void loader_checkpoint", "#if XNU_MONITOR"):
+    for number in (46, 47, 48, 49, 50, 51, 52, 53):
+        if "loader_checkpoint(%d)" % number not in vm_text:
+            raise SystemExit("verification failed: checkpoint %d missing" % number)
+    for marker in ("extern void loader_checkpoint", "#if XNU_MONITOR"):
         if marker not in vm_text:
             raise SystemExit("verification failed in arm_vm_init.c: %s" % marker)
 

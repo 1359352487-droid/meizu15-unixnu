@@ -263,126 +263,38 @@ Meizu15LauncherEntry (
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
   //
-  // -v, because XNU is silent without it. loader_return_after asks hakios-xnu to
-  // hand control back to the loader after that many seconds whether or not
-  // anything went wrong, which is the only way to read a log from a board with
-  // no serial port.
-  //
-  // The command line lands in boot_args.CommandLine, which is 1024 bytes at
-  // offset 0x6c and matches XNU's pexpert/pexpert/arm64/boot.h layout (Revision,
-  // Version, four uint64s, a 48-byte Boot_Video of six unsigned long, then
-  // machineType, deviceTreeP, deviceTreeLength, CommandLine). DarwinBoot's
-  // BootArgs.h asserts those offsets, so both arguments reach
-  // PE_parse_boot_argn intact.
-  //
-  //
-  // loader_return_after is a bring-up aid, not a boot argument anyone ships.
-  //
-  // It asks hakios-xnu to hand control back after that many seconds whatever the
-  // kernel is doing, which is the only way to read a log from a board with no
-  // serial port. Fifteen proved the channel works: the panel showed
-  //
-  //     kernel returned: reason 0, log 192 bytes
-  //     --- kernel message buffer ---
-  //     [  65.892252]: vm_cache_geometry_colors: 16
-  //
-  // so the next question is what the kernel does when nothing interrupts it. A
-  // longer window is the cheapest way to ask: the timer fires only if the kernel
-  // is still alive at that point, and if it panics instead the panic path appends
-  // the panic buffer to the same log and returns anyway.
-  //
-  //   still returns, log longer   the kernel ran on and got further
-  //   still returns, log same     it reached the same place and waited
-  //   nothing at all              it died without reaching either path -- the
-  //                               panel then shows only the bands, which is
-  //                               itself the answer
-  //
-  // Sixty seconds is comfortably past the point where a working early-boot would
-  // have moved on, and short enough to keep each attempt tolerable.
-  //
-  //
-  // checkpoint=17, not 10, and the reason is a hard constraint in the kernel.
-  //
-  // loader_jump() refuses to hand control back unless the translation regime can
-  // reach the stub:
-  //
-  //     tcr  = TCR_EL1;
-  //     t0sz = tcr & 0x3f;
-  //     if (t0sz < 25 || t0sz > 33 || (stub >> (64 - t0sz)) != 0) return;
-  //
-  // The panel prints TCR_EL1 = 0x280803518 on the way in, so t0sz is 24 -- below
-  // the floor. Every checkpoint that fires before arm_vm_init() rebuilds TCR_EL1
-  // is therefore accepted by loader_checkpoint() and then silently dropped by
-  // loader_jump(). That is why checkpoint=10 produced a boot with all three bands
-  // and no report at all.
-  //
-  // 17 sits immediately after arm_vm_init(), by which point the tables and TCR are
-  // the kernel's own, so the check passes. It is the first checkpoint in the series
-  // that can actually return.
-  //
-  //   17 fires   arm_vm_init() completed; whatever is wrong is later
-  //   17 silent  the kernel dies between arm_init's start and arm_vm_init, which
-  //              narrows it to the window that already shows do_cacheid()
-  //
-  //
-  // Back to no checkpoint, with the diagnostics that make a silent stall speak.
-  //
-  // checkpoint=17 came back as reason 0, i.e. that checkpoint never fired, which
-  // places the kernel before arm_vm_init(). Every useful checkpoint in that half
-  // of arm_init (10, 11, 30..34) is unreachable for a different reason:
-  // loader_jump() refuses to return while TCR_EL1's t0sz is below 25, and the
-  // kernel only raises it to 25 inside arm_vm_init(). The panel prints
-  // TCR_EL1 = 0x280803518 on the way in, so t0sz is 24 -- every early checkpoint
-  // is accepted by loader_checkpoint() and then dropped.
-  //
-  // Rather than rebuild the kernel to relax that floor, first check whether the
-  // kernel is stalling on purpose. arm_init calls
-  // platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_ARM_INIT) inside
-  // #if (DEVELOPMENT || DEBUG), and this kernel is a DEVELOPMENT build -- if it
-  // takes the spin branch the machine goes quiet at exactly the observed point,
-  // with no log and no panic.
-  //
-  //   xnu-stall=no    take the other branch
-  //   debug=0x14e    turn on the debug flags that make arm_init chatter
-  //
-  // Both are harmless if the names mean nothing to this kernel: unknown boot-args
-  // are ignored, so a boot that behaves exactly as before still answers the
-  // question by elimination.
-  //
-  //
-  // checkpoint=46 -- the last planted split of arm_vm_init().
+  // checkpoint=52 -- immediately after the first init_ptpages() call.
   //
   //   45  reason 2   arm_vm_init() was entered
-  //   47  reason 0   kva_active = TRUE was never reached
-  //   48  reason 0   (already known)
+  //   46  reason 0   arm_set_user_tbi() never reached
+  //   47  reason 0   kva_active = TRUE never reached
+  //   48  reason 0   pmap_bootstrap() never reached
   //
-  // So the fault is in the first stretch of the function, before the kernel
-  // switches off the bootstrap page tables. 46 sits just before arm_set_user_tbi()
-  // and divides that stretch in two:
+  // So the fault is in the first 325 lines, before anything switches page
+  // tables. Four more probes now cut that stretch up:
   //
   //   cp45 *
-  //        ~325 lines: cpu_ttep / invalid_ttep setup, arm_vm_map calls that
-  //        extend the bootstrap tables -- the probes are silent through all of it
-  //   cp46   before arm_set_user_tbi()
-  //          arm_set_user_tbi();
-  //          arm_vm_physmap_init(args);
-  //          set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
-  //          ml_enable_monitor();            (guarded off; cleared earlier)
-  //          set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
-  //          flush_mmu_tlb();
-  //          kva_active = TRUE;
-  //   cp47   silent
+  //        98 lines: boot_args geometry, real_phys_size, gPhysSize, physmap_base,
+  //        early_random() for the physmap slide, the physmap_end arithmetic
+  //   cp50   boot_tte = (tt_entry_t *)&bootstrap_pagetables;
+  //        alloc_ptpage() for invalid_tte and cpu_tte, both bzero'd
+  //   cp51   init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin, TRUE, ...)
+  //   cp52   <- here
+  //        segment lookup, vm_set_page_size, arm_vm_prot_init, second init_ptpages
+  //   cp53   before arm_set_user_tbi()
+  //        ... rest of the function ...
+  //   cp46   silent
   //
-  //   reason 2   the first 325 lines are fine; the fault is in the seven calls
-  //              between 46 and 47, all of which touch the live page tables
-  //   reason 0   the fault is in the first 325 lines, and the next round plants
-  //              probes inside them
+  // 52 splits what is left roughly in half and isolates the call that matters:
+  // init_ptpages() walks the segment list and builds every L1/L2 entry the kernel
+  // runs on once it leaves the bootstrap tables. 51 firing while 52 stays silent
+  // would name that call exactly.
   //
-  // This is the last question the existing probes can answer. Either way the
-  // following round needs a kernel change, so the four probes already inside
-  // arm_vm_init() have done their job.
+  //   reason 2   the primary page tables were built; look further right
+  //   reason 0   50 and 51 then say whether it is init_ptpages() or the
+  //              arithmetic before it (early_random, physmap_base, alloc_ptpage)
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=46";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=52";
   //
   // DeviceTree must stay NULL here.
   //
