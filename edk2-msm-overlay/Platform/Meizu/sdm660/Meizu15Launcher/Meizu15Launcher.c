@@ -262,44 +262,39 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=70 -- after the block loop in arm_vm_page_granular_prot.
+  // checkpoint=71 -- after the trailing helper, before the deferred-tte flush.
   //
-  //   68  reason 2   routine entered
-  //   69  reason 2   the leading pages mapped, block loop about to start
-  //   67  reason 0   the 752 MB slide never returned
+  //   69  reason 2   block loop about to start
+  //   70  reason 2   block loop finished -- every 2 MB block went in
+  //   67  reason 0   the slide still never returned
   //
-  // So it is the loop:
+  // That cleared the assert. The block arithmetic was fine; 752 MB of 2 MB blocks
+  // mapped without a complaint. Two pieces remain:
   //
-  //   while (_end - align_start >= ARM_TT_L2_SIZE) {
-  //       pmap_paddr_t pa = align_start - gVirtBase + gPhysBase - pa_offset;
-  //       assert((pa & ARM_TT_L2_OFFMASK) == 0);
-  //       tte2 = arm_kva_to_tte(align_start);
-  //       if ((pa >= gPhysBase) && (pa < real_avail_end)) {
-  //           ...build a block tte and store it...
+  //   70  after the block loop
+  //       if (align_start < _end) {
+  //           arm_vm_page_granular_helper(align_start, _end, _end, pa_offset, ...);
+  //       }                                    <- the trailing partial block
+  //   71  if (deferred_ttep_pair[0] != NULL) {                          <- this
+  //   #if DEBUG || DEVELOPMENT
+  //           flush_mmu_tlb();
+  //   #endif
+  //           os_atomic_store(deferred_ttep_pair[1], deferred_tte_pair[1], release);
+  //           os_atomic_store(deferred_ttep_pair[0], deferred_tte_pair[0], release);
   //       }
-  //       align_start += ARM_TT_L2_SIZE;
-  //   }
-  //   70  after the loop                                       <- this
+  //   67  returned
   //
-  //   reason 2 at 70   every 2 MB block went in; the fault is in what follows --
-  //                    the trailing helper call or the deferred-tte flush
-  //   reason 0 at 70   the loop is the fault
+  //   reason 2 at 71   the trailing helper mapped its partial block; the fault is in
+  //                    the deferred-tte flush below
+  //   reason 0 at 71   the trailing helper is the fault
   //
-  // If it is the loop, the assert is the first suspect and the arithmetic is why:
+  // The flush branch deserves attention because it is the one piece of this routine
+  // gated on #if DEBUG || DEVELOPMENT, and this kernel is DEVELOPMENT. Nothing in the
+  // two slides that already succeeded needed it: a small range that produces no
+  // deferred entries never enters that branch. A 752 MB range produces plenty of
+  // deferred entries, so this is the first time the branch is reached at all.
   //
-  //   pa = align_start - gVirtBase + gPhysBase - pa_offset
-  //
-  // align_start is 2 MB aligned by construction. gVirtBase ends in 0x4000 and so
-  // does gPhysBase, so those two cancel. That leaves pa_offset, which is
-  // temp_ptov_table[i].va - orig_va, i.e. whatever offset the previous slides left
-  // behind. For the assert to hold, pa_offset has to be 2 MB aligned too. Nothing
-  // in arm_vm_physmap_slide guarantees that -- it aligns to ARM_TT_TWIG_OFFMASK,
-  // which is the 1 GB twig, not the 2 MB block.
-  //
-  // A 752 MB range is the first case large enough to enter this loop many times; the
-  // earlier slides covered only a few MB and never got here.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=70";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=71";
   //
   // DeviceTree must stay NULL here.
   //

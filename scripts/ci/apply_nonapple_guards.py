@@ -72,6 +72,10 @@ VM_PROBES = [
     ("tt_entry_t *deferred_ttep_pair[2] = {NULL};", "after", 68),
     ("while ((_end - align_start) >= ARM_TT_L2_SIZE) {", "before", 69),
     ("if (align_start < _end) {", "before", 70),
+    # After the trailing partial-block helper, before the deferred-tte flush.
+    # The flush path is #if DEBUG || DEVELOPMENT and this is DEVELOPMENT, so it
+    # runs here and nowhere else in the slides that already passed.
+    ("if (deferred_ttep_pair[0] != NULL) {", "before", 71),
     ("arm_vm_page_granular_RWNX(end_kern, phystokv(args->topOfKernelData) - end_kern,", "before", 65),
     ("/* Device Tree (if not locked down), RAM Disk (if present), bootArgs */", "after", 66),
     ("real_avail_end - args->topOfKernelData, AP_RWNA, ARM64_GRANULE_ALLOW_BLOCK", "after", 67),
@@ -85,7 +89,7 @@ VM_PROBES = [
     ("pmap_bootstrap(dynamic_memory_begin);", "after", 49),
 ]
 
-EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70)
+EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71)
 
 
 def find(root, suffix):
