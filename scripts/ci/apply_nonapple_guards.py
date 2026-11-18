@@ -66,6 +66,12 @@ VM_PROBES = [
     # #else branch is the one that compiles here: BCM2837 does not define
     # XNU_MONITOR, so it makes two slide calls rather than the monitor branch's
     # nine -- which would overrun PTOV_TABLE_SIZE (8) and panic quietly.
+    # Inside arm_vm_page_granular_prot(), which is where a 752 MB slide has to pick
+    # block mappings. Entry, before the block loop, and after it -- not inside the
+    # loop, which would be hundreds of calls.
+    ("tt_entry_t *deferred_ttep_pair[2] = {NULL};", "after", 68),
+    ("while ((_end - align_start) >= ARM_TT_L2_SIZE) {", "before", 69),
+    ("if (align_start < _end) {", "before", 70),
     ("arm_vm_page_granular_RWNX(end_kern, phystokv(args->topOfKernelData) - end_kern,", "before", 65),
     ("/* Device Tree (if not locked down), RAM Disk (if present), bootArgs */", "after", 66),
     ("real_avail_end - args->topOfKernelData, AP_RWNA, ARM64_GRANULE_ALLOW_BLOCK", "after", 67),
@@ -79,7 +85,7 @@ VM_PROBES = [
     ("pmap_bootstrap(dynamic_memory_begin);", "after", 49),
 ]
 
-EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67)
+EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70)
 
 
 def find(root, suffix):

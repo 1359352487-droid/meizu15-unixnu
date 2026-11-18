@@ -262,42 +262,44 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=67 -- after the second slide, the one that maps the rest of RAM.
+  // checkpoint=68 -- inside arm_vm_page_granular_prot, at its entry.
   //
-  //   65  reason 2   first slide done  (gVirtBase .. segLOWEST, a small span)
-  //   66  reason 2   RWNX remap done   (end_kern .. topOfKernelData, ~18 MB)
-  //   62  reason 0   function never returned
+  //   66  reason 2   RWNX remap done
+  //   67  reason 0   the second slide, ~752 MB, never finished
   //
-  // One statement left before the probes would have proven the whole function:
+  // So the fault is inside the mapping routine the second slide calls. Its block
+  // loop is the part that only a large span exercises:
   //
-  //   66  arm_vm_physmap_slide(temp_ptov_table,
-  //           args->topOfKernelData - gPhysBase + gVirtBase,
-  //           real_avail_end - args->topOfKernelData, AP_RWNA, ...);   <- this
-  //   67  assert(...); qsort(...); memcpy(...);
-  //   62  returned
+  //   68  entry                                   <- this
+  //   69  before the block loop
+  //       while (_end - align_start >= ARM_TT_L2_SIZE) {
+  //           pmap_paddr_t pa = align_start - gVirtBase + gPhysBase - pa_offset;
+  //           assert((pa & ARM_TT_L2_OFFMASK) == 0);
+  //           tte2 = arm_kva_to_tte(align_start);
+  //           if ((pa >= gPhysBase) && (pa < real_avail_end)) { ...block tte... }
+  //           align_start += ARM_TT_L2_SIZE;
+  //       }
+  //   70  after the block loop
   //
-  //   reason 2 at 67   both slides and the remap worked; whatever is left is the
-  //                    assert, the qsort or the memcpy -- and the assert is the only
-  //                    one that can fail loudly:
-  //                       assert(va + len <= physmap_end)
-  //                    with physmap_end = physmap_base + real_phys_size
-  //                       + PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE   (8 GiB of slack)
-  //   reason 0 at 67   the second slide is the fault
+  //   reason 2 at 68   the routine was entered; 69 and 70 place the fault inside or
+  //                    after the loop
+  //   reason 0 at 68   it did not even reach this point, which would put the fault
+  //                    in the earlier helper the slide calls first
   //
-  // The numbers make the second outcome likely. This slide maps
-  // real_avail_end - topOfKernelData, about 752 MB, where the first two mapped a
-  // few MB each. arm_vm_physmap_slide -> arm_vm_page_granular_prot -> alloc_ptpage,
-  // and alloc_ptpage's dynamic branch has no bound check:
+  // Three things in that loop can kill it, and they are distinguishable by which
+  // probes fire:
   //
-  //     vaddr = phystokv(avail_start);
-  //     avail_start += ARM_PGBYTES;
+  //   the assert   pa must be 2 MB aligned. pa is derived from align_start (aligned),
+  //                gVirtBase, gPhysBase and pa_offset. pa_offset comes from
+  //                temp_ptov_table[i].va - orig_va, so a physmap base that is not
+  //                block-aligned with the physical base shows up exactly here.
+  //   arm_kva_to_tte   returns the table entry for a virtual address. If the L1/L2
+  //                tables for this part of the physmap were never built, it has
+  //                nothing valid to write.
+  //   the pa range check   if pa falls outside [gPhysBase, real_avail_end) the entry
+  //                is silently skipped, which leaves a hole rather than failing.
   //
-  // map_static is forced FALSE on this SoC (no KERNEL_INTEGRITY_KTRR/CTRR), so every
-  // allocation walks avail_start upward with nothing to stop it. A 752 MB mapping
-  // that falls back to 4 KiB pages instead of 2 MB blocks would need thousands of
-  // table pages -- and would run off the end long before finishing.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=67";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=68";
   //
   // DeviceTree must stay NULL here.
   //
