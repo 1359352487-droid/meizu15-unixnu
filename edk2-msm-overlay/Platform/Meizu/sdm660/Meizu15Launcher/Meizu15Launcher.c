@@ -262,35 +262,39 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=64 -- immediately after set_mmu_ttb() installs the kernel tables.
+  // checkpoint=62 -- right after arm_vm_physmap_init().
   //
   //  58  reason 2   body entered
-  //  46  reason 2   before arm_set_user_tbi()
-  //  61  reason 2   after  arm_set_user_tbi()        <- passed, so TBI is fine
-  //  47  reason 0   after  kva_active = TRUE
+  //  61  reason 2   after arm_set_user_tbi()
+  //  64  reason 0   after set_mmu_ttb(invalid_ttep ...)
+  //  47  reason 0   after kva_active = TRUE
   //
-  // What is left between the two probes:
+  // Four operations live between 61 and 64:
   //
-  //   61  arm_vm_physmap_init(args);                  builds the real tables
-  //   62  set_mmu_ttb_alternate(cpu_ttep & ...);
+  //   61  arm_vm_physmap_init(args);                    <- builds the kernel tables
+  //   62  set_mmu_ttb_alternate(cpu_ttep & ...);        <- this
   //   63  ml_enable_monitor();
-  //   64  set_mmu_ttb(invalid_ttep & ...);            <- TTBR now points elsewhere
+  //   64  set_mmu_ttb(invalid_ttep & ...);              <- TTBR points at them
   //       flush_mmu_tlb();
-  //       kva_active = TRUE;
-  //   47  cpu_tte = phystokv(cpu_ttep);               reason 0
   //
-  // 64 is the interesting one because of where it sits: set_mmu_ttb() has already
-  // pointed TTBR at the kernel tables the moment the probe is reached, so if those
-  // tables do not map the code currently executing, the fetch for probe 64 itself
-  // fails. That is a materially different failure from "the switch worked but
-  // something after it broke".
+  //   reason 2 at 62   arm_vm_physmap_init() completed; the fault is in the three
+  //                    operations after it, and 63 splits those
+  //   reason 0 at 62   arm_vm_physmap_init() is where it dies
   //
-  //   reason 2 at 64   the kernel tables map this code; the fault is in
-  //                    flush_mmu_tlb() or in what follows kva_active
-  //   reason 0 at 64   either the tables do not cover this code, or the fault is
-  //                    earlier -- 62 and 63 separate those two cases
+  // arm_vm_physmap_init() is the function that maps the kernel image, the physmap
+  // window and the device tree into the tables that set_mmu_ttb() is about to
+  // install. Its inputs are physmap_base / physmap_end / dynamic_memory_begin, all
+  // derived from boot_args at the top of this function. On Apple hardware those are
+  // cross-checked against a boot-monitor memory descriptor; here they come only from
+  // what the loader computed. A wrong value shows up as mappings that are built
+  // without error but do not cover the code that runs next.
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=64";
+  // Note also that ml_enable_monitor() sits between 63 and 64. It is the call that
+  // was guarded behind #if XNU_MONITOR earlier, and on a non-Apple SoC entering the
+  // monitor is not something the hardware was designed for -- if 63 fires and 64 does
+  // not, that call is the first thing to look at.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=62";
   //
   // DeviceTree must stay NULL here.
   //
