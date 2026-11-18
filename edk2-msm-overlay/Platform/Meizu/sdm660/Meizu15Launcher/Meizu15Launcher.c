@@ -262,36 +262,35 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=61 -- right after arm_set_user_tbi(), before the table switch proper.
+  // checkpoint=64 -- immediately after set_mmu_ttb() installs the kernel tables.
   //
-  //   58  reason 2   body entered
-  //   46  reason 2   before arm_set_user_tbi()
-  //   47  reason 0   after  kva_active = TRUE
+  //  58  reason 2   body entered
+  //  46  reason 2   before arm_set_user_tbi()
+  //  61  reason 2   after  arm_set_user_tbi()        <- passed, so TBI is fine
+  //  47  reason 0   after  kva_active = TRUE
   //
-  // Twelve lines and seven operations sit between 46 and 47:
+  // What is left between the two probes:
   //
-  //   46  arm_set_user_tbi();                          <- 46  reason 2
-  //   61  arm_vm_physmap_init(args);                   <- this
+  //   61  arm_vm_physmap_init(args);                  builds the real tables
   //   62  set_mmu_ttb_alternate(cpu_ttep & ...);
   //   63  ml_enable_monitor();
-  //   64  set_mmu_ttb(invalid_ttep & ...);   installs the real tables
+  //   64  set_mmu_ttb(invalid_ttep & ...);            <- TTBR now points elsewhere
   //       flush_mmu_tlb();
   //       kva_active = TRUE;
-  //   47  cpu_tte = phystokv(cpu_ttep);                <- 47  reason 0
+  //   47  cpu_tte = phystokv(cpu_ttep);               reason 0
   //
-  // This is the transition off the bootstrap tables, so it deserves its own split.
+  // 64 is the interesting one because of where it sits: set_mmu_ttb() has already
+  // pointed TTBR at the kernel tables the moment the probe is reached, so if those
+  // tables do not map the code currently executing, the fetch for probe 64 itself
+  // fails. That is a materially different failure from "the switch worked but
+  // something after it broke".
   //
-  //   reason 2 at 61   arm_set_user_tbi() is fine and the fault is in the table
-  //                    setup or the switch itself; 62 / 63 / 64 say where
-  //   reason 0 at 61   arm_set_user_tbi() is the fault
+  //   reason 2 at 64   the kernel tables map this code; the fault is in
+  //                    flush_mmu_tlb() or in what follows kva_active
+  //   reason 0 at 64   either the tables do not cover this code, or the fault is
+  //                    earlier -- 62 and 63 separate those two cases
   //
-  // The second outcome is the one to expect if this is the same class of problem as
-  // PAN. arm_set_user_tbi() writes TCR_EL1's TBI0/TBI1 bits -- Top Byte Ignore for
-  // the user address space, which is optional on ARMv8.0. Kryo 260 is A73/A53, so a
-  // configuration those cores do not implement would fault exactly here, twelve
-  // lines below the last probe that fires.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=61";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=64";
   //
   // DeviceTree must stay NULL here.
   //
