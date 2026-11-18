@@ -57,13 +57,21 @@ VM_PROBES = [
     ("init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin", "before", 51),
     ("init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin", "after", 52),
     ("arm_vm_prot_init(args);", "after", 53),
+    # The table switch. arm_set_user_tbi() writes TCR_EL1's TBI bits, then
+    # arm_vm_physmap_init() builds the real tables, set_mmu_ttb() installs them and
+    # kva_active flips the kernel onto them. Probes 46 and 47 are 12 lines apart and
+    # the fault is in between, so this stretch needs its own split.
+    ("arm_set_user_tbi();", "after", 61),
+    ("arm_vm_physmap_init(args);", "after", 62),
+    ("set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);", "after", 63),
+    ("set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);", "after", 64),
     ("arm_set_user_tbi();", "before", 46),
     ("kva_active = TRUE;", "after", 47),
     ("pmap_bootstrap(dynamic_memory_begin);", "before", 48),
     ("pmap_bootstrap(dynamic_memory_begin);", "after", 49),
 ]
 
-EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60)
+EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64)
 
 
 def find(root, suffix):

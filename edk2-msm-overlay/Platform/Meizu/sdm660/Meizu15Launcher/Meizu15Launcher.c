@@ -262,34 +262,36 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=47 -- after kva_active = TRUE, before pmap_bootstrap().
+  // checkpoint=61 -- right after arm_set_user_tbi(), before the table switch proper.
   //
-  //  58  reason 2   the body was entered
-  //  52  reason 2   init_ptpages() finished
-  //  46  reason 2   arm_set_user_tbi() was reached
-  //  49  reason 0   pmap_bootstrap() was not reached
+  //   58  reason 2   body entered
+  //   46  reason 2   before arm_set_user_tbi()
+  //   47  reason 0   after  kva_active = TRUE
   //
-  // Three statements are left, spread over 110 lines:
+  // Twelve lines and seven operations sit between 46 and 47:
   //
-  //   46 2147  before arm_set_user_tbi();
-  //   47 2159  after  kva_active = TRUE;              <- here
-  //   48 2255  before pmap_bootstrap(dynamic_memory_begin);
-  //   49 2257  after  pmap_bootstrap(...)             reason 0
+  //   46  arm_set_user_tbi();                          <- 46  reason 2
+  //   61  arm_vm_physmap_init(args);                   <- this
+  //   62  set_mmu_ttb_alternate(cpu_ttep & ...);
+  //   63  ml_enable_monitor();
+  //   64  set_mmu_ttb(invalid_ttep & ...);   installs the real tables
+  //       flush_mmu_tlb();
+  //       kva_active = TRUE;
+  //   47  cpu_tte = phystokv(cpu_ttep);                <- 47  reason 0
   //
-  //   reason 2 at 47   arm_set_user_tbi() and kva_active = TRUE both completed, so
-  //                    only pmap_bootstrap() and the 96 lines above it remain --
-  //                    that is where to look next (48 then narrows it)
-  //   reason 0 at 47   the fault is in those two statements, 12 lines apart:
-  //                    arm_set_user_tbi() writes TCR_EL1's TBI bits, and
-  //                    kva_active = TRUE flips the kernel to virtual addressing.
-  //                    A probe between them would separate the two.
+  // This is the transition off the bootstrap tables, so it deserves its own split.
   //
-  // arm_set_user_tbi() is worth a note before the result arrives. It sets Top Byte
-  // Ignore for the user address space, which on ARMv8.0 is an optional feature. If
-  // the TCR write asks for a configuration the core does not implement, the failure
-  // lands exactly here.
+  //   reason 2 at 61   arm_set_user_tbi() is fine and the fault is in the table
+  //                    setup or the switch itself; 62 / 63 / 64 say where
+  //   reason 0 at 61   arm_set_user_tbi() is the fault
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=47";
+  // The second outcome is the one to expect if this is the same class of problem as
+  // PAN. arm_set_user_tbi() writes TCR_EL1's TBI0/TBI1 bits -- Top Byte Ignore for
+  // the user address space, which is optional on ARMv8.0. Kryo 260 is A73/A53, so a
+  // configuration those cores do not implement would fault exactly here, twelve
+  // lines below the last probe that fires.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=61";
   //
   // DeviceTree must stay NULL here.
   //
