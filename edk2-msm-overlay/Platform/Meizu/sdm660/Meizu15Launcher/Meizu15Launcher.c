@@ -262,45 +262,35 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=52 -- after the first init_ptpages(), the middle of arm_vm_init.
+  // checkpoint=46 -- before arm_set_user_tbi(), past arm_vm_prot_init().
   //
-  // PAN is gone and the function finally runs:
+  // Progress after the PAN fix:
   //
-  //   58  reason 2   before gVirtBase = args->virtBase;        <- entered
-  //   49  reason 0   after pmap_bootstrap()                    <- still silent
+  //   58  reason 2   the function body was entered
+  //   52  reason 2   init_ptpages(cpu_tte, gVirtBase, ...) finished
+  //   49  reason 0   pmap_bootstrap() was not reached
   //
-  // The log is 192 bytes again, the two do_cacheid() lines, so the failure is a
-  // panic inside arm_vm_init() before kprintf comes up.
+  // So the page tables are built and the fault sits in the last stretch:
   //
-  // Probe order in the function:
-  //
-  //   58 1833  before gVirtBase = args->virtBase;          reason 2
-  //   59 1836  after  gPhysBase = args->physBase;
-  //   60 1851  before gPhysSize = mem_size = ...
-  //   54 1853  after  gPhysSize = ...
-  //   55 1868  before physmap_base = phystokv(...)
-  //   56 1877  after  physmap_base += physmap_slide
-  //   57 1915  before the dynamic_memory_begin range check
-  //   50 1916  before boot_tte = &bootstrap_pagetables
-  //   51 1976  before init_ptpages(cpu_tte, gVirtBase, ...)
-  //   52 1978  after  that init_ptpages()          <- here
-  //   53 2103  after  arm_vm_prot_init(args)
-  //   46 2147  before arm_set_user_tbi()
+  //   52 1978  after  init_ptpages(cpu_tte, gVirtBase, ...)   reason 2
+  //   53 2103  after  arm_vm_prot_init(args)                  <- the 125 lines after 52
+  //   46 2147  before arm_set_user_tbi()                      <- here
   //   47 2159  after  kva_active = TRUE
   //   48 2255  before pmap_bootstrap(dynamic_memory_begin)
-  //   49 2257  after  pmap_bootstrap(...)                   reason 0
+  //   49 2257  after  pmap_bootstrap(...)                     reason 0
   //
-  //   reason 2 at 52   the page-table setup finished; the fault is between 53 and 49
-  //                    (arm_vm_prot_init, arm_set_user_tbi, kva_active, pmap_bootstrap)
-  //   reason 0 at 52   the fault is in the page-table setup itself, between 58 and 52,
-  //                    and the next split is 55 or 50
+  //   reason 2 at 46   everything up to arm_set_user_tbi() is fine; the fault is in
+  //                    arm_set_user_tbi, kva_active = TRUE, or pmap_bootstrap
+  //   reason 0 at 46   the fault is in those 125 lines between 52 and 46 -- the
+  //                    arm_vm_prot_init block -- and 53 splits them
   //
-  // One likely candidate once 52 fires: alloc_ptpage()'s dynamic branch has no bound
-  // check -- map_static is forced FALSE because KERNEL_INTEGRITY_KTRR/CTRR are not
-  // defined for this SoC -- so nothing stops the allocation from walking past the
-  // region the loader reserved for it.
+  // Note what arm_vm_prot_init() does: it applies the final protections to the
+  // __TEXT_EXEC / __DATA_CONST segments using the tables init_ptpages just built.
+  // This SoC has no KERNEL_INTEGRITY_KTRR/CTRR, so the protection path is the one
+  // Apple does not exercise on real hardware, and the segment boundaries it uses
+  // come from the Mach-O rather than from a boot-monitor descriptor.
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=52";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=46";
   //
   // DeviceTree must stay NULL here.
   //
