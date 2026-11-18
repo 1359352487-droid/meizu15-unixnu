@@ -262,35 +262,34 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=46 -- before arm_set_user_tbi(), past arm_vm_prot_init().
+  // checkpoint=47 -- after kva_active = TRUE, before pmap_bootstrap().
   //
-  // Progress after the PAN fix:
+  //  58  reason 2   the body was entered
+  //  52  reason 2   init_ptpages() finished
+  //  46  reason 2   arm_set_user_tbi() was reached
+  //  49  reason 0   pmap_bootstrap() was not reached
   //
-  //   58  reason 2   the function body was entered
-  //   52  reason 2   init_ptpages(cpu_tte, gVirtBase, ...) finished
-  //   49  reason 0   pmap_bootstrap() was not reached
+  // Three statements are left, spread over 110 lines:
   //
-  // So the page tables are built and the fault sits in the last stretch:
+  //   46 2147  before arm_set_user_tbi();
+  //   47 2159  after  kva_active = TRUE;              <- here
+  //   48 2255  before pmap_bootstrap(dynamic_memory_begin);
+  //   49 2257  after  pmap_bootstrap(...)             reason 0
   //
-  //   52 1978  after  init_ptpages(cpu_tte, gVirtBase, ...)   reason 2
-  //   53 2103  after  arm_vm_prot_init(args)                  <- the 125 lines after 52
-  //   46 2147  before arm_set_user_tbi()                      <- here
-  //   47 2159  after  kva_active = TRUE
-  //   48 2255  before pmap_bootstrap(dynamic_memory_begin)
-  //   49 2257  after  pmap_bootstrap(...)                     reason 0
+  //   reason 2 at 47   arm_set_user_tbi() and kva_active = TRUE both completed, so
+  //                    only pmap_bootstrap() and the 96 lines above it remain --
+  //                    that is where to look next (48 then narrows it)
+  //   reason 0 at 47   the fault is in those two statements, 12 lines apart:
+  //                    arm_set_user_tbi() writes TCR_EL1's TBI bits, and
+  //                    kva_active = TRUE flips the kernel to virtual addressing.
+  //                    A probe between them would separate the two.
   //
-  //   reason 2 at 46   everything up to arm_set_user_tbi() is fine; the fault is in
-  //                    arm_set_user_tbi, kva_active = TRUE, or pmap_bootstrap
-  //   reason 0 at 46   the fault is in those 125 lines between 52 and 46 -- the
-  //                    arm_vm_prot_init block -- and 53 splits them
+  // arm_set_user_tbi() is worth a note before the result arrives. It sets Top Byte
+  // Ignore for the user address space, which on ARMv8.0 is an optional feature. If
+  // the TCR write asks for a configuration the core does not implement, the failure
+  // lands exactly here.
   //
-  // Note what arm_vm_prot_init() does: it applies the final protections to the
-  // __TEXT_EXEC / __DATA_CONST segments using the tables init_ptpages just built.
-  // This SoC has no KERNEL_INTEGRITY_KTRR/CTRR, so the protection path is the one
-  // Apple does not exercise on real hardware, and the segment boundaries it uses
-  // come from the Mach-O rather than from a boot-monitor descriptor.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=46";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=47";
   //
   // DeviceTree must stay NULL here.
   //
