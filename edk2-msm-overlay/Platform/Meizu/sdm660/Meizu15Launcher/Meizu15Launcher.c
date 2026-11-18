@@ -262,35 +262,42 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=66 -- after arm_vm_page_granular_RWNX(), before the second slide.
+  // checkpoint=67 -- after the second slide, the one that maps the rest of RAM.
   //
-  //   61  reason 2   after arm_set_user_tbi()
-  //   65  reason 2   after the first slide inside arm_vm_physmap_init
-  //   62  reason 0   arm_vm_physmap_init() never returned
+  //   65  reason 2   first slide done  (gVirtBase .. segLOWEST, a small span)
+  //   66  reason 2   RWNX remap done   (end_kern .. topOfKernelData, ~18 MB)
+  //   62  reason 0   function never returned
   //
-  // So the first slide -- the one that maps the region from gVirtBase up to
-  // segLOWEST through arm_vm_page_granular_prot() -- completed, page tables and all.
-  // What is left is two statements:
+  // One statement left before the probes would have proven the whole function:
   //
-  //   65  arm_vm_page_granular_RWNX(end_kern,
-  //           phystokv(args->topOfKernelData) - end_kern, ...);      <- this
   //   66  arm_vm_physmap_slide(temp_ptov_table,
   //           args->topOfKernelData - gPhysBase + gVirtBase,
-  //           real_avail_end - args->topOfKernelData, AP_RWNA, ...);
+  //           real_avail_end - args->topOfKernelData, AP_RWNA, ...);   <- this
   //   67  assert(...); qsort(...); memcpy(...);
   //   62  returned
   //
-  //   reason 2 at 66   the RWNX remap is fine; the second slide is the fault, and
-  //                    that one maps the whole rest of physical memory -- roughly
-  //                    752 MB here -- so alloc_ptpage() gets called thousands of
-  //                    times with no bound check on avail_start
-  //   reason 0 at 66   arm_vm_page_granular_RWNX(end_kern, ...) is the fault
+  //   reason 2 at 67   both slides and the remap worked; whatever is left is the
+  //                    assert, the qsort or the memcpy -- and the assert is the only
+  //                    one that can fail loudly:
+  //                       assert(va + len <= physmap_end)
+  //                    with physmap_end = physmap_base + real_phys_size
+  //                       + PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE   (8 GiB of slack)
+  //   reason 0 at 67   the second slide is the fault
   //
-  // Both outcomes are interesting for the same underlying reason. The first slide
-  // mapped only (segLOWEST - gVirtBase), a small span, so it consumed few page-table
-  // pages and would not expose an allocation runaway. A 752 MB span does.
+  // The numbers make the second outcome likely. This slide maps
+  // real_avail_end - topOfKernelData, about 752 MB, where the first two mapped a
+  // few MB each. arm_vm_physmap_slide -> arm_vm_page_granular_prot -> alloc_ptpage,
+  // and alloc_ptpage's dynamic branch has no bound check:
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=66";
+  //     vaddr = phystokv(avail_start);
+  //     avail_start += ARM_PGBYTES;
+  //
+  // map_static is forced FALSE on this SoC (no KERNEL_INTEGRITY_KTRR/CTRR), so every
+  // allocation walks avail_start upward with nothing to stop it. A 752 MB mapping
+  // that falls back to 4 KiB pages instead of 2 MB blocks would need thousands of
+  // table pages -- and would run off the end long before finishing.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=67";
   //
   // DeviceTree must stay NULL here.
   //
