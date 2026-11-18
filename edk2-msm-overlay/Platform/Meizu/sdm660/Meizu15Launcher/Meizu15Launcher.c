@@ -262,39 +262,40 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=62 -- right after arm_vm_physmap_init().
+  // checkpoint=65 -- inside arm_vm_physmap_init, after its first slide.
   //
-  //  58  reason 2   body entered
-  //  61  reason 2   after arm_set_user_tbi()
-  //  64  reason 0   after set_mmu_ttb(invalid_ttep ...)
-  //  47  reason 0   after kva_active = TRUE
+  //   58  reason 2   body entered
+  //   61  reason 2   after arm_set_user_tbi()
+  //   62  reason 0   arm_vm_physmap_init() never returned
   //
-  // Four operations live between 61 and 64:
+  // That made the function itself the suspect, and it is static with no symbol, so
+  // the only way in is probes. Its #else branch is the one that compiles here:
+  // BCM2837 defines no XNU_MONITOR, so this is two slides, not the monitor branch's
+  // nine -- and nine would have overrun PTOV_TABLE_SIZE (8) and panicked silently,
+  // which is worth knowing it is not.
   //
-  //   61  arm_vm_physmap_init(args);                    <- builds the kernel tables
-  //   62  set_mmu_ttb_alternate(cpu_ttep & ...);        <- this
-  //   63  ml_enable_monitor();
-  //   64  set_mmu_ttb(invalid_ttep & ...);              <- TTBR points at them
-  //       flush_mmu_tlb();
+  //   65  arm_vm_physmap_slide(temp_ptov_table, gVirtBase,
+  //           segLOWEST - gVirtBase, AP_RWNA, ALLOW_BLOCK | ALLOW_HINT);
+  //   66  arm_vm_page_granular_RWNX(end_kern,
+  //           phystokv(args->topOfKernelData) - end_kern, ...);
+  //   67  arm_vm_physmap_slide(temp_ptov_table,
+  //           args->topOfKernelData - gPhysBase + gVirtBase,
+  //           real_avail_end - args->topOfKernelData, AP_RWNA, ...);
+  //       assert(temp_ptov_table[ptov_index-1].va + .len <= physmap_end);
+  //       qsort(...);  memcpy(ptov_table, temp_ptov_table, ...);
+  //   62  returned
   //
-  //   reason 2 at 62   arm_vm_physmap_init() completed; the fault is in the three
-  //                    operations after it, and 63 splits those
-  //   reason 0 at 62   arm_vm_physmap_init() is where it dies
+  //   reason 2 at 65   the first slide completed; 66 and 67 go further
+  //   reason 0 at 65   the first slide is where it dies -- that is
+  //                    arm_vm_page_granular_prot() walking the page tables and
+  //                    calling alloc_ptpage(), whose dynamic branch has no bound
+  //                    check at all:
+  //                        vaddr = phystokv(avail_start);
+  //                        avail_start += ARM_PGBYTES;
+  //                    with map_static forced FALSE (no KERNEL_INTEGRITY_KTRR/CTRR),
+  //                    nothing stops avail_start from walking past its region.
   //
-  // arm_vm_physmap_init() is the function that maps the kernel image, the physmap
-  // window and the device tree into the tables that set_mmu_ttb() is about to
-  // install. Its inputs are physmap_base / physmap_end / dynamic_memory_begin, all
-  // derived from boot_args at the top of this function. On Apple hardware those are
-  // cross-checked against a boot-monitor memory descriptor; here they come only from
-  // what the loader computed. A wrong value shows up as mappings that are built
-  // without error but do not cover the code that runs next.
-  //
-  // Note also that ml_enable_monitor() sits between 63 and 64. It is the call that
-  // was guarded behind #if XNU_MONITOR earlier, and on a non-Apple SoC entering the
-  // monitor is not something the hardware was designed for -- if 63 fires and 64 does
-  // not, that call is the first thing to look at.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=62";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=65";
   //
   // DeviceTree must stay NULL here.
   //

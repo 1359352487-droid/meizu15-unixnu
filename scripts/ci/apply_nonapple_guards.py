@@ -61,6 +61,14 @@ VM_PROBES = [
     # arm_vm_physmap_init() builds the real tables, set_mmu_ttb() installs them and
     # kva_active flips the kernel onto them. Probes 46 and 47 are 12 lines apart and
     # the fault is in between, so this stretch needs its own split.
+    # Inside arm_vm_physmap_init(), the three statements that do the mapping. This
+    # function is static and has no symbol, so probes are the only way in. Its
+    # #else branch is the one that compiles here: BCM2837 does not define
+    # XNU_MONITOR, so it makes two slide calls rather than the monitor branch's
+    # nine -- which would overrun PTOV_TABLE_SIZE (8) and panic quietly.
+    ("arm_vm_page_granular_RWNX(end_kern, phystokv(args->topOfKernelData) - end_kern,", "before", 65),
+    ("/* Device Tree (if not locked down), RAM Disk (if present), bootArgs */", "after", 66),
+    ("real_avail_end - args->topOfKernelData, AP_RWNA, ARM64_GRANULE_ALLOW_BLOCK", "after", 67),
     ("arm_set_user_tbi();", "after", 61),
     ("arm_vm_physmap_init(args);", "after", 62),
     ("set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);", "after", 63),
@@ -71,7 +79,7 @@ VM_PROBES = [
     ("pmap_bootstrap(dynamic_memory_begin);", "after", 49),
 ]
 
-EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64)
+EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67)
 
 
 def find(root, suffix):
