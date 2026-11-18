@@ -262,40 +262,35 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=65 -- inside arm_vm_physmap_init, after its first slide.
+  // checkpoint=66 -- after arm_vm_page_granular_RWNX(), before the second slide.
   //
-  //   58  reason 2   body entered
   //   61  reason 2   after arm_set_user_tbi()
+  //   65  reason 2   after the first slide inside arm_vm_physmap_init
   //   62  reason 0   arm_vm_physmap_init() never returned
   //
-  // That made the function itself the suspect, and it is static with no symbol, so
-  // the only way in is probes. Its #else branch is the one that compiles here:
-  // BCM2837 defines no XNU_MONITOR, so this is two slides, not the monitor branch's
-  // nine -- and nine would have overrun PTOV_TABLE_SIZE (8) and panicked silently,
-  // which is worth knowing it is not.
+  // So the first slide -- the one that maps the region from gVirtBase up to
+  // segLOWEST through arm_vm_page_granular_prot() -- completed, page tables and all.
+  // What is left is two statements:
   //
-  //   65  arm_vm_physmap_slide(temp_ptov_table, gVirtBase,
-  //           segLOWEST - gVirtBase, AP_RWNA, ALLOW_BLOCK | ALLOW_HINT);
-  //   66  arm_vm_page_granular_RWNX(end_kern,
-  //           phystokv(args->topOfKernelData) - end_kern, ...);
-  //   67  arm_vm_physmap_slide(temp_ptov_table,
+  //   65  arm_vm_page_granular_RWNX(end_kern,
+  //           phystokv(args->topOfKernelData) - end_kern, ...);      <- this
+  //   66  arm_vm_physmap_slide(temp_ptov_table,
   //           args->topOfKernelData - gPhysBase + gVirtBase,
   //           real_avail_end - args->topOfKernelData, AP_RWNA, ...);
-  //       assert(temp_ptov_table[ptov_index-1].va + .len <= physmap_end);
-  //       qsort(...);  memcpy(ptov_table, temp_ptov_table, ...);
+  //   67  assert(...); qsort(...); memcpy(...);
   //   62  returned
   //
-  //   reason 2 at 65   the first slide completed; 66 and 67 go further
-  //   reason 0 at 65   the first slide is where it dies -- that is
-  //                    arm_vm_page_granular_prot() walking the page tables and
-  //                    calling alloc_ptpage(), whose dynamic branch has no bound
-  //                    check at all:
-  //                        vaddr = phystokv(avail_start);
-  //                        avail_start += ARM_PGBYTES;
-  //                    with map_static forced FALSE (no KERNEL_INTEGRITY_KTRR/CTRR),
-  //                    nothing stops avail_start from walking past its region.
+  //   reason 2 at 66   the RWNX remap is fine; the second slide is the fault, and
+  //                    that one maps the whole rest of physical memory -- roughly
+  //                    752 MB here -- so alloc_ptpage() gets called thousands of
+  //                    times with no bound check on avail_start
+  //   reason 0 at 66   arm_vm_page_granular_RWNX(end_kern, ...) is the fault
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=65";
+  // Both outcomes are interesting for the same underlying reason. The first slide
+  // mapped only (segLOWEST - gVirtBase), a small span, so it consumed few page-table
+  // pages and would not expose an allocation runaway. A 752 MB span does.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=66";
   //
   // DeviceTree must stay NULL here.
   //
