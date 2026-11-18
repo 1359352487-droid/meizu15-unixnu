@@ -262,33 +262,44 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=69 -- inside arm_vm_page_granular_prot, just before the block loop.
+  // checkpoint=70 -- after the block loop in arm_vm_page_granular_prot.
   //
-  //   67  reason 0   the 752 MB slide never finished
-  //   68  reason 2   arm_vm_page_granular_prot() was entered
+  //   68  reason 2   routine entered
+  //   69  reason 2   the leading pages mapped, block loop about to start
+  //   67  reason 0   the 752 MB slide never returned
   //
-  // Between entry and the block loop there is one call:
+  // So it is the loop:
   //
-  //   68  entry
-  //       vm_offset_t _end = start + size;
-  //       vm_offset_t align_start = (start + ARM_TT_L2_OFFMASK) & ~ARM_TT_L2_OFFMASK;
-  //       if (align_start > _end) align_start = _end;
-  //       arm_vm_page_granular_helper(start, align_start, start, pa_offset, ...);
-  //   69  before the block loop                                   <- this
-  //       while (_end - align_start >= ARM_TT_L2_SIZE) { ... }
-  //   70  after the loop
+  //   while (_end - align_start >= ARM_TT_L2_SIZE) {
+  //       pmap_paddr_t pa = align_start - gVirtBase + gPhysBase - pa_offset;
+  //       assert((pa & ARM_TT_L2_OFFMASK) == 0);
+  //       tte2 = arm_kva_to_tte(align_start);
+  //       if ((pa >= gPhysBase) && (pa < real_avail_end)) {
+  //           ...build a block tte and store it...
+  //       }
+  //       align_start += ARM_TT_L2_SIZE;
+  //   }
+  //   70  after the loop                                       <- this
   //
-  //   reason 2 at 69   the leading partial block mapped fine and the fault is in the
-  //                    block loop itself -- the assert on pa's 2 MB alignment,
-  //                    arm_kva_to_tte, or the pa range check
-  //   reason 0 at 69   the fault is in that first arm_vm_page_granular_helper call,
-  //                    which maps the unaligned head of the range one page at a time
+  //   reason 2 at 70   every 2 MB block went in; the fault is in what follows --
+  //                    the trailing helper call or the deferred-tte flush
+  //   reason 0 at 70   the loop is the fault
   //
-  // For a 752 MB span the second outcome would mean the failure is not about scale
-  // at all: the head of the range is handled by the same page-at-a-time path that
-  // the first two slides used successfully on their own heads.
+  // If it is the loop, the assert is the first suspect and the arithmetic is why:
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=69";
+  //   pa = align_start - gVirtBase + gPhysBase - pa_offset
+  //
+  // align_start is 2 MB aligned by construction. gVirtBase ends in 0x4000 and so
+  // does gPhysBase, so those two cancel. That leaves pa_offset, which is
+  // temp_ptov_table[i].va - orig_va, i.e. whatever offset the previous slides left
+  // behind. For the assert to hold, pa_offset has to be 2 MB aligned too. Nothing
+  // in arm_vm_physmap_slide guarantees that -- it aligns to ARM_TT_TWIG_OFFMASK,
+  // which is the 1 GB twig, not the 2 MB block.
+  //
+  // A 752 MB range is the first case large enough to enter this loop many times; the
+  // earlier slides covered only a few MB and never got here.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=70";
   //
   // DeviceTree must stay NULL here.
   //
