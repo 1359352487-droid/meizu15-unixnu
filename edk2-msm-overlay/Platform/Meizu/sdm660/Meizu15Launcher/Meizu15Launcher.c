@@ -262,44 +262,33 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=68 -- inside arm_vm_page_granular_prot, at its entry.
+  // checkpoint=69 -- inside arm_vm_page_granular_prot, just before the block loop.
   //
-  //   66  reason 2   RWNX remap done
-  //   67  reason 0   the second slide, ~752 MB, never finished
+  //   67  reason 0   the 752 MB slide never finished
+  //   68  reason 2   arm_vm_page_granular_prot() was entered
   //
-  // So the fault is inside the mapping routine the second slide calls. Its block
-  // loop is the part that only a large span exercises:
+  // Between entry and the block loop there is one call:
   //
-  //   68  entry                                   <- this
-  //   69  before the block loop
-  //       while (_end - align_start >= ARM_TT_L2_SIZE) {
-  //           pmap_paddr_t pa = align_start - gVirtBase + gPhysBase - pa_offset;
-  //           assert((pa & ARM_TT_L2_OFFMASK) == 0);
-  //           tte2 = arm_kva_to_tte(align_start);
-  //           if ((pa >= gPhysBase) && (pa < real_avail_end)) { ...block tte... }
-  //           align_start += ARM_TT_L2_SIZE;
-  //       }
-  //   70  after the block loop
+  //   68  entry
+  //       vm_offset_t _end = start + size;
+  //       vm_offset_t align_start = (start + ARM_TT_L2_OFFMASK) & ~ARM_TT_L2_OFFMASK;
+  //       if (align_start > _end) align_start = _end;
+  //       arm_vm_page_granular_helper(start, align_start, start, pa_offset, ...);
+  //   69  before the block loop                                   <- this
+  //       while (_end - align_start >= ARM_TT_L2_SIZE) { ... }
+  //   70  after the loop
   //
-  //   reason 2 at 68   the routine was entered; 69 and 70 place the fault inside or
-  //                    after the loop
-  //   reason 0 at 68   it did not even reach this point, which would put the fault
-  //                    in the earlier helper the slide calls first
+  //   reason 2 at 69   the leading partial block mapped fine and the fault is in the
+  //                    block loop itself -- the assert on pa's 2 MB alignment,
+  //                    arm_kva_to_tte, or the pa range check
+  //   reason 0 at 69   the fault is in that first arm_vm_page_granular_helper call,
+  //                    which maps the unaligned head of the range one page at a time
   //
-  // Three things in that loop can kill it, and they are distinguishable by which
-  // probes fire:
+  // For a 752 MB span the second outcome would mean the failure is not about scale
+  // at all: the head of the range is handled by the same page-at-a-time path that
+  // the first two slides used successfully on their own heads.
   //
-  //   the assert   pa must be 2 MB aligned. pa is derived from align_start (aligned),
-  //                gVirtBase, gPhysBase and pa_offset. pa_offset comes from
-  //                temp_ptov_table[i].va - orig_va, so a physmap base that is not
-  //                block-aligned with the physical base shows up exactly here.
-  //   arm_kva_to_tte   returns the table entry for a virtual address. If the L1/L2
-  //                tables for this part of the physmap were never built, it has
-  //                nothing valid to write.
-  //   the pa range check   if pa falls outside [gPhysBase, real_avail_end) the entry
-  //                is silently skipped, which leaves a hole rather than failing.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=68";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=69";
   //
   // DeviceTree must stay NULL here.
   //
