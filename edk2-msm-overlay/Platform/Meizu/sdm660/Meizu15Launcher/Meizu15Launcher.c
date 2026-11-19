@@ -262,40 +262,34 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=113 -- did the second slide's orig_va actually miss alignment?
+  // checkpoint=89 -- with the orig_va assert removed, does the slide keep going?
   //
-  //   83  reason 2   entered arm_vm_physmap_slide's body
-  //   85  reason 0   the assert just below it did not pass
-  //   87  reason 0
-  //   89  reason 0
+  //   113  reason 2   the probe that replaced the assert fired, so orig_va's low bits
+  //                   are non-zero on the second call
+  //   83   reason 2   the body was entered
+  //   87/89/85       all silent, but those runs still had the assert in place
   //
-  // 85 sits immediately after:
-  //     assert((orig_va & ARM_PGMASK) == 0);
-  // so its silence says that assert failed. But the arithmetic says it should not:
-  // orig_va is args->topOfKernelData - gPhysBase + gVirtBase, where topOfKernelData
-  // comes out of ALIGN_VALUE(..., SIZE_16KB) and gPhysBase and gVirtBase both end in
-  // 0x4000, cancelling.
+  // The arithmetic and the measurement disagree, and every input I can derive says
+  // the value should be aligned:
   //
-  // So the assert has been replaced by a probe that reports the fact instead of
-  // asserting it:
+  //   Args->VirtualBase = Kernel.Base        0xFFFFFFF007004000   (0x4000 low)
+  //   Args->PhysicalBase = Address           aligned to SIZE_2MB + (Kernel.Base & 0x1FFFFF)
+  //   Args->TopOfKernelData = Address + Used, Used from ALIGN_VALUE(..., SIZE_16KB)
   //
-  //   if ((orig_va & ARM_PGMASK) != 0) {
-  //       loader_checkpoint(112 + ptov_index);
-  //   }
-  //   loader_checkpoint(84 + ptov_index);
+  // so topOfKernelData - gPhysBase + gVirtBase should cancel those 0x4000s. It does
+  // not, per probe 113. Rather than keep deriving, this build simply drops the assert
+  // and asks the more useful question: does the mapping work anyway?
   //
-  //   reason 2 at 113   orig_va really is misaligned on the second call, so the value
-  //                     coming out of boot_args is not what the arithmetic predicts;
-  //                     the next step is to read topOfKernelData rather than derive it
-  //   reason 0 at 113   orig_va is aligned after all and the assert was failing for
-  //                     some other reason -- then 89 decides whether removing it let
-  //                     the slide continue
+  //   reason 2 at 89   the slide ran past len and reached the granular_prot call --
+  //                    the alignment assert was stricter than this port needs, and
+  //                    the fix is to keep it removed (or relax it to ARM_PGBYTES)
+  //   reason 0 at 89   something else in those eleven lines fails too, and the assert
+  //                    was only the first of two problems
   //
-  // The assert is gone in this build, so the slide is free to run past this point.
-  // That is deliberate: if 89 now fires, the alignment assert was the only obstacle
-  // and the mapping itself is fine.
+  // That distinction decides whether this is a one-line port change or a real bug in
+  // how the physmap offsets come out.
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=113";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=89";
   //
   // DeviceTree must stay NULL here.
   //
