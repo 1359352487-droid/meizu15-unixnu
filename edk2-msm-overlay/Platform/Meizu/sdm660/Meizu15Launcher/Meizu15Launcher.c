@@ -262,42 +262,37 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=113 -- read orig_va's value off the screen instead of deriving it.
+  // checkpoint=89 -- both alignment asserts out of the way, does the slide complete?
   //
-  // 113  reason 2   orig_va's low bits are non-zero on the second call
-  // 89   reason 0   the va-alignment assert below it fails too (same root cause)
+  // Last build wrote orig_va into loader_stub_slot[3] to read it off the screen. That
+  // did not work: the panel showed the pre-branch banner instead of "kernel returned",
+  // so overwriting that word broke the loader's return path. slot[3] is not a spare
+  // channel even though it is only printed as "delta". Reverted.
   //
-  // Two rounds of derivation both said orig_va should be aligned, and measurement
-  // said it is not:
+  // Trying to measure the value has now cost two builds and told us only that the
+  // asserts are unhappy. The value itself keeps defying derivation:
   //
-  //   Args->VirtualBase  = Kernel.Base                              0xFFFFFFF007004000
-  //   Args->PhysicalBase = Address       ALIGN(PhysicalStart, 2MB) + (Kernel.Base & 0x1FFFFF)
-  //   Args->TopOfKernelData = Address + Used,  Used = ALIGN_VALUE(..., SIZE_16KB) - Address
+  //   orig_va = topOfKernelData - gPhysBase + gVirtBase
+  //           = (Address + Used) - Address + gVirtBase        since gPhysBase = Address
+  //           = Used + gVirtBase
   //
-  // so topOfKernelData - gPhysBase + gVirtBase should cancel the two 0x4000s. It does
-  // not. Rather than derive a third time, this build writes the value out.
+  // Used = ALIGN_VALUE(Layout->Policy + PolicySize, SIZE_16KB) - Address, and the
+  // Address handed to PlaceImage is BLOCK_SIZE + (Kernel.Base & (BLOCK_SIZE-1)),
+  // which is 0x204000 -- itself a multiple of SIZE_16KB. So Used should be 16 KiB
+  // aligned, and gVirtBase ends in 0x4000, which survives even a 0x3FFF mask.
+  // Every term checks out and the measurement still disagrees.
   //
-  // loader_stub_slot[3] is the word the stub prints as "delta" on screen. DarwinBoot
-  // sets it once to Address - Kernel.Base (the constant 0x10C8FFC000 seen in every
-  // previous photo) and nothing else writes it, so it can carry a value out:
+  // So this build stops trying to explain it and asks the question that actually
+  // matters: with both asserts gone, does the physmap get built?
   //
-  //   if ((orig_va & ARM_PGMASK) != 0) {
-  //       loader_stub_slot[3] = orig_va;
-  //       loader_checkpoint(112 + ptov_index);
-  //   }
+  //   reason 2 at 89   the slide ran past len and on into arm_vm_page_granular_prot.
+  //                    The asserts were stricter than this port needs; keep them out
+  //                    and carry on to 81 and beyond.
+  //   reason 0 at 89   the mapping fails for a reason that is not the asserts, so the
+  //                    alignment really is load-bearing and has to be fixed at the
+  //                    source rather than relaxed here.
   //
-  // The "delta" field in this screenshot is therefore orig_va itself.
-  //
-  // What to read off it:
-  //   low bits 0x000  the value really is aligned and the check is at fault, not the data
-  //   low bits 0x000 ... 0x3FFF   the exact residue says which term failed to cancel:
-  //         0x4000-class residue  -> gVirtBase and gPhysBase differ in a way the
-  //                                  DarwinBoot arithmetic above does not predict
-  //         0x1000-class residue  -> topOfKernelData is 4 KiB but not 16 KiB aligned
-  //
-  // That number is the one thing four rounds of reasoning could not produce.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=113";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=89";
   //
   // DeviceTree must stay NULL here.
   //

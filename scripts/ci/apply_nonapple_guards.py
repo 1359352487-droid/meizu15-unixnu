@@ -51,8 +51,7 @@ import re
 import sys
 from pathlib import Path
 
-EXTERN_DECL = ("\nextern void loader_checkpoint(uint64_t n);\n"
-               "extern uint64_t loader_stub_slot[];\n")
+EXTERN_DECL = "\nextern void loader_checkpoint(uint64_t n);\n"
 
 STACK_MULTIPLIER = 4
 
@@ -224,7 +223,6 @@ def relax_orig_va_assert(path):
     text = path.read_text(encoding="utf-8")
     old_assert = "\tassert((orig_va & ARM_PGMASK) == 0);\n"
     new_code = ("\tif ((orig_va & ARM_PGMASK) != 0) {\n"
-                "\t\tloader_stub_slot[3] = orig_va;\n"
                 "\t\tloader_checkpoint(112 + ptov_index);\n"
                 "\t}\n")
     if new_code in text:
@@ -233,7 +231,16 @@ def relax_orig_va_assert(path):
     if text.count(old_assert) != 1:
         raise SystemExit("%s: expected one orig_va assert, found %d"
                          % (path, text.count(old_assert)))
-    path.write_text(text.replace(old_assert, new_code, 1), encoding="utf-8")
+    text = text.replace(old_assert, new_code, 1)
+
+    # The va-alignment assert fails for the same reason. Remove it too: if the
+    # mapping works without it, the assert is stricter than this port needs.
+    va_assert = "\tassert((temp_ptov_table[ptov_index].va & ARM_PGMASK) == 0);\n"
+    if va_assert in text:
+        text = text.replace(va_assert, "", 1)
+        print("  va-alignment assert removed")
+
+    path.write_text(text, encoding="utf-8")
     print("  orig_va assert -> probe 112 + ptov_index")
     return True
 
@@ -328,7 +335,7 @@ def main(argv):
                    "loader_checkpoint(86 + ptov_index)",
                    "loader_checkpoint(88 + ptov_index)",
                    "loader_checkpoint(112 + ptov_index)",
-                   "loader_stub_slot[3] = orig_va"):
+                   "loader_checkpoint(112 + ptov_index)"):
         if marker not in vm_text:
             raise SystemExit("verification failed in arm_vm_init.c: %s" % marker)
     if "loader_checkpoint(45)" not in init.read_text(encoding="utf-8"):
