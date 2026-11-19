@@ -262,44 +262,44 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=81 -- the second slide, entering arm_vm_page_granular_prot.
+  // checkpoint=83 -- the second slide, at the top of arm_vm_physmap_slide's body.
   //
-  //   65  reason 2   first slide done
-  //   66  reason 2   RWNX remap done
-  //   67  reason 0   second slide never finished
-  //   68..71         fire, but they cannot tell which call reached them
+  //   66  reason 2   RWNX remap done, so the next statement (the second slide) ran
+  //   67  reason 0   the second slide never returned
+  //   81  reason 0   it never reached the arm_vm_page_granular_prot call either
   //
-  // That last point is the one that matters. Probes 68-71 live inside
-  // arm_vm_page_granular_prot(), and arm_vm_physmap_init() calls it three times:
+  // 81 is what changed the picture. The slide was not failing deep inside the page
+  // mapping -- it was failing before it got there, in eleven lines of arithmetic:
   //
-  //   1. first slide   gVirtBase .. segLOWEST          small   pc 65 passed
-  //   2. RWNX remap    end_kern .. topOfKernelData     ~18 MB  pc 66 passed
-  //   3. second slide  topOfKernelData .. real_avail_end ~752 MB  pc 67 failed
+  //   82  if (ptov_index >= PTOV_TABLE_SIZE) panic(...)      <- 83 for the 2nd call
+  //   84  assert((orig_va & ARM_PGMASK) == 0);
+  //       temp_ptov_table[i].pa = orig_va - gVirtBase + gPhysBase;
+  //       va = (i == 0) ? physmap_base : temp[i-1].va + temp[i-1].len;
+  //       if (granule & ALLOW_BLOCK) {
+  //           orig_offset = pa  & ARM_TT_TWIG_OFFMASK;
+  //           new_offset  = va  & ARM_TT_TWIG_OFFMASK;
+  //           if (new_offset < orig_offset)      va += orig_offset - new_offset;
+  //           else if (new_offset > orig_offset) va = ROUND_TWIG(va) + orig_offset;
+  //       }
+  //   86  assert((va & ARM_PGMASK) == 0);
+  //   88  temp[i].len = round_page(len);
+  //   80  arm_vm_page_granular_prot(...)                    <- 81, never reached
   //
-  // A fixed probe number fires on whichever call gets there first. 68, 69 and 70
-  // firing therefore only proves that *some* call reached the block loop -- most
-  // likely the two small ones that already demonstrably succeeded. It says nothing
-  // about the third.
+  // Each of those probes is numbered by ptov_index as well, so 83 means the second
+  // call and 82 would mean the first.
   //
-  // So the probe in front of the call is indexed instead:
+  //   reason 2 at 83   the second call entered the body; 85 / 87 / 89 place the fault
+  //                    on the PTOV check, the orig_va assert, the alignment assert,
+  //                    or round_page(len)
+  //   reason 0 at 83   the second call never entered the body at all -- which would
+  //                    mean the call at the arm_vm_physmap_init level did not happen
+  //                    even though probe 66 fired just above it
   //
-  //   pa_offset = temp_ptov_table[ptov_index].va - orig_va;
-  //   loader_checkpoint(80 + ptov_index);        <- 80 first slide, 81 second
-  //   arm_vm_page_granular_prot(temp_ptov_table[ptov_index].va, ...);
-  //   ++ptov_index;
+  // The value worth watching is len = real_avail_end - topOfKernelData. The first two
+  // slides passed through this same code with a few MB and 18 MB; the third is the
+  // only one that carries a ~752 MB length in.
   //
-  //   reason 2 at 81   the second slide got as far as calling the mapping routine;
-  //                    its fault is inside, and the next split is entry vs loop vs
-  //                    deferred flush, again indexed by ptov_index
-  //   reason 0 at 81   the second slide never reached the call -- it dies in the
-  //                    arithmetic above it: round_page(len), the ARM_PGMASK assert,
-  //                    the ARM_TT_TWIG_OFFMASK adjustment, or pa_offset itself
-  //
-  // The second outcome would be genuinely new information. probes 65 and 66 already
-  // showed the same arithmetic works for a few MB and for 18 MB; the only input that
-  // differs for the third call is len -- real_avail_end - topOfKernelData.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=81";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=83";
   //
   // DeviceTree must stay NULL here.
   //

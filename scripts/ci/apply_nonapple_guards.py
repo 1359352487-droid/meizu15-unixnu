@@ -163,6 +163,48 @@ def add_extern(path):
     return True
 
 
+# (line substring, "before"|"after", base number). The probe is emitted as
+# loader_checkpoint(base + ptov_index), so it names the call it fired on.
+SLIDE_INDEXED = [
+    ("if (__improbable(ptov_index >= PTOV_TABLE_SIZE)) {", "before", 82),
+    ("assert((orig_va & ARM_PGMASK) == 0);", "after", 84),
+    ("assert((temp_ptov_table[ptov_index].va & ARM_PGMASK) == 0);", "after", 86),
+    ("temp_ptov_table[ptov_index].len = round_page(len);", "after", 88),
+]
+
+
+def add_slide_indexed_probes(path):
+    """Probes inside arm_vm_physmap_slide, numbered by ptov_index.
+
+    Checkpoint 81 showed the second slide never reached arm_vm_page_granular_prot,
+    so the fault is in the arithmetic above the call -- and that arithmetic runs
+    once per slide, which a fixed probe number cannot distinguish.
+    """
+    text = path.read_text(encoding="utf-8")
+    changed = 0
+    out = []
+    for line in text.split("\n"):
+        before, after = [], []
+        for needle, position, base in SLIDE_INDEXED:
+            if needle not in line:
+                continue
+            if "loader_checkpoint(%d + ptov_index)" % base in text:
+                continue
+            (before if position == "before" else after).append(base)
+        for base in before:
+            out.append("\tloader_checkpoint(%d + ptov_index);" % base)
+            print("  added indexed probe %d + ptov_index" % base)
+            changed += 1
+        out.append(line)
+        for base in after:
+            out.append("\tloader_checkpoint(%d + ptov_index);" % base)
+            print("  added indexed probe %d + ptov_index" % base)
+            changed += 1
+    if changed:
+        path.write_text("\n".join(out), encoding="utf-8")
+    return changed
+
+
 def add_indexed_probe(path):
     """loader_checkpoint(80 + ptov_index) in front of the granular_prot call."""
     text = path.read_text(encoding="utf-8")
@@ -237,6 +279,7 @@ def main(argv):
     changed += guard_monitor(vm)
     changed += add_extern(vm)
     changed += add_indexed_probe(vm)
+    changed += add_slide_indexed_probes(vm)
     changed += add_vm_probes(vm)
     changed += add_arm_init_probe(init)
 
@@ -245,7 +288,11 @@ def main(argv):
     if missing:
         raise SystemExit("verification failed: probes missing %s" % missing)
     for marker in ("extern void loader_checkpoint", "#if XNU_MONITOR",
-                   "loader_checkpoint(80 + ptov_index)"):
+                   "loader_checkpoint(80 + ptov_index)",
+                   "loader_checkpoint(82 + ptov_index)",
+                   "loader_checkpoint(84 + ptov_index)",
+                   "loader_checkpoint(86 + ptov_index)",
+                   "loader_checkpoint(88 + ptov_index)"):
         if marker not in vm_text:
             raise SystemExit("verification failed in arm_vm_init.c: %s" % marker)
     if "loader_checkpoint(45)" not in init.read_text(encoding="utf-8"):
