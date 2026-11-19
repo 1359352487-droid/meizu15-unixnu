@@ -51,7 +51,8 @@ import re
 import sys
 from pathlib import Path
 
-EXTERN_DECL = "\nextern void loader_checkpoint(uint64_t n);\n"
+EXTERN_DECL = ("\nextern void loader_checkpoint(uint64_t n);\n"
+               "extern uint64_t loader_stub_slot[];\n")
 
 STACK_MULTIPLIER = 4
 
@@ -223,6 +224,7 @@ def relax_orig_va_assert(path):
     text = path.read_text(encoding="utf-8")
     old_assert = "\tassert((orig_va & ARM_PGMASK) == 0);\n"
     new_code = ("\tif ((orig_va & ARM_PGMASK) != 0) {\n"
+                "\t\tloader_stub_slot[3] = orig_va;\n"
                 "\t\tloader_checkpoint(112 + ptov_index);\n"
                 "\t}\n")
     if new_code in text:
@@ -325,7 +327,8 @@ def main(argv):
                    "loader_checkpoint(84 + ptov_index)",
                    "loader_checkpoint(86 + ptov_index)",
                    "loader_checkpoint(88 + ptov_index)",
-                   "loader_checkpoint(112 + ptov_index)"):
+                   "loader_checkpoint(112 + ptov_index)",
+                   "loader_stub_slot[3] = orig_va"):
         if marker not in vm_text:
             raise SystemExit("verification failed in arm_vm_init.c: %s" % marker)
     if "loader_checkpoint(45)" not in init.read_text(encoding="utf-8"):
