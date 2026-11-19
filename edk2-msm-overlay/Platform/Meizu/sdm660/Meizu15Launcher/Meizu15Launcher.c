@@ -262,40 +262,33 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=87 -- the second slide, after the va-alignment assert.
+  // checkpoint=85 -- the second slide, right after the orig_va assert.
   //
-  //   83  reason 2   entered arm_vm_physmap_slide's body
-  //   89  reason 0   never reached the line that computes len
-  //   81  reason 0   never reached the granular_prot call
+  //   83  reason 2   entered the body
+  //   87  reason 0   never reached the va-alignment assert
+  //   89  reason 0
   //
-  // Three steps remain between 83 and 89:
+  // Two steps, one probe apart:
   //
-  //   85  assert((orig_va & ARM_PGMASK) == 0);      orig_va from boot_args
+  //   85  assert((orig_va & ARM_PGMASK) == 0);      <- this fires or it does not
   //       temp[i].pa = orig_va - gVirtBase + gPhysBase;
   //       va = temp[i-1].va + temp[i-1].len;
-  //       if (granule & ALLOW_BLOCK) { ...rewrite va from pa's twig offset... }
-  //   87  assert((va & ARM_PGMASK) == 0);           va rebuilt, not from boot_args
-  //   89  temp[i].len = round_page(len);
+  //       if (granule & ALLOW_BLOCK) { ...twig adjustment... }
+  //   87  assert((va & ARM_PGMASK) == 0);
   //
-  //   reason 2 at 87   both asserts held, so the fault is in round_page(len)
-  //   reason 0 at 87   an assert above failed -- 85 or 86 tells which
+  //   reason 2 at 85   the orig_va assert held; the va assert below it is the one
+  //                    that fails, so the twig adjustment produced an unaligned va
+  //   reason 0 at 85   the orig_va assert itself fails, which would mean
+  //                    args->topOfKernelData - gPhysBase + gVirtBase is not page
+  //                    aligned -- surprising, because the first slide passed the same
+  //                    check with the same gVirtBase and gPhysBase
   //
-  // The two asserts are not equivalent. Assert 85 tests a value derived directly
-  // from boot_args (topOfKernelData - gPhysBase + gVirtBase), page-aligned by
-  // construction, and the first slide already passed the identical check. Assert 87
-  // tests a value rebuilt as temp[i-1].va + temp[i-1].len and then possibly rewritten
-  // by the twig-offset adjustment. That adjustment is the only place this function
-  // reconstructs a virtual address from a physical offset:
+  // Only one quantity differs between the two slides: len. For the first slide it is
+  // segLOWEST - gVirtBase; for the second it is real_avail_end - topOfKernelData,
+  // about 752 MB. len reaches the twig block through temp[i-1].len on the line above,
+  // which is what decides between the two adjustment branches.
   //
-  //     orig_offset = temp[i].pa & ARM_TT_TWIG_OFFMASK;
-  //     new_offset  = temp[i].va & ARM_TT_TWIG_OFFMASK;
-  //     if (new_offset < orig_offset)      va += orig_offset - new_offset;
-  //     else if (new_offset > orig_offset) va = ROUND_TWIG(va) + orig_offset;
-  //
-  // Only the third call carries a ~752 MB length, and that length reaches this block
-  // through temp[i-1].len -- changing which branch runs and what va becomes.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=87";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=85";
   //
   // DeviceTree must stay NULL here.
   //
