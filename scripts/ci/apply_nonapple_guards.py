@@ -3,35 +3,45 @@
 Probe map (osfmk/arm64/arm_vm_init.c unless noted):
 
     45  arm_init.c, between processor_bootstrap() and arm_vm_init()   -- FIRES
-    46..53                                                  -- all silent
-    54  after gPhysSize = mem_size = ...                     -- SILENT
-    55..57  later in the function                           -- silent
-
-45 fires and 54 does not, and everything between them is four field reads and one
-integer arithmetic. Two explanations were tested and cleared:
-
-  * stack -- KERNEL_STACK_MULTIPLIER went 1 -> 4 (16 KiB -> 64 KiB) and probe 54
-    stayed silent, so it is not stack exhaustion.
-  * __DATA_CONST write permission -- the four globals live there:
-        gVirtBase      0xFFFFFFF0071B5110  __DATA_CONST
-        gPhysBase      0xFFFFFFF0071B5100  __DATA_CONST
-        gPhysSize      0xFFFFFFF0071B5120  __DATA_CONST
-        real_phys_size 0xFFFFFFF0071B5108  __DATA_CONST
-    but ARM_TTE_BOOT_BLOCK carries no AP field, so AP = 0 = AP_RWNA and the
-    bootstrap tables are read-write. Not it either.
-
-So the four assignments are cut into four sections:
-
-    58  before gVirtBase = args->virtBase;
-    59  after  gPhysBase = args->physBase;
+    46  before arm_set_user_tbi()                                     -- fires
+    47  after  kva_active = TRUE                                      -- SILENT
+    48  before pmap_bootstrap()                                       -- silent
+    49  after  pmap_bootstrap()
+    50  before boot_tte = &bootstrap_pagetables
+    51  before init_ptpages(cpu_tte, gVirtBase, ...)
+    52  after  that init_ptpages()                                    -- fires
+    53  after  arm_vm_prot_init()
+    54  after  gPhysSize = mem_size = ...
+    55  before physmap_base = phystokv(...)
+    56  after  physmap_base += physmap_slide
+    57  before the dynamic_memory_begin range check
+    58  before gVirtBase = args->virtBase                            -- fires
+    59  after  gPhysBase = args->physBase
     60  before gPhysSize = mem_size = ...
-    54  after  gPhysSize = ...
+    61  after  arm_set_user_tbi()                                     -- fires
+    62  after  arm_vm_physmap_init(args)                             -- SILENT
+    63  after  set_mmu_ttb_alternate(...)
+    64  after  set_mmu_ttb(invalid_ttep ...)
+    65  inside arm_vm_physmap_init, after the first slide             -- fires
+    66  after  arm_vm_page_granular_RWNX(...)                         -- fires
+    67  after  the second slide                                       -- SILENT
+    68  arm_vm_page_granular_prot entry                               -- fires
+    69  before its block loop                                         -- fires
+    70  after  its block loop                                         -- fires
+    71  before the deferred-tte flush                                 -- fires
 
-  reason 2 at 58   arm_vm_init() body was entered; the fault is at or after 59
-  reason 2 at 59   gVirtBase and gPhysBase stored fine
-  reason 2 at 60   real_phys_size stored fine
-  reason 2 at 54   only gPhysSize's arithmetic is left
-  silence at 58    the body was never entered -- prologue or the call itself
+The function-call problem: 68-71 sit inside arm_vm_page_granular_prot(), which
+arm_vm_physmap_init() calls three times -- first slide, RWNX remap, second slide.
+A fixed probe number cannot say which call reached it, so 68-71 firing only proves
+that *some* call got that far, quite possibly the two small ones that already
+succeeded.
+
+So probe 80 is indexed rather than fixed:
+
+    loader_checkpoint(80 + ptov_index)
+
+ptov_index is 0 for the first slide and 1 for the second. Boot with checkpoint=81
+and only the second slide can fire it -- the one that fails.
 
 Idempotent: each edit checks for its own result before applying.
 
@@ -45,6 +55,13 @@ EXTERN_DECL = "\nextern void loader_checkpoint(uint64_t n);\n"
 
 STACK_MULTIPLIER = 4
 
+# The call site, and the indexed probe that goes in front of it.
+SLIDE_CALL = ("arm_vm_page_granular_prot(temp_ptov_table[ptov_index].va, "
+              "temp_ptov_table[ptov_index].len, pa_offset, 1, pte_prot_APX, 1, granule);")
+INDEXED_PROBE = "\tloader_checkpoint(80 + ptov_index);"
+
+# (line substring, "before"|"after", probe number). Applied in one pass, so a line
+# can carry a probe on each side.
 VM_PROBES = [
     ("gVirtBase = args->virtBase;", "before", 58),
     ("gPhysBase = args->physBase;", "after", 59),
@@ -57,39 +74,22 @@ VM_PROBES = [
     ("init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin", "before", 51),
     ("init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin", "after", 52),
     ("arm_vm_prot_init(args);", "after", 53),
-    # The table switch. arm_set_user_tbi() writes TCR_EL1's TBI bits, then
-    # arm_vm_physmap_init() builds the real tables, set_mmu_ttb() installs them and
-    # kva_active flips the kernel onto them. Probes 46 and 47 are 12 lines apart and
-    # the fault is in between, so this stretch needs its own split.
-    # Inside arm_vm_physmap_init(), the three statements that do the mapping. This
-    # function is static and has no symbol, so probes are the only way in. Its
-    # #else branch is the one that compiles here: BCM2837 does not define
-    # XNU_MONITOR, so it makes two slide calls rather than the monitor branch's
-    # nine -- which would overrun PTOV_TABLE_SIZE (8) and panic quietly.
-    # Inside arm_vm_page_granular_prot(), which is where a 752 MB slide has to pick
-    # block mappings. Entry, before the block loop, and after it -- not inside the
-    # loop, which would be hundreds of calls.
     ("tt_entry_t *deferred_ttep_pair[2] = {NULL};", "after", 68),
     ("while ((_end - align_start) >= ARM_TT_L2_SIZE) {", "before", 69),
     ("if (align_start < _end) {", "before", 70),
-    # After the trailing partial-block helper, before the deferred-tte flush.
-    # The flush path is #if DEBUG || DEVELOPMENT and this is DEVELOPMENT, so it
-    # runs here and nowhere else in the slides that already passed.
     ("if (deferred_ttep_pair[0] != NULL) {", "before", 71),
     ("arm_vm_page_granular_RWNX(end_kern, phystokv(args->topOfKernelData) - end_kern,", "before", 65),
     ("/* Device Tree (if not locked down), RAM Disk (if present), bootArgs */", "after", 66),
     ("real_avail_end - args->topOfKernelData, AP_RWNA, ARM64_GRANULE_ALLOW_BLOCK", "after", 67),
     ("arm_set_user_tbi();", "after", 61),
-    ("arm_vm_physmap_init(args);", "after", 62),
-    ("set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);", "after", 63),
-    ("set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);", "after", 64),
     ("arm_set_user_tbi();", "before", 46),
     ("kva_active = TRUE;", "after", 47),
     ("pmap_bootstrap(dynamic_memory_begin);", "before", 48),
     ("pmap_bootstrap(dynamic_memory_begin);", "after", 49),
 ]
 
-EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71)
+EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
+            58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71)
 
 
 def find(root, suffix):
@@ -99,43 +99,6 @@ def find(root, suffix):
     return matches[0]
 
 
-def raise_int_stacks(path):
-    """The stack arm_init() actually runs on.
-
-    start.s sets SP to intstack_top before handing control to arm_init():
-
-        adrp x0, EXT(intstack_top)@page
-        add  x0, x0, EXT(intstack_top)@pageoff
-        msr  SPSel, #0
-        mov  sp, x0
-        adrp lr, EXT(arm_init)@page
-
-    So the whole bring-up -- arm_init(), its 0x480-byte copy of boot_args, and
-    arm_vm_init() with its large frame -- lives on INTSTACK_SIZE, not on the
-    per-thread KERNEL_STACK_SIZE. Growing KERNEL_STACK_MULTIPLIER therefore cannot
-    help, which is exactly what the last boot showed.
-
-    A prologue that pushes past the bottom of a guard-paged stack faults on the
-    first store, before any statement in the body runs. Probe 58 sits on that first
-    statement and never fired.
-    """
-    text = path.read_text(encoding="utf-8")
-    changed = False
-    for name in ("INTSTACK_SIZE", "EXCEPSTACK_SIZE"):
-        pattern = re.compile(r"^#define\s+%s\s+\(4\*4096\)" % name, re.M)
-        replacement = "#define %-23s (16*4096)" % name
-        if "(16*4096)" in text and re.search(re.escape(replacement), text):
-            print("  %s already 64 KiB" % name)
-            continue
-        if not pattern.search(text):
-            raise SystemExit("%s: no '#define %s (4*4096)' to replace" % (path, name))
-        text = pattern.sub(replacement, text, count=1)
-        print("  %s -> 64 KiB" % name)
-        changed = True
-    if changed:
-        path.write_text(text, encoding="utf-8")
-    return changed
-
 def raise_kernel_stack(path):
     text = path.read_text(encoding="utf-8")
     old = "#define KERNEL_STACK_MULTIPLIER (1)"
@@ -143,12 +106,31 @@ def raise_kernel_stack(path):
     if new in text:
         print("  stack already x%d" % STACK_MULTIPLIER)
         return False
-    count = text.count(old)
-    if count != 1:
-        raise SystemExit("%s: expected one '%s', found %d" % (path, old, count))
+    if text.count(old) != 1:
+        raise SystemExit("%s: expected one '%s'" % (path, old))
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
     print("  KERNEL_STACK_MULTIPLIER -> %d" % STACK_MULTIPLIER)
     return True
+
+
+def raise_int_stacks(path):
+    """The stack arm_init() actually runs on -- start.s sets SP to intstack_top."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for name in ("INTSTACK_SIZE", "EXCEPSTACK_SIZE"):
+        pattern = re.compile(r"^#define\s+%s\s+\(4\*4096\)" % name, re.M)
+        replacement = "#define %-23s (16*4096)" % name
+        if re.search(re.escape(replacement), text):
+            print("  %s already 64 KiB" % name)
+            continue
+        if not pattern.search(text):
+            raise SystemExit("%s: no '#define %s (4*4096)'" % (path, name))
+        text = pattern.sub(replacement, text, count=1)
+        print("  %s -> 64 KiB" % name)
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
 
 
 def guard_monitor(path):
@@ -156,14 +138,11 @@ def guard_monitor(path):
     if "#if XNU_MONITOR\n\tml_enable_monitor();" in text:
         print("  already guarded: ml_enable_monitor")
         return False
-
     needle = "\tml_enable_monitor();\n"
-    count = text.count(needle)
-    if count != 1:
-        raise SystemExit("%s: expected one '\\tml_enable_monitor();', found %d" % (path, count))
-
-    text = text.replace(needle, "#if XNU_MONITOR\n\tml_enable_monitor();\n#endif\n", 1)
-    path.write_text(text, encoding="utf-8")
+    if text.count(needle) != 1:
+        raise SystemExit("%s: expected one ml_enable_monitor call" % path)
+    path.write_text(text.replace(needle, "#if XNU_MONITOR\n\tml_enable_monitor();\n#endif\n", 1),
+                    encoding="utf-8")
     print("  guarded ml_enable_monitor()")
     return True
 
@@ -173,24 +152,34 @@ def add_extern(path):
     if "extern void loader_checkpoint" in text:
         print("  extern already present")
         return False
-
     anchor = "#include <pexpert/arm64/boot.h>\n"
     if anchor not in text:
         raise SystemExit("%s: include anchor not found" % path)
-
-    text = text.replace(anchor, anchor + EXTERN_DECL, 1)
-    path.write_text(text, encoding="utf-8")
+    path.write_text(text.replace(anchor, anchor + EXTERN_DECL, 1), encoding="utf-8")
     print("  added extern loader_checkpoint()")
+    return True
+
+
+def add_indexed_probe(path):
+    """loader_checkpoint(80 + ptov_index) in front of the granular_prot call."""
+    text = path.read_text(encoding="utf-8")
+    if "loader_checkpoint(80 + ptov_index)" in text:
+        print("  indexed probe 80 already present")
+        return False
+    if text.count(SLIDE_CALL) != 1:
+        raise SystemExit("%s: expected one granular_prot call site, found %d"
+                         % (path, text.count(SLIDE_CALL)))
+    text = text.replace(SLIDE_CALL, INDEXED_PROBE + "\n\t" + SLIDE_CALL, 1)
+    path.write_text(text, encoding="utf-8")
+    print("  added indexed probe: loader_checkpoint(80 + ptov_index)")
     return True
 
 
 def add_vm_probes(path):
     text = path.read_text(encoding="utf-8")
-    lines = text.split("\n")
-
     changed = 0
     out = []
-    for line in lines:
+    for line in text.split("\n"):
         before, after = [], []
         for needle, position, number in VM_PROBES:
             if needle not in line:
@@ -198,7 +187,6 @@ def add_vm_probes(path):
             if "loader_checkpoint(%d)" % number in text:
                 continue
             (before if position == "before" else after).append(number)
-
         for number in before:
             out.append("\tloader_checkpoint(%d);" % number)
             print("  added loader_checkpoint(%d)" % number)
@@ -219,15 +207,12 @@ def add_arm_init_probe(path):
     if "loader_checkpoint(45)" in text:
         print("  already present: checkpoint 45")
         return False
-
     needle = "\tprocessor_bootstrap();\n"
-    count = text.count(needle)
-    if count != 1:
-        raise SystemExit("%s: expected one '\\tprocessor_bootstrap();', found %d" % (path, count))
-
-    text = text.replace(needle, "\tprocessor_bootstrap();\n\tloader_checkpoint(45);\n", 1)
-    path.write_text(text, encoding="utf-8")
-    print("  added loader_checkpoint(45) after processor_bootstrap()")
+    if text.count(needle) != 1:
+        raise SystemExit("%s: expected one processor_bootstrap() call" % path)
+    path.write_text(text.replace(needle, "\tprocessor_bootstrap();\n\tloader_checkpoint(45);\n", 1),
+                    encoding="utf-8")
+    print("  added loader_checkpoint(45)")
     return True
 
 
@@ -248,6 +233,7 @@ def main(argv):
     changed += raise_int_stacks(vmp)
     changed += guard_monitor(vm)
     changed += add_extern(vm)
+    changed += add_indexed_probe(vm)
     changed += add_vm_probes(vm)
     changed += add_arm_init_probe(init)
 
@@ -255,17 +241,17 @@ def main(argv):
     missing = [n for n in EXPECTED if "loader_checkpoint(%d)" % n not in vm_text]
     if missing:
         raise SystemExit("verification failed: probes missing %s" % missing)
-    for marker in ("extern void loader_checkpoint", "#if XNU_MONITOR"):
+    for marker in ("extern void loader_checkpoint", "#if XNU_MONITOR",
+                   "loader_checkpoint(80 + ptov_index)"):
         if marker not in vm_text:
             raise SystemExit("verification failed in arm_vm_init.c: %s" % marker)
-
     if "loader_checkpoint(45)" not in init.read_text(encoding="utf-8"):
-        raise SystemExit("verification failed in arm_init.c: checkpoint 45")
-
+        raise SystemExit("verification failed in arm_init.c")
     if "KERNEL_STACK_MULTIPLIER (%d)" % STACK_MULTIPLIER not in vmp.read_text(encoding="utf-8"):
-        raise SystemExit("verification failed in vm_param.h: stack multiplier")
+        raise SystemExit("verification failed in vm_param.h")
 
-    print("done (%d change(s), %d probes)" % (changed, len(EXPECTED)))
+    print("done (%d change(s), %d fixed probes + indexed 80)"
+          % (changed, len(EXPECTED)))
     return 0
 
 

@@ -262,39 +262,44 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=71 -- after the trailing helper, before the deferred-tte flush.
+  // checkpoint=81 -- the second slide, entering arm_vm_page_granular_prot.
   //
-  //   69  reason 2   block loop about to start
-  //   70  reason 2   block loop finished -- every 2 MB block went in
-  //   67  reason 0   the slide still never returned
+  //   65  reason 2   first slide done
+  //   66  reason 2   RWNX remap done
+  //   67  reason 0   second slide never finished
+  //   68..71         fire, but they cannot tell which call reached them
   //
-  // That cleared the assert. The block arithmetic was fine; 752 MB of 2 MB blocks
-  // mapped without a complaint. Two pieces remain:
+  // That last point is the one that matters. Probes 68-71 live inside
+  // arm_vm_page_granular_prot(), and arm_vm_physmap_init() calls it three times:
   //
-  //   70  after the block loop
-  //       if (align_start < _end) {
-  //           arm_vm_page_granular_helper(align_start, _end, _end, pa_offset, ...);
-  //       }                                    <- the trailing partial block
-  //   71  if (deferred_ttep_pair[0] != NULL) {                          <- this
-  //   #if DEBUG || DEVELOPMENT
-  //           flush_mmu_tlb();
-  //   #endif
-  //           os_atomic_store(deferred_ttep_pair[1], deferred_tte_pair[1], release);
-  //           os_atomic_store(deferred_ttep_pair[0], deferred_tte_pair[0], release);
-  //       }
-  //   67  returned
+  //   1. first slide   gVirtBase .. segLOWEST          small   pc 65 passed
+  //   2. RWNX remap    end_kern .. topOfKernelData     ~18 MB  pc 66 passed
+  //   3. second slide  topOfKernelData .. real_avail_end ~752 MB  pc 67 failed
   //
-  //   reason 2 at 71   the trailing helper mapped its partial block; the fault is in
-  //                    the deferred-tte flush below
-  //   reason 0 at 71   the trailing helper is the fault
+  // A fixed probe number fires on whichever call gets there first. 68, 69 and 70
+  // firing therefore only proves that *some* call reached the block loop -- most
+  // likely the two small ones that already demonstrably succeeded. It says nothing
+  // about the third.
   //
-  // The flush branch deserves attention because it is the one piece of this routine
-  // gated on #if DEBUG || DEVELOPMENT, and this kernel is DEVELOPMENT. Nothing in the
-  // two slides that already succeeded needed it: a small range that produces no
-  // deferred entries never enters that branch. A 752 MB range produces plenty of
-  // deferred entries, so this is the first time the branch is reached at all.
+  // So the probe in front of the call is indexed instead:
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=71";
+  //   pa_offset = temp_ptov_table[ptov_index].va - orig_va;
+  //   loader_checkpoint(80 + ptov_index);        <- 80 first slide, 81 second
+  //   arm_vm_page_granular_prot(temp_ptov_table[ptov_index].va, ...);
+  //   ++ptov_index;
+  //
+  //   reason 2 at 81   the second slide got as far as calling the mapping routine;
+  //                    its fault is inside, and the next split is entry vs loop vs
+  //                    deferred flush, again indexed by ptov_index
+  //   reason 0 at 81   the second slide never reached the call -- it dies in the
+  //                    arithmetic above it: round_page(len), the ARM_PGMASK assert,
+  //                    the ARM_TT_TWIG_OFFMASK adjustment, or pa_offset itself
+  //
+  // The second outcome would be genuinely new information. probes 65 and 66 already
+  // showed the same arithmetic works for a few MB and for 18 MB; the only input that
+  // differs for the third call is len -- real_avail_end - topOfKernelData.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=81";
   //
   // DeviceTree must stay NULL here.
   //
