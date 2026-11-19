@@ -262,44 +262,42 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=83 -- the second slide, at the top of arm_vm_physmap_slide's body.
+  // checkpoint=89 -- the second slide, after len has been computed.
   //
-  //   66  reason 2   RWNX remap done, so the next statement (the second slide) ran
-  //   67  reason 0   the second slide never returned
-  //   81  reason 0   it never reached the arm_vm_page_granular_prot call either
+  //   83  reason 2   the second call entered arm_vm_physmap_slide's body
+  //   81  reason 0   it never reached the arm_vm_page_granular_prot call
   //
-  // 81 is what changed the picture. The slide was not failing deep inside the page
-  // mapping -- it was failing before it got there, in eleven lines of arithmetic:
+  // So the eleven lines of arithmetic between them contain the fault. Indexed probes
+  // divide them:
   //
-  //   82  if (ptov_index >= PTOV_TABLE_SIZE) panic(...)      <- 83 for the 2nd call
-  //   84  assert((orig_va & ARM_PGMASK) == 0);
-  //       temp_ptov_table[i].pa = orig_va - gVirtBase + gPhysBase;
+  //   83  if (ptov_index >= PTOV_TABLE_SIZE) panic(...)        <- fired, so no panic
+  //   85  assert((orig_va & ARM_PGMASK) == 0);
+  //       temp[i].pa = orig_va - gVirtBase + gPhysBase;
   //       va = (i == 0) ? physmap_base : temp[i-1].va + temp[i-1].len;
-  //       if (granule & ALLOW_BLOCK) {
-  //           orig_offset = pa  & ARM_TT_TWIG_OFFMASK;
-  //           new_offset  = va  & ARM_TT_TWIG_OFFMASK;
-  //           if (new_offset < orig_offset)      va += orig_offset - new_offset;
-  //           else if (new_offset > orig_offset) va = ROUND_TWIG(va) + orig_offset;
-  //       }
-  //   86  assert((va & ARM_PGMASK) == 0);
-  //   88  temp[i].len = round_page(len);
-  //   80  arm_vm_page_granular_prot(...)                    <- 81, never reached
+  //       if (granule & ALLOW_BLOCK) { ...adjust va to pa's twig offset... }
+  //   87  assert((va & ARM_PGMASK) == 0);
+  //   89  temp[i].len = round_page(len);                        <- this
+  //   81  arm_vm_page_granular_prot(...)                        <- never reached
   //
-  // Each of those probes is numbered by ptov_index as well, so 83 means the second
-  // call and 82 would mean the first.
+  //   reason 2 at 89   the length was computed and stored; only the pa_offset
+  //                    subtraction and the call itself remain, so the fault is there
+  //   reason 0 at 89   the fault is among 85 / 87 / 88 -- one of the two asserts, or
+  //                    round_page itself
   //
-  //   reason 2 at 83   the second call entered the body; 85 / 87 / 89 place the fault
-  //                    on the PTOV check, the orig_va assert, the alignment assert,
-  //                    or round_page(len)
-  //   reason 0 at 83   the second call never entered the body at all -- which would
-  //                    mean the call at the arm_vm_physmap_init level did not happen
-  //                    even though probe 66 fired just above it
+  // Note the asymmetry worth checking first. Assert 85 tests orig_va, which is
+  // args->topOfKernelData - gPhysBase + gVirtBase. That is a value derived from
+  // boot_args and page-aligned in construction. Assert 87 tests temp[i].va, which is
+  // not derived from boot_args at all -- it is temp[i-1].va + temp[i-1].len, then
+  // possibly adjusted by the twig-offset block two lines above it. That block is the
+  // only place in this function where a virtual address is reconstructed from a
+  // physical offset, and it only runs when ARM64_GRANULE_ALLOW_BLOCK is set, which
+  // both slides pass.
   //
-  // The value worth watching is len = real_avail_end - topOfKernelData. The first two
-  // slides passed through this same code with a few MB and 18 MB; the third is the
-  // only one that carries a ~752 MB length in.
+  // If 89 is silent, the second assert is the one to suspect: it would mean the twig
+  // adjustment produced an unaligned va for the second slide but not the first, and
+  // the difference between them is precisely the length being carried in.
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=83";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=89";
   //
   // DeviceTree must stay NULL here.
   //
