@@ -262,42 +262,40 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=89 -- the second slide, after len has been computed.
+  // checkpoint=87 -- the second slide, after the va-alignment assert.
   //
-  //   83  reason 2   the second call entered arm_vm_physmap_slide's body
-  //   81  reason 0   it never reached the arm_vm_page_granular_prot call
+  //   83  reason 2   entered arm_vm_physmap_slide's body
+  //   89  reason 0   never reached the line that computes len
+  //   81  reason 0   never reached the granular_prot call
   //
-  // So the eleven lines of arithmetic between them contain the fault. Indexed probes
-  // divide them:
+  // Three steps remain between 83 and 89:
   //
-  //   83  if (ptov_index >= PTOV_TABLE_SIZE) panic(...)        <- fired, so no panic
-  //   85  assert((orig_va & ARM_PGMASK) == 0);
+  //   85  assert((orig_va & ARM_PGMASK) == 0);      orig_va from boot_args
   //       temp[i].pa = orig_va - gVirtBase + gPhysBase;
-  //       va = (i == 0) ? physmap_base : temp[i-1].va + temp[i-1].len;
-  //       if (granule & ALLOW_BLOCK) { ...adjust va to pa's twig offset... }
-  //   87  assert((va & ARM_PGMASK) == 0);
-  //   89  temp[i].len = round_page(len);                        <- this
-  //   81  arm_vm_page_granular_prot(...)                        <- never reached
+  //       va = temp[i-1].va + temp[i-1].len;
+  //       if (granule & ALLOW_BLOCK) { ...rewrite va from pa's twig offset... }
+  //   87  assert((va & ARM_PGMASK) == 0);           va rebuilt, not from boot_args
+  //   89  temp[i].len = round_page(len);
   //
-  //   reason 2 at 89   the length was computed and stored; only the pa_offset
-  //                    subtraction and the call itself remain, so the fault is there
-  //   reason 0 at 89   the fault is among 85 / 87 / 88 -- one of the two asserts, or
-  //                    round_page itself
+  //   reason 2 at 87   both asserts held, so the fault is in round_page(len)
+  //   reason 0 at 87   an assert above failed -- 85 or 86 tells which
   //
-  // Note the asymmetry worth checking first. Assert 85 tests orig_va, which is
-  // args->topOfKernelData - gPhysBase + gVirtBase. That is a value derived from
-  // boot_args and page-aligned in construction. Assert 87 tests temp[i].va, which is
-  // not derived from boot_args at all -- it is temp[i-1].va + temp[i-1].len, then
-  // possibly adjusted by the twig-offset block two lines above it. That block is the
-  // only place in this function where a virtual address is reconstructed from a
-  // physical offset, and it only runs when ARM64_GRANULE_ALLOW_BLOCK is set, which
-  // both slides pass.
+  // The two asserts are not equivalent. Assert 85 tests a value derived directly
+  // from boot_args (topOfKernelData - gPhysBase + gVirtBase), page-aligned by
+  // construction, and the first slide already passed the identical check. Assert 87
+  // tests a value rebuilt as temp[i-1].va + temp[i-1].len and then possibly rewritten
+  // by the twig-offset adjustment. That adjustment is the only place this function
+  // reconstructs a virtual address from a physical offset:
   //
-  // If 89 is silent, the second assert is the one to suspect: it would mean the twig
-  // adjustment produced an unaligned va for the second slide but not the first, and
-  // the difference between them is precisely the length being carried in.
+  //     orig_offset = temp[i].pa & ARM_TT_TWIG_OFFMASK;
+  //     new_offset  = temp[i].va & ARM_TT_TWIG_OFFMASK;
+  //     if (new_offset < orig_offset)      va += orig_offset - new_offset;
+  //     else if (new_offset > orig_offset) va = ROUND_TWIG(va) + orig_offset;
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=89";
+  // Only the third call carries a ~752 MB length, and that length reaches this block
+  // through temp[i-1].len -- changing which branch runs and what va becomes.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=87";
   //
   // DeviceTree must stay NULL here.
   //
