@@ -205,6 +205,37 @@ def add_slide_indexed_probes(path):
     return changed
 
 
+def relax_orig_va_assert(path):
+    """Turn the orig_va alignment assert into a probe.
+
+    checkpoints 83 and 85 disagree with the arithmetic: 83 (entered the body) fires,
+    85 (the assert just below it) does not, which says
+    assert((orig_va & ARM_PGMASK) == 0) failed. But orig_va is
+    args->topOfKernelData - gPhysBase + gVirtBase, and topOfKernelData comes from
+    ALIGN_VALUE(..., SIZE_16KB) while gPhysBase and gVirtBase both end in 0x4000, so
+    it should be aligned.
+
+    Rather than trust either the reasoning or the assert, replace it with a probe
+    that reports which way it actually went: 112 + ptov_index when the low bits are
+    non-zero, nothing otherwise. The assert itself is left out so the slide can
+    continue and later probes become meaningful.
+    """
+    text = path.read_text(encoding="utf-8")
+    old_assert = "\tassert((orig_va & ARM_PGMASK) == 0);\n"
+    new_code = ("\tif ((orig_va & ARM_PGMASK) != 0) {\n"
+                "\t\tloader_checkpoint(112 + ptov_index);\n"
+                "\t}\n")
+    if new_code in text:
+        print("  orig_va assert already relaxed")
+        return False
+    if text.count(old_assert) != 1:
+        raise SystemExit("%s: expected one orig_va assert, found %d"
+                         % (path, text.count(old_assert)))
+    path.write_text(text.replace(old_assert, new_code, 1), encoding="utf-8")
+    print("  orig_va assert -> probe 112 + ptov_index")
+    return True
+
+
 def add_indexed_probe(path):
     """loader_checkpoint(80 + ptov_index) in front of the granular_prot call."""
     text = path.read_text(encoding="utf-8")
@@ -280,6 +311,7 @@ def main(argv):
     changed += add_extern(vm)
     changed += add_indexed_probe(vm)
     changed += add_slide_indexed_probes(vm)
+    changed += relax_orig_va_assert(vm)
     changed += add_vm_probes(vm)
     changed += add_arm_init_probe(init)
 
@@ -292,7 +324,8 @@ def main(argv):
                    "loader_checkpoint(82 + ptov_index)",
                    "loader_checkpoint(84 + ptov_index)",
                    "loader_checkpoint(86 + ptov_index)",
-                   "loader_checkpoint(88 + ptov_index)"):
+                   "loader_checkpoint(88 + ptov_index)",
+                   "loader_checkpoint(112 + ptov_index)"):
         if marker not in vm_text:
             raise SystemExit("verification failed in arm_vm_init.c: %s" % marker)
     if "loader_checkpoint(45)" not in init.read_text(encoding="utf-8"):

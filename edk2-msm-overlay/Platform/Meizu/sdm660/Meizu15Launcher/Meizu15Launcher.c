@@ -262,33 +262,40 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=85 -- the second slide, right after the orig_va assert.
+  // checkpoint=113 -- did the second slide's orig_va actually miss alignment?
   //
-  //   83  reason 2   entered the body
-  //   87  reason 0   never reached the va-alignment assert
+  //   83  reason 2   entered arm_vm_physmap_slide's body
+  //   85  reason 0   the assert just below it did not pass
+  //   87  reason 0
   //   89  reason 0
   //
-  // Two steps, one probe apart:
+  // 85 sits immediately after:
+  //     assert((orig_va & ARM_PGMASK) == 0);
+  // so its silence says that assert failed. But the arithmetic says it should not:
+  // orig_va is args->topOfKernelData - gPhysBase + gVirtBase, where topOfKernelData
+  // comes out of ALIGN_VALUE(..., SIZE_16KB) and gPhysBase and gVirtBase both end in
+  // 0x4000, cancelling.
   //
-  //   85  assert((orig_va & ARM_PGMASK) == 0);      <- this fires or it does not
-  //       temp[i].pa = orig_va - gVirtBase + gPhysBase;
-  //       va = temp[i-1].va + temp[i-1].len;
-  //       if (granule & ALLOW_BLOCK) { ...twig adjustment... }
-  //   87  assert((va & ARM_PGMASK) == 0);
+  // So the assert has been replaced by a probe that reports the fact instead of
+  // asserting it:
   //
-  //   reason 2 at 85   the orig_va assert held; the va assert below it is the one
-  //                    that fails, so the twig adjustment produced an unaligned va
-  //   reason 0 at 85   the orig_va assert itself fails, which would mean
-  //                    args->topOfKernelData - gPhysBase + gVirtBase is not page
-  //                    aligned -- surprising, because the first slide passed the same
-  //                    check with the same gVirtBase and gPhysBase
+  //   if ((orig_va & ARM_PGMASK) != 0) {
+  //       loader_checkpoint(112 + ptov_index);
+  //   }
+  //   loader_checkpoint(84 + ptov_index);
   //
-  // Only one quantity differs between the two slides: len. For the first slide it is
-  // segLOWEST - gVirtBase; for the second it is real_avail_end - topOfKernelData,
-  // about 752 MB. len reaches the twig block through temp[i-1].len on the line above,
-  // which is what decides between the two adjustment branches.
+  //   reason 2 at 113   orig_va really is misaligned on the second call, so the value
+  //                     coming out of boot_args is not what the arithmetic predicts;
+  //                     the next step is to read topOfKernelData rather than derive it
+  //   reason 0 at 113   orig_va is aligned after all and the assert was failing for
+  //                     some other reason -- then 89 decides whether removing it let
+  //                     the slide continue
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=85";
+  // The assert is gone in this build, so the slide is free to run past this point.
+  // That is deliberate: if 89 now fires, the alignment assert was the only obstacle
+  // and the mapping itself is fine.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=113";
   //
   // DeviceTree must stay NULL here.
   //
