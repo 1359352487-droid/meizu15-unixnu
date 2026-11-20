@@ -1,384 +1,318 @@
-# 交接文档 — Meizu 15 (M8810) 跑 iOS 16
+# 交接记录 — Meizu 15 (M8810) 移植 iOS 16 内核
 
-> 生成于 2026-11-12 凌晨。这份文档的目标是：**换一台电脑、换一个 agent，能从这个仓库继续干下去，不需要重新摸一遍。**
+> 更新于 2026-11-20。这份文档的目的：**换一台电脑、换一个 agent，能从这个仓库继续干下去，不用重新摸一遍。**
+>
+> 旧的 `HANDOVER.md`（2026-11-12）记录的是"造出一个能 `fastboot boot` 的 UEFI 镜像"那个早期阶段，已不适用，本次重写。
 
 ---
 
 ## 0. 一句话状态
 
-在 Meizu 15 上跑 XNU 的**前置工程已完成**：硬件摸清、引导链验证通过、原厂固件拆解完毕、**并且已经构建出一个 `fastboot boot` 可加载的 UEFI 镜像**（`boot-meizu15.img`，6,225,920 字节，头部字段与原厂完全一致）。
-
-剩下的只有一步：**插上手机实测**。
-
----
-
-## 0.1 最终产物（可启动镜像）
-
-工作流 `build-meizu15-edk2msm` 的最新成功产物（run `43087541204`）：
-
-```
-boot-meizu15.img     6,225,920 B
-  magic        ANDROID!
-  kernel_size  6,218,804
-  ramdisk_size 0
-  page_size    4096        <- 与原厂 dump/boot.img 一致
-  hdr_version  0           <- 与原厂一致
-  kernel       位于 0x1000（第 1 页），内容是 gzip（与原厂一致）
-SDM660_UEFI.fd      33,554,432 B   (32 MiB，EDK2 固件卷)
-```
-
-这份头部的每一项都对着原厂 `boot.img` 核过，不是猜的。`kernel` 段里是 `BootShim.bin + SDM660_UEFI.fd` 再 gzip，开机时 bootloader 解压 → 跳到 BootShim → BootShim 把卷复制到 `FD_BASE=0xCE000000` → 跳进 UEFI。
-
-### 怎么拿到它
-
-```
-GitHub → Actions → build-meizu15-edk2msm → 选最新绿色的 run → Artifacts → boot-meizu15
-```
-
-### 镜像内部结构（实测解出来的，不是猜的）
-
-把 `artifacts/boot-meizu15.img` 的 kernel 段拆开，逐层验证：
-
-```
-kernel 段  6,218,804 B
-├── gzip      5,885,703 B  ->  解压 33,554,576 B
-│   ├── BootShim        144 B   开头 adr x1 / b，模式匹配确认
-│   └── outer FV 33,554,432 B   FvLength=0x2000000，valid_header=True，正好填满
-│        ├── PAD
-│        ├── PEI_CORE   PE32 42,912 B + DEPEX 344 B   GUID 139ff08a-c544-ec96-...
-│        └── FV_IMAGE   GUIDED section 5,831,512 B    GUID 93fd219e-729c-154c-...
-│             └── 压缩的 DXE 卷（DxeCore + 全部驱动）
-└── 尾随 DTB   333,101 B   totalsize 精确吻合，末尾对齐
-```
-
-这个层级和原厂 `xbl_a` 完全同构：外层放 PEI，DXE 装在嵌套压缩卷里。**所以启动链是完整的**——BootShim 搬运并跳转 → 外层 FV 的 PEI_CORE 初始化 → 解开内层 DXE → DxeCore 派发驱动 → BDS。
-
-`BootShim` 只有 144 字节，它只做两件事：把卷复制到 `FD_BASE`，然后跳过去。真正的初始化在 PEI_CORE 里。
-
-### 加载地址已核对（`FD_BASE`）
-
-BootShim 会把固件卷复制到 `FD_BASE = 0xCE000000`，再跳过去。这个地址对本机是安全的，算过：
-
-```
-FD 区    0xCE000000 .. 0xD0000000   (32 MiB)
-bank0    0x80000000 .. 0x100000000  -> 完全落在 bank0 内
-最近保留区 pstore 结束于 0xA0000000  -> 间隙 736 MiB
-splash / adsp / modem / cdsp / pil_mba / wlan_msa / pstore 全部无重叠
-```
-
-这个值和 edk2-msm 给 whyred 等 SDM660 机型用的一样。如果实测发现 bootloader 自己占用了这段（表现是立刻重启、BootShim 都没跑完），备选地址按「避开 0x85000000-0xA0000000 的保留区、且留在 bank0」来挑，`0xB0000000` 或 `0xC0000000` 都可试，改 `configs/devices/meizu15.conf` 不够——`FD_BASE` 来自 `configs/sdm660.conf`，要在 overlay 里复制一份覆盖。
-
-### 怎么测（需要插手机）
-
-```powershell
-# 1. 手机进 fastboot
-adb reboot bootloader
-# 2. 确认状态
-fastboot devices
-fastboot oem device-info       # 要看到 Device unlocked: true
-# 3. 只加载不写盘（变砖风险为零，重启即恢复）
-fastboot boot boot-meizu15.img
-```
-
-**预期**：`Sending 'boot.img' OKAY` → 屏幕亮起，出现 UEFI 字符界面 / SimpleInit 菜单 / 乌屏后自动重启（三种都算"固件跑起来了"）。
-
-**恢复**：按住电源键 10 秒强制重启，回到 Flyme。因为 `fastboot boot` 只写内存，任何情况下分区都没动。
-
-**判读**：
-
-| 现象 | 含义 |
-|---|---|
-| 屏幕出现文字/菜单 | 固件完全跑通 —— 直接进 Phase 4 |
-| 屏幕亮起但全黑，几秒后重启 | UEFI 启动了，卡在显示初始化（`DisplayDxe`/面板时序） |
-| 完全无反应，立刻重启 | BootShim 或 FD 加载失败（地址/页大小/重定位） |
-| 停在 fastboot 界面不动 | bootloader 拒绝了镜像头 |
+内核**已经能启动并跑到 `arm_vm_init()` 深处**（远超一个月前"能进 UEFI"的阶段）。最后一道墙 `PAN` 已推倒，现在卡在 `arm_vm_physmap_init()` 里第二次 slide 的两个对齐断言上。
 
 ---
 
 ## 1. 目标
 
-在 Meizu 15（M8810，SDM660）上启动 XNU（iOS 16.7.16 用户空间），最终到达 SpringBoard 桌面。参照物是 Redmi K20 Pro 的 [UniXNU-raphael](https://github.com/JohnLeeeeeee678/UniXNU-raphael)（已到桌面）。
+在 **魅族 15（M8810，骁龙 660 / SDM660，Kryo 260 = 4×Cortex-A73 + 4×Cortex-A53，全部 ARMv8.0）** 上启动 **iOS 16 的 XNU 内核**（xnu-8796.121.2 血统）。
 
-**设备身份选用 iPhone 8 Plus（iPhone10,2 / D21AP）**，理由见 `docs/iphone-identity.md`：
-- 面板 1080×1920 @3x，和 Meizu 15 完全一致（iPhone X 是 1125×2436，比例不对）
-- 有 Home 键（Goodix GF52xx + `fp-keys` 输入设备）
+**这不是全功能移植**：没有 SDM660 的存储、显示、触摸、基带驱动。目标是把内核引导到能自己打印日志、建立 VM、启动第一个内核线程的程度。用户态、launchd、图形栈都不在范围内。
 
 ---
 
-## 2. 设备现状（实测，非推测）
+## 2. 硬件与工具链事实（都已实测确认）
 
-| 项 | 值 | 验证方式 |
+| 项 | 值 |
+|---|---|
+| SoC | SDM660，Kryo 260，**ARMv8.0**（这是关键——很多 ARMv8.1+ 的特性它没有） |
+| 内核配置 | `MACHINE_CONFIGS=BCM2837`，**4 KiB 页**，`KERNEL_CONFIGS=DEVELOPMENT` |
+| 设备序列号 | `881QAESM95THY`，`getvar product` → `M1881` |
+| 仓库 | `1359352487-droid/meizu15-unixnu`，分支 `main` |
+| token | `.gh-token`（fine-grained PAT，会过期，过期后 API 返回 401） |
+| 内核源码 | `oosexgang/hakios-xnu-kernel`（HakiOS 打过补丁的 xnu-8796） |
+| boot_args | `Darwin 23` 布局，`sizeof == 0x480`，与 XNU 的 camelCase 版本**偏移完全一致**（`Video` 都在 0x28），命名差异不是 bug |
+
+**面板实测寄存器值**（每次启动都会打印，很有用）：
+
+```
+CurrentEL 1   SCTLR_EL1 0xC0180D   TCR_EL1 0x280803518   (t0sz = 24)
+ID_AA64MMFR0_EL1 0x1122  (PARange 2, 4 KiB granule supported)
+ID_AA64PFR0_EL1  0x1000222
+WIN D0004000 HIGH D0004000 RUN ADFA0000 @ D0000000
+```
+
+---
+
+## 3. 当前进度：探针结果表
+
+调试手段是在源码里插 `loader_checkpoint(N)`，启动时传 `checkpoint=N`。**执行到就停下并报 `reason 2`；没执行到就报 `reason 0`。**
+
+### 3.1 已命中（`reason 2`）——这些位置确认可达
+
+| 探针 | 位置 |
+|---|---|
+| 45 | `arm_init.c`：`processor_bootstrap()` 之后、`arm_vm_init()` 之前 |
+| 46 | `arm_vm_init.c`：`arm_set_user_tbi()` 之前 |
+| 52 | 第一个 `init_ptpages()` 之后 |
+| **58** | **`arm_vm_init()` 函数体第一条语句**（PAN 修复后才命中） |
+| 61 | `arm_set_user_tbi()` 之后（TBI 没问题） |
+| 65 | `arm_vm_physmap_init()` 里第一次 slide 之后 |
+| 66 | `arm_vm_page_granular_RWNX()` 之后 |
+| 68 / 69 / 70 / 71 | `arm_vm_page_granular_prot()` 内部（入口/循环前/循环后/defer 前）——**注意：这三个函数被调用三次，固定编号无法区分是哪次** |
+| **83** | **第二次 slide 进入 `arm_vm_physmap_slide()` 函数体** |
+| **113** | **第二次 slide 的 `orig_va` 确实不对齐**（`orig_va & ARM_PGMASK != 0`） |
+
+### 3.2 未命中（`reason 0`）——这些位置没走到
+
+| 探针 | 位置 |
+|---|---|
+| 47 | `kva_active = TRUE` 之后 |
+| 48 / 49 | `pmap_bootstrap()` 前后 |
+| 50 / 51 / 53 | `boot_tte` 赋值前 / `init_ptpages` 前 / `arm_vm_prot_init` 后 |
+| 54 / 55 / 56 / 57 | physmap 计算各点 |
+| 62 | `arm_vm_physmap_init(args)` 之后 |
+| 64 | `set_mmu_ttb(invalid_ttep)` 之后 |
+| 67 | 第二次 slide 之后 |
+| 81 | 第二次 slide 调 `arm_vm_page_granular_prot()` 之前 |
+| 85 / 87 / 89 | 第二次 slide 内的 `orig_va` 断言后 / `va` 断言后 / `len` 计算后 |
+
+**59 / 60 / 63 从未测过。**
+
+### 3.3 索引探针（区分第几次调用）
+
+`arm_vm_page_granular_prot()` 和 `arm_vm_physmap_slide()` 都被调用多次，所以部分探针写成 `loader_checkpoint(N + ptov_index)`：
+
+- `ptov_index == 0` → 第一次 slide（`gVirtBase`..`segLOWEST`，几 MB）
+- `ptov_index == 1` → 第二次 slide（`topOfKernelData`..`real_avail_end`，**约 752 MB**）
+
+---
+
+## 4. 已解决的问题
+
+### 4.1 PAN —— 那道墙（最重要的发现）
+
+**症状**：`arm_init()` 的探针 45 命中，但 `arm_vm_init()` 里所有探针全部静默，日志恒为 192 字节（只有 `do_cacheid()` 两行）。
+
+**根因**：`hakios.patch` 在 `pexpert/pexpert/arm64/BCM2837.h` 里写了：
+
+```c
+/*
+ * The cores this kernel really runs on (Cortex-A55/A78, QEMU cortex-a76) are
+ * ARMv8.2: they set PSTATE.PAN on every exception entry, ...
+ */
+#define __ARM_PAN_AVAILABLE__     1
+```
+
+并在 `makedefs/MakeInc.def` 里让编译器生成 pan 指令：
+
+```
+MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837 -Xclang -target-feature -Xclang +pan
+```
+
+**HakiOS 的目标是 Cortex-A55/A78（ARMv8.2），而我们的 Kryo 260 是 ARMv8.0，没有 PAN 寄存器。** `arm_init()` 里那句 `__builtin_arm_wsr("pan", 1)` 是**未定义指令**，位置恰好在探针 45 之后、`arm_vm_init()` 之前。异常 → panic → `halt_all_cpus()` → `loader_return()` → 屏幕显示 `reason 0`，而 `kprintf` 还没起来，什么也打不出来。
+
+**修复**：`scripts/ci/disable_pan.py`，两处一起改（只关宏不够，编译选项还在的话编译器仍会生成 pan 指令）：
+
+1. `BCM2837.h`：`__ARM_PAN_AVAILABLE__` 1 → 0
+2. `MakeInc.def`：移除 `-Xclang -target-feature -Xclang +pan`
+
+**二进制验证**：扫描两个内核里 `MSR (immediate)` 家族指令：
+
+| 内核 | `0xD500409F` | `0xD500419F` |
 |---|---|---|
-| 型号 | Meizu 15，`M8810`，product `meizu_15_CN` | `getprop` |
-| SoC | SDM660，`soc_id=317` | `/sys/devices/soc0/` |
-| 系统 | Flyme 7.0.2.2A / Android 7.1.1 / `NGI77B` | `getprop` |
-| 安全补丁 | 2018-04-05 | `getprop` |
-| **BL** | **`lock_state: unlocked`，`critical unlocked: true`** | `fastboot oem device-info` |
-| **AVB** | **`Verity mode: false`** | 同上 |
-| **`fastboot boot`** | **可用，且接受被修改过的镜像** | 实测（见 §4） |
-| `max-download-size` | 512 MiB | `fastboot getvar all` |
-| DRAM | 2 GiB @ `0x80000000` + 1.19 GiB @ `0x100000000` = span `0xCC7E0000` | FDT `memory/reg` |
-| GIC | GICv3，dist `0x17a00000`/`0x10000`，redist `0x17b00000`/`0x100000` | FDT |
-| 定时器 | 19,200,000 Hz | FDT `timer/clock-frequency` |
-| 存储 | eMMC，Samsung `DV6DMB`，`mmcblk0`，128 GB | `/sys/block/` |
-| eMMC 控制器 | `sdhci@c0c4000`，`qcom,sdhci-msm-v5` | FDT |
-| 面板 | 1080×1920 AMOLED（480 dpi），MDSS DSI，`labibb` 双电源轨 | `wm size`/`wm density`/dmesg |
-| 触控 | **Synaptics DSX @ i2c-4 `0x20`** | dmesg `synaptics_dsx_i2c 4-0020` |
-| 指纹 | Goodix `GF52xx`，`ro.meizu_fp_model` | `getprop` |
-| splash 区 | `0x9d400000` / `0x2400000`，label `cont_splash_mem` | FDT `reserved-memory` |
-| root | Flyme 官方 root 已开（`ro.flyme.root.state=1`），`su` 需屏幕点允许 | 实测 |
+| PAN 开启 | 9 处 | 15 处 |
+| PAN 关闭 | 0 | 0 |
 
-分区（512 B LBA）：
+**共 24 条 `msr pan` 全部消失。** 修复后 `checkpoint=58` 立刻拿到 `reason 2`。
 
-| 名 | 设备 | start LBA | sectors |
-|---|---|---|---|
-| xbl_a | p1 | 131072 | 7168 |
-| xbl_b | p2 | — | 7168 |
-| abl | p18 | 501760 | 2048 |
-| ddr | p27 | 656400 | 2048 |
-| misc | p43 | 860192 | 2048 |
-| **boot** | **p50** | **1179648** | **131072（64 MiB）** |
-| recovery | p51 | 1310720 | 131072 |
-| system | p53 | 3538944 | 8388608 |
-| **userdata** | **p57** | **13369344** | **230907871**（~110 GiB） |
+### 4.2 设备树地址（真 bug，但不是卡点）
 
-by-name 路径是 `/dev/block/platform/soc/*/by-name/`，**不是** `/dev/block/by-name/`。
+`DarwinBoot.c` 原来写：
 
-> 完整表格：`docs/hardware.md`
-
----
-
-## 3. 已完成的四件事
-
-### 3.1 分区备份（`dump/`，但被 .gitignore 排除）
-
-12 个分区，145 MB：`boot recovery abl xbl_a xbl_b misc ddr devinfo sec toolsfv devcfg dsp`。
-
-用户**另有解 BL 之前的全分区备份**，所以变砖不是风险。
-
-### 3.2 引导链验证（`docs/bootloader.md`）
-
-```
-fastboot boot dump/boot.img          → Sending OKAY / Booting OKAY → 正常进系统
-改 name 字段再 fastboot boot          → 同样 OKAY → 不验签
+```c
+Args->DeviceTree = Kernel.Base + TreeAddress - Address;   // KVA
 ```
 
-结论：**UEFI 阶段完全不需要写分区**，全程 `fastboot boot`。
+但 `arm_vm_init()` 之前内核跑在 V=P 模式下，KVA 不可访问。XNU 的约定是**先给物理地址**，虚拟化由 `arm_vm_init()` 内部自己做：
 
-### 3.3 固件拆解（`docs/xbl-firmware.md` + `docs/dxe-drivers.md`）
-
-```
-xbl_a.img (ELF, AArch64, 16 个 program header)
-└── LOAD #11 @0x7e380 (vaddr 0x9fc00000, 1,792,000 B)
-    └── UEFI FV (FFS2)
-        ├── PEI_CORE                 155,672 B
-        ├── SEC                      7,504 B
-        └── FV_IMAGE               1,415,801 B  ← 24 字节 GUID 头 + gzip
-            └── 解压后 3,944,968 B 的 DXE FV
-                └── 67 个 PE32（65 DRIVER + 1 DXE_CORE + 1 APP）
-```
-
-关键驱动：`SdccDxe`(eMMC)、`DisplayDxe`(MDSS DSI)、`PmicDxe`(PM660)、`DALSys`、`ClockDxe`、`QcomBds`、`ButtonsDxe`、`DALTLMM`、`I2C`、`SPI`、`SPMI`、`DiskIoDxe`+`PartitionDxe`+`Fat`、Arm64 三件套。
-
-> 全部 67 个已提取到 `dump/dxe/`（3.73 MB），并能用 `scripts/extract-xbl-dxe.py` 从 `xbl_a.img` **完整重建**（已实测）。
-
-### 3.4 自建 EDK2 包（`edk2-firmware-build/`）
-
-`Meizu15Pkg` 能把 67 个 stock 模块打包成一个**合法的 5 MiB 固件卷**：
-
-```
-MEIZU15PKG_UEFI.fd   5,242,880 B
-  valid_header: True
-  FFS files: 68  (DRIVER 65 | DXE_CORE 1 | APP 1 | PAD 1)
-```
-
-**但这是纯 DXE 卷，没有 SEC/PrePi 入口点，也没有 PEI 阶段 —— 不能直接启动。** 这是它和"可启动固件"的区别。
-
----
-
-## 4. CI 调试踩过的 7 个坑（都已在 commit 里解决）
-
-| # | 报错 | 根因 | 解法 |
-|---|---|---|---|
-| 1 | `fatal: could not read Username for github.com` | `UnitTestFrameworkPkg` 指向 `github.com/Zeex/subhook`，仓库已消失 | 只 init Brotli 两个 submodule |
-| 2 | `syn.h:173: too many arguments to function 'fpReach'` | `edk2-stable202408` 的 Pccts 是 K&R 风格，GCC 13 拒绝 | 换 `edk2-stable202608` |
-| 3 | `Failed building wheel for pylibfdt` | runner Python 3.14，`PyInt_AsLong` 早已删除 | 从 pip-requirements 里剔掉 pylibfdt |
-| 4 | `PYTHON_COMMAND: unbound variable` | `set -u` + `edksetup.sh` 的 bug | 显式 export，并在 source 前后 `set +u` |
-| 5 | `Tool chain [GCC5] is not defined` | 新版 EDK2 只有 `GCC` / `GCCNOLTO` | 改名 + `GCC_AARCH64_PREFIX` |
-| 6 | `error F003: Don't Find common rule RULE.COMMON.DXE_CORE` | **DXE_CORE 不能是 binary-only INF** | 全部改走 FDF 的 `FILE` 记录，`[Components]` 留空 |
-| 7 | `TypeError: ... NoneType` / `PE32 is not found` | FDF 语法：要 `SECTION PE32 = <file>`，类型名是 **`DRIVER`** 不是 `DXE_DRIVER`，且必须有 `SECTION UI` | 三条一起改 |
-
-第 6、7 条的教训值钱：**EDK2 不允许把 `DXE_CORE` 当二进制 INF 打包**，而 FDF 里 `FILE` 记录的正确写法是：
-
-```
-FILE DRIVER = <guid> {
-  SECTION PE32 = <path to .efi>
-  SECTION UI   = "<name>"
+```c
+// osfmk/arm64/arm_vm_init.c，约 1571 行
+arm_vm_physmap_slide(temp_ptov_table, end_kern, ...);
+if (!SecureDTIsLockedDown()) {
+    PE_slide_devicetree(temp_ptov_table[ptov_index - 1].va - end_kern);
 }
 ```
 
----
+已改为 `Args->DeviceTree = TreeAddress;`。这修掉了一个真 bug，但**没有**解决当时的卡点（说明另有原因）。
 
-## 5. 当前攻坚点：两条路线
+### 4.3 FAT12 读取
 
-### 路线 A（已完成 80%，卡在入口点）
-
-自建 `Meizu15Pkg`，产出 DXE 卷。**缺 SEC + PrePi + PEI**，即"BL 跳进来之后的第一条指令"。
-
-用户手上的 `xbl_a` 里有 `PEI_CORE`，但把它和 EDK2 的 `PeiMain` 拼成完整链条，需要重写整个平台初始化，工作量大。
-
-### 路线 B（当前首选）
-
-**用 [edk2-porting/edk2-msm](https://github.com/edk2-porting/edk2-msm)（2608★）。**
-
-它是社区维护的 Qualcomm EDK2 移植框架，**已经有完整的 `Silicon/Qualcomm/sdm660` 层**，而且下面这些 SDM660 机型都已有移植：
-
-```
-Platform/Xiaomi/sdm660/  clover  jason  nitrogen  wayne  whyred
-Platform/Qualcomm/sdm660/ (参考实现)
-```
-
-**每个机型只要两个小文件**：
-- `Platform/Xiaomi/sdm660/whyred.dsc`（1067 B）
-- `Platform/Xiaomi/sdm660/whyred.fdf.inc`（694 B）
-- `configs/devices/whyred.conf`（~200 B）
-
-而且 `build.sh` 会自动：编译 BootShim（ELF 入口）→ 构建 EDK2 → 用 mkbootimg 打包成 `boot-<device>.img`。
-
-**已为本仓库准备好 overlay**：
-
-```
-edk2-msm-overlay/
-├── configs/devices/meizu15.conf            SOC=sdm660, vendor=Meizu, 面板/DPI/版本
-└── Platform/Meizu/sdm660/
-    ├── meizu15.dsc                         1080x1920, 480dpi
-    └── meizu15.fdf.inc                     ACPI 表（复用 SoC 级）
-```
-
-对应工作流：`.github/workflows/build-edk2msm.yml`（clone → overlay → `./build.sh -d meizu15` → 产出 `boot-meizu15.img`）。
-
-**这条路的未知数**：edk2-msm 自述是 "Broken edk2 port"，SDM660 在 whyred 上能跑到什么程度未知；我们的 Meizu 15 硬件（面板初始化、触控）和 whyred 不同，可能卡在显示。
+镜像的 FAT 卷声称 FAT16 但实际是 FAT12（FAT 大小 12 扇区）。`fat_ls.py` 读 16 位表项会得到 `fat_entry(6) = 0xA009`（40969），链在 5 个簇后断裂，15.8 MB 的内核只能读出 8192 字节。已用 `scripts/ci/fat12_read.py`（12 位打包：`base = fat_off + cluster + cluster//2`）替换。
 
 ---
 
-## 6. 新机器上怎么接着干
+## 5. 当前卡点
 
-### 6.1 拉代码
+**`arm_vm_physmap_init()` 里的第二次 slide，映射约 752 MB 物理内存时，`orig_va` 不对齐。**
 
-```bash
-git clone https://github.com/1359352487-droid/meizu15-unixnu.git
-cd meizu15-unixnu
+```c
+arm_vm_physmap_slide(temp_ptov_table,
+    args->topOfKernelData - gPhysBase + gVirtBase,      // ← orig_va，实测不对齐
+    real_avail_end - args->topOfKernelData,             // ← 约 752 MB
+    AP_RWNA, ARM64_GRANULE_ALLOW_BLOCK | ARM64_GRANULE_ALLOW_HINT);
 ```
 
-### 6.2 恢复被 .gitignore 排除的东西
+导致 `arm_vm_physmap_slide()` 里连续两个断言失败：
 
-仓库里**没有**分区镜像和提取好的驱动（含设备序列号，不适合公开）。重建：
-
-```bash
-# 需要手机
-adb shell "echo 'dd if=/dev/block/platform/soc/*/by-name/xbl_a of=/sdcard/xbl_a.img' | su"
-adb pull /sdcard/xbl_a.img dump/
-pip install uefi_firmware
-python3 scripts/extract-xbl-dxe.py dump/xbl_a.img --out-dir dump/dxe
-python3 scripts/make-pkg.py --manifest dump/dxe_manifest.json \
-        --dxe-dir dump/dxe --pkg-root edk2-firmware-build --force
+```c
+assert((orig_va & ARM_PGMASK) == 0);              // 探针 113 确认这条失败
+assert((temp_ptov_table[ptov_index].va & ARM_PGMASK) == 0);   // 同一根因的第二个症状
 ```
 
-`dump/dxe_manifest.json` **已在仓库里**，记录了每个模块的 GUID / 类型 / 大小 —— 即使不重新提取，也能据此核对。
-
-### 6.3 工具链
-
-Windows 上我用了 `MinGit`（`tools/git/cmd/git.exe`，2.56.1）和 workspace 自带的 Python 3.12（含 `dulwich`、`uefi_firmware`）。
-
-**注意代理**：本机 `github.com:443` 直连被掐，必须走本地代理。已在仓库 `.git/config` 里写了：
+### 5.1 为什么这个值理论上应该对齐
 
 ```
-http.proxy = http://127.0.0.1:7897
-https.proxy = http://127.0.0.1:7897
+orig_va = topOfKernelData - gPhysBase + gVirtBase
+        = (Address + Used) - Address + gVirtBase     ← gPhysBase 就是 Address，抵消
+        = Used + gVirtBase
 ```
 
-换机器后这行要改成新机器的代理，或者删掉。
+- `Used = ALIGN_VALUE(Layout->Policy + PolicySize, SIZE_16KB) - Address`
+- 传给 `PlaceImage()` 的 `Address` 是 `BLOCK_SIZE + (Kernel.Base & (BLOCK_SIZE - 1))` = `0x204000`，本身是 `SIZE_16KB` 的整数倍
+- `gVirtBase = 0xFFFFFFF007004000`，末尾 `0x4000`
+- `ARM_PGMASK = ARM_PGBYTES - 1`（4 KiB 配置下 `0xFFF`，16 KiB 下 `0x3FFF`）——**两种掩码下 `0x4000` 都算对齐**
 
-### 6.4 两个工作流
+**推算三遍都说对齐，实测三遍都说不齐。** 说明我读源码时有一个前提是错的，但靠读源码找不出来。
 
-| 工作流 | 干什么 | 状态 |
+### 5.2 已经试过但失败的测量手段
+
+想用 `loader_stub_slot[3]`（屏幕上显示为 `delta` 的那个字）把 `orig_va` 的值传出来：
+
+```c
+loader_stub_slot[3] = orig_va;
+loader_checkpoint(112 + ptov_index);
+```
+
+**结果：内核完全不返回。** 屏幕停在进入内核前的画面，没有 `kernel returned` 那一行。说明该槽虽然只被打印成 delta，但 **loader 的返回路径依赖它**，覆盖就破坏了返回机制。**这个通道不可用。**
+
+---
+
+## 6. 放弃的方案（及原因）
+
+| 方案 | 结论 | 依据 |
 |---|---|---|
-| `build-meizu15-uefi` | 自建 Meizu15Pkg → 5 MiB DXE 卷 | **成功** |
-| `build-meizu15-edk2msm` | edk2-msm 路线 → 可启动 boot.img | **进行中** |
-
-手跑：仓库 → Actions → 左侧选 workflow → `Run workflow`。
-
-推送会自动触发（`paths` 命中对应目录）。
-
----
-
-## 7. 下一步（按优先级）
-
-1. **等 `build-meizu15-edk2msm` 出结果。** 成功 → 拿到 `boot-meizu15.img` → `fastboot boot` 实测。失败 → 看日志修。
-2. **如果 edk2-msm 那条路走通**，屏幕上会先出现 Ronin/SimpleInit 的菜单或 UEFI shell，那就说明固件活了。
-3. **如果卡在显示**：把 `PcdMipiFrameBufferWidth/Height` 和面板初始化对上 Meizu 15（1080×1920，AMOLED 双电源轨）。
-4. **UEFI 通了之后**，才轮到 XNU：编译 ARMv8.0 安全的内核（`CONFIG_XNU_NATIVE_PAN=n`，见 `configs/meizu15_defconfig`），ADT 用 `scripts/make-meizu15-adt.py --iphone-model 8plus` 生成。
-5. **最后才是 eMMC 驱动** —— XNU 侧需要 `NativeEmmc`，全世界都还没有。
+| `KERNEL_STACK_MULTIPLIER` 1→4 | **无效** | 它只影响**线程栈**（`KERNEL_STACK_SIZE`），而启动阶段跑在**中断栈**上 |
+| `INTSTACK_SIZE` / `EXCEPSTACK_SIZE` 4×4096→16×4096 | **无效** | 内核因此大了 98,304 字节（证明改动生效），但探针结果不变。反汇编 `arm_vm_init` 入口发现 **prologue 只分配 96 字节**——16 KiB 的栈绰绰有余，从来不是栈的问题 |
+| `ml_enable_monitor()` 加 `#if XNU_MONITOR` 守卫 | **无效** | BCM2837 配置里 `XNU_MONITOR` 未定义（= 0），该调用根本不编译；即使编译，它也在 `arm_vm_init()` 内部，够不着当时的卡点 |
+| 怀疑 `boot_args` 字段名 PascalCase vs camelCase 不匹配 | **排除** | `BootArgs.h` 里的 `STATIC_ASSERT` 证明偏移完全一致（`Video` 都在 0x28），二进制兼容 |
+| 怀疑 `/chosen/random-seed` 缺失导致 `bootseed_init` panic | **排除** | 直接翻 `meizu15-8plus.adt` 二进制，`random-seed` 属性存在且是真实 64 字节数据 |
+| 怀疑 `PTOV_TABLE_SIZE`（=8）溢出 | **排除** | 非 MONITOR 分支只调用 2 次 `arm_vm_physmap_slide`，远小于 8 |
+| 怀疑 `avail_start` 未初始化 | **排除** | 它在 1940 行初始化，早于 2143 行的调用点 |
+| 怀疑 `TopOfKernelData` 偏小（1.19 MB vs 内核 19 MB） | **误判已纠正** | `0x1300F0` 只是 `DarwinBoot.c` 注释里的示例数字，不是实测值；`PlaceImage()` 第 1024 行 `Layout->Args = Address + Kernel->End - Kernel->Base` 已经包含内核大小 |
+| 用 `loader_stub_slot[3]` 传值出来 | **不可用** | 破坏 loader 返回路径，内核不再返回 |
 
 ---
 
-## 8. 事实与陷阱清单（别忘）
+## 7. 下一步（三条路，建议并行考虑）
 
-- `su` 不认 `-c`，要用 `echo 'cmd' | su` 或 `su 0 cmd`；每次可能弹 Flyme 授权窗
-- `dd` 的 `bs=1M` 不认，用 `bs=1048576`
-- `/dev/block/by-name/` 不存在，用 `/dev/block/platform/soc/*/by-name/`
-- `devinfo` 分区 4 KiB **全是零**，BL 锁标志不在那
-- `toolsfv` 分区名字骗人，里面**没有固件**
-- FDT 完整可读：`/proc/device-tree`；整份 334 KB 在 `/sys/firmware/fdt`（需 root）
-- SDM660 是 **ARMv8.0**（A73/A53）：`PAN` 和 `LSE` 都不能编进 XNU
-- Lavender 的 `dram_size = 0xfe4c0000` 是 6 GB 机型，**这台是 `0xCC7E0000`**
-- Meizu 15 触控是 **Synaptics**，Lavender 是 Novatek，HakiOS 只有 Goodix —— 三个都不一样
+### 7.1 短期：验证"断言是不是过度严格"（已推送，等设备）
 
----
+两个断言都已放宽（`orig_va` 的改成诊断探针保留，`va` 的直接移除），`slot[3]` 写入已撤销。内核 `1d9314f3e179d0339461510888f6ad228503c246f02391943575367d98f649c1`。
 
-## 9. 仓库文件清单
+启动参数 `checkpoint=89`：
 
-```
-meizu15-unixnu/
-├── board.toml                       板级定义（UniXNU 用）
-├── configs/meizu15_defconfig        ARMv8.0 安全内核配置
-├── docs/
-│   ├── hardware.md                  全部硬件实测数据（最有用）
-│   ├── bootloader.md                BL 能力验证
-│   ├── xbl-firmware.md              XBL 结构 + 压缩卷分析
-│   ├── dxe-drivers.md               67 个驱动清单
-│   └── iphone-identity.md           iPhone 8 Plus 身份的选择依据
-├── scripts/
-│   ├── make-meizu15-adt.py          ADT 生成器（--iphone-model {x,8,8plus}）
-│   ├── extract-xbl-dxe.py           从 xbl_a 抠驱动
-│   ├── make-pkg.py                  生成 EDK2 包装
-│   └── push-api.py                  REST API 推送（记录了 409 坑）
-├── edk2-firmware-build/Meizu15Pkg/  67 个 .inf + .efi + dec/dsc/fdf
-├── edk2-msm-overlay/                给 edk2-msm 的三个 overlay 文件
-├── .github/workflows/
-│   ├── build-uefi.yml               自建包（已成功）
-│   └── build-edk2msm.yml            edk2-msm 路线（进行中）
-└── dump/dxe_manifest.json           67 个模块的元数据（唯一进仓库的 dump 产物）
-```
-
----
-
-## 10. 参考项目
-
-| 项目 | 用途 |
+| 结果 | 含义 |
 |---|---|
-| [Chromitsune/UniXNU-Lavender](https://github.com/Chromitsune/UniXNU-Lavender) | 唯一的 SDM660 XNU 移植（未完成，停在 Phase 3） |
-| [edk2-porting/edk2-msm](https://github.com/edk2-porting/edk2-msm) | **当前主攻**，有完整 sdm660 silicon 层 |
-| [JohnLeeeeeee678/UniXNU-raphael](https://github.com/JohnLeeeeeee678/UniXNU-raphael) | K20 Pro 的 turnkey 方案，已到 SpringBoard |
-| [marnov999/raphael-ios-gpu](https://github.com/marnov999/raphael-ios-gpu) | 另一条 shim 路线，更激进 |
-| [oosexgang/hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel) | HakiOS 主仓，移植方法论写得好 |
-| [yang232138/uefi-lmi](https://github.com/yang232138/uefi-lmi) | Mu-Silicium + BootShim + GitHub Actions 打包 boot.img 的样板 |
-| [Project-Silicium/Mu-Silicium](https://github.com/Project-Silicium/Mu-Silicium) | Mu-Silicium 主仓 |
+| `reason 2` | 断言比移植实际需要的严格，绕过即可，继续推 81 / 67 / 62 |
+| `reason 0` | 对齐是真载荷，必须回到源头修而不是放宽 |
+
+**注意**：上一次刷的镜像（含 `slot[3]` 写入）会让设备卡死，**需要长按电源 12 秒强制重启**才能回到 Flyway/adb。
+
+### 7.2 中期：QEMU（**解决"看不见 panic"**）
+
+**这是最有价值的一条。** 我们的编译目标 `MACHINE_CONFIGS=BCM2837` 正是树莓派 3 的 SoC，而 QEMU 有 `raspi3b` 机器类型——**配置同源，比任何真机都更接近内核的编译假设。**
+
+HakiOS 自己就有 `make qemu-open` / `make qemu-u-boot`。
+
+**收益**：
+- 串口输出从第一条指令就能抓，**早期 panic 带完整 backtrace**（现在只能看到 `reason 0`）
+- 可挂 gdb 单步
+- 秒级迭代
+
+**推荐先做选项 B**：QEMU raspi3b + 直接引导内核（跳过 UEFI，用一小段 stub 构造 `boot_args` 直接跳 XNU）。`boot_args` 怎么填可以参考 `DarwinBoot.c` 的现有代码。
+
+### 7.3 中期：Mac 本地编译（**解决"慢"**）
+
+**HakiOS 官方支持 macOS 原生构建**，`xnu-deps/setup.sh` 里有专门的 `Darwin` 分支：
+
+```bash
+# macOS: no theos, but Xcode has the same cctools and the SDK can be had from github.com/theos/sdks.
+theos_mac() { ... }
+[ "$XNU_HOST_OS" = Darwin ] && { theos_mac; tools="git curl tar make cc clang clang++ flex bison m4 perl python3"; }
+```
+
+**需要**：Xcode（完整版）、`iPhoneOS16.5.sdk`（约 220 MB，从 `github.com/theos/sdks`）、`MacOSX13.3.sdk`（脚本自动下载，只取 DriverKit 头）。
+**不需要**：theos 的 Linux 工具链（macOS 用 Xcode 自带的 cctools）。
+
+**收益对比**：
+
+| 场景 | 耗时 |
+|---|---|
+| CI 全量（现在每轮） | ~18 分钟 + 排队 + 下载 |
+| 本地首次全量 | ~10–15 分钟 |
+| **本地增量（改一个文件）** | **1–2 分钟** |
+
+我们现在每轮改的只是探针位置，增量编译能把 18 分钟压到 2 分钟。
 
 ---
 
-## 11. 安全提醒
+## 8. 关键文件与命令
 
-**那个 GitHub fine-grained token 应该已经撤销。** 如果没撤，去 https://github.com/settings/personal-access-tokens 删掉 `meizu15-push`。它曾经明文出现在对话里。
+### 8.1 文件
 
-仓库是 public 的，里面**没有**设备序列号（已脱敏为 `<YOUR-SERIAL>` / `<YOUR-CHIPID>`），也没有分区镜像。
+| 路径 | 作用 |
+|---|---|
+| `inputs/kernel.macho` | **每次内核重建后必须替换**，payload workflow 用它往镜像里塞 |
+| `scripts/ci/apply_nonapple_guards.py` | 所有探针 + 栈调整 + `ml_enable_monitor` 守卫。幂等，带验证 |
+| `scripts/ci/disable_pan.py` | 关 PAN（两处） |
+| `scripts/ci/fat12_read.py` | 读镜像里的 FAT12 卷，验证内核版本 |
+| `scripts/ci/carve_fat.py` | 从 boot.img 里切出 FAT 卷 |
+| `scripts/ci/macho_map.py` | 解析 Mach-O 段表 + 符号地址（查 `gVirtBase` 落在哪个段之类） |
+| `scripts/ci/dis_prologue.py` | 反汇编函数入口（用过它发现 `arm_vm_init` 的 prologue 只占 96 字节） |
+| `edk2-msm-overlay/DarwinBootPkg/Driver/DarwinBoot.c` | 构造 `boot_args`、填 stub 槽、跳内核 |
+| `TESTLOG.md` | 2219 行按时间排列的工程日志，含每轮的现象与推理 |
+
+### 8.2 命令
+
+**刷机**：
+
+```powershell
+$pt='tools\platform-tools'
+& "$pt\adb.exe" -s 881QAESM95THY reboot bootloader
+Start-Sleep 22
+& "$pt\fastboot.exe" boot <image>
+```
+
+**典型一轮**：
+
+1. 改探针 → 推脚本/launcher → 推内核（如需）
+2. 内核 workflow 构建（~10 min）→ 下载 `meizu15-kernel` artifact（**5.8 MB，不是 160 MB**）
+3. 替换 `inputs/kernel.macho` → 推送 → payload workflow（~8 min）→ 下载 `meizu15-uefi-payload-debug-full`（5.2 MB）
+4. 刷机 → 拍照 → 读 `reason` 和 `checkpoint`
+
+**注意 workflow 的 `Publish to a Release` 步骤总是失败**（tag 重名），无害，`Build` 和 `Upload` 都成功。
+
+---
+
+## 9. 教训（写给下一个人）
+
+1. **`Publish to a Release` 失败不代表构建失败** —— 看 `artifacts` 是否存在。
+2. **内核 artifact 曾经是 160 MB**，因为 `find -name '*.dSYM'` 从不匹配（`-name` 只测 basename，而 DWARF 负载同名）。用 `-not -path '*.dSYM/*'` 才有效。现在额外上传一个只含 `kernel.macho.gz` 的 **5.8 MB** artifact。
+3. **`loader_stub_slot[3]` 不是空闲输出通道** —— 写它会破坏 loader 返回路径。
+4. **固定编号的探针无法区分函数被多次调用** —— 用 `loader_checkpoint(N + ptov_index)` 索引化。
+5. **`reason 0` 不等于"正常结束"** —— 它表示走了 `halt_all_cpus()` → `loader_return()` 路径（panic 或正常 halt）。
+6. **这个阶段的 panic 打印不出来** —— `kprintf` 要到 `arm_vm_init()` 之后才起来，所以在 `arm_vm_init()` 内部崩溃只能看到 `reason 0` 和一个 192 字节的旧日志。这正是 QEMU 值得做的原因。
+7. **PowerShell 的 `String.Replace` 没有 3 参数重载** —— 用 Python 做文本编辑。
+8. **`.NET` 的 `ReadAllText` 用相对路径时解析到进程目录**，不是 PowerShell 的当前目录 —— 始终用绝对路径。
+9. **改 `scripts/ci/*.py` 也会触发内核重建**，因为它在 workflow 的 `paths` 里。
+10. **重写脚本时要让验证逻辑和常量列表对齐** —— 我曾在重写 `apply_nonapple_guards.py` 时漏掉探针 62/63/64，导致 CI 上验证失败、内核根本没构建，白跑一轮 18 分钟。
