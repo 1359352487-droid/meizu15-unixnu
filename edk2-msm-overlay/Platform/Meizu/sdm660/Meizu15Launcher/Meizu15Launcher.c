@@ -262,11 +262,12 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=48 -- 47 fires (kva_active = TRUE) and 49 does not, so the stop is inside pmap_bootstrap.
+  // checkpoint=90 -- 48 fires and 49 does not, so the stop is inside pmap_bootstrap().
   //
-  // 48 is the statement right before the call: firing means the fault is inside it,
-  // missing means it is in the few lines between kva_active and the call.
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=48";
+  // 90/91 bracket pmap_data_bootstrap, 92/93 uat_bootstrap, 94/95 sart_bootstrap;
+  // a hit at 90 with nothing at 91 means the pv_head/avail_start arithmetic,
+  // while a hit at 92 means the UAT node the ADT may not carry.
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=90";
   //
   // DeviceTree must stay NULL here.
   //

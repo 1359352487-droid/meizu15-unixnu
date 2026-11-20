@@ -30,6 +30,14 @@ Probe map (osfmk/arm64/arm_vm_init.c unless noted):
     70  after  its block loop                                         -- fires
     71  before the deferred-tte flush                                 -- fires
 
+osfmk/arm/pmap/pmap.c, inside pmap_bootstrap() -- probe 48 enters it, 49 never
+returns, and the three bootstraps below are the only part of that window that
+walks memory the device tree describes:
+
+    90 / 91  before / after pmap_data_bootstrap()
+    92 / 93  before / after uat_bootstrap()
+    94 / 95  before / after sart_bootstrap()
+
 The function-call problem: 68-71 sit inside arm_vm_page_granular_prot(), which
 arm_vm_physmap_init() calls three times -- first slide, RWNX remap, second slide.
 A fixed probe number cannot say which call reached it, so 68-71 firing only proves
@@ -93,6 +101,29 @@ VM_PROBES = [
 
 EXPECTED = (46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
             58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71)
+
+# pmap.c, where 48 enters pmap_bootstrap() and 49 never returns.
+#
+# Everything between those two probes is either pure bookkeeping or one of the
+# three bootstraps that walk memory the device tree is supposed to describe.
+# uat_bootstrap() and sart_bootstrap() look up UAT/SART nodes, which a lean ADT
+# may not carry at all, so each call gets a probe on both sides:
+#
+#     90 / 91   before / after pmap_data_bootstrap()
+#     92 / 93   before / after uat_bootstrap()
+#     94 / 95   before / after sart_bootstrap()
+#
+# A hit at 90 with nothing at 91 means pmap_data_bootstrap() itself (page tables
+# for pv_head_table, i.e. avail_start arithmetic), not the device tree.
+PMAP_EXTERN_ANCHOR = "#include <mach/shared_region.h>\n"
+
+PMAP_PROBES = [
+    ("\tpmap_data_bootstrap();\n", 90, 91),
+    ("\tuat_bootstrap();\n", 92, 93),
+    ("\tsart_bootstrap();\n", 94, 95),
+]
+
+PMAP_EXPECTED = (90, 91, 92, 93, 94, 95)
 
 
 def find(root, suffix):
@@ -301,6 +332,36 @@ def add_arm_init_probe(path):
     return True
 
 
+def add_pmap_probes(path):
+    """Probes 90-95 inside pmap_bootstrap(), one pair per bootstrap it calls."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    if "extern void loader_checkpoint" not in text:
+        if PMAP_EXTERN_ANCHOR not in text:
+            raise SystemExit("%s: include anchor not found" % path)
+        text = text.replace(PMAP_EXTERN_ANCHOR, PMAP_EXTERN_ANCHOR + EXTERN_DECL, 1)
+        print("  added extern loader_checkpoint() to pmap.c")
+        changed = True
+    for needle, before, after in PMAP_PROBES:
+        if "loader_checkpoint(%d);" % before in text:
+            print("  already present: checkpoints %d/%d" % (before, after))
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip(), text.count(needle)))
+        text = text.replace(
+            needle,
+            "\tloader_checkpoint(%d);\n" % before + needle +
+            "\tloader_checkpoint(%d);\n" % after,
+            1)
+        print("  added loader_checkpoint(%d/%d) around %s"
+              % (before, after, needle.strip()))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -312,6 +373,7 @@ def main(argv):
     vm = find(root, "osfmk/arm64/arm_vm_init.c")
     init = find(root, "osfmk/arm/arm_init.c")
     vmp = find(root, "osfmk/mach/arm/vm_param.h")
+    pmap = find(root, "osfmk/arm/pmap/pmap.c")
 
     changed = 0
     changed += raise_kernel_stack(vmp)
@@ -323,6 +385,7 @@ def main(argv):
     changed += relax_orig_va_assert(vm)
     changed += add_vm_probes(vm)
     changed += add_arm_init_probe(init)
+    changed += add_pmap_probes(pmap)
 
     vm_text = vm.read_text(encoding="utf-8")
     missing = [n for n in EXPECTED if "loader_checkpoint(%d)" % n not in vm_text]
@@ -340,6 +403,10 @@ def main(argv):
             raise SystemExit("verification failed in arm_vm_init.c: %s" % marker)
     if "loader_checkpoint(45)" not in init.read_text(encoding="utf-8"):
         raise SystemExit("verification failed in arm_init.c")
+    pmap_text = pmap.read_text(encoding="utf-8")
+    pmap_missing = [n for n in PMAP_EXPECTED if "loader_checkpoint(%d);" % n not in pmap_text]
+    if pmap_missing:
+        raise SystemExit("verification failed in pmap.c: probes missing %s" % pmap_missing)
     if "KERNEL_STACK_MULTIPLIER (%d)" % STACK_MULTIPLIER not in vmp.read_text(encoding="utf-8"):
         raise SystemExit("verification failed in vm_param.h")
 
