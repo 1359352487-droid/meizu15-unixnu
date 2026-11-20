@@ -262,10 +262,11 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=47 -- arm_set_user_tbi() is behind us (61 fired) and 49 never runs, so the fault sits between arm_vm_physmap_init() and pmap_bootstrap().
+  // checkpoint=48 -- 47 fires (kva_active = TRUE) and 49 does not, so the stop is inside pmap_bootstrap.
   //
-  // 47 is kva_active = TRUE right after it, the middle of that window.
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=47";
+  // 48 is the statement right before the call: firing means the fault is inside it,
+  // missing means it is in the few lines between kva_active and the call.
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=48";
   //
   // DeviceTree must stay NULL here.
   //
