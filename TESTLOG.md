@@ -3590,3 +3590,48 @@ checkpoint 62 delta 00000010C900000
 |---|---|
 | `reason 2` | `arm_vm_init()` 基本跑完；接着补 48 → 47，再往 `arm_init()` 尾部走 |
 | `reason 0` | 62 与 49 之间有故障（`kva_active`、`pmap_bootstrap`、段处理），用 48 → 47 二分 |
+## 2026-11-21 00:53 — 49 未命中：窗口缩到 physmap_init 之后、pmap_bootstrap 之前
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 49 delta 00000010C900000
+--- kernel message buffer ---
+[   49.003290]: vm_cache_geometry_colors: 16
+[   49.003303]: do_cacheid() - 65536 bytes Unknown cache (I:32768 D:32768 (separate)), 16-way assoc, 64 bytes/line
+```
+
+`reason 0` = `halt_all_cpus()` → `loader_return()`，日志还是那 192 字节的 `do_cacheid()`
+两行 —— `kprintf` 还没起来，所以在 62 与 49 之间有一次静默故障（数据中止一类的老症状）。
+
+### 新基线
+
+| 探针 | 位置 | 结果 |
+|---|---|---|
+| 61 | `arm_set_user_tbi()` 之后 | 命中（PAN 修复后） |
+| **62** | `arm_vm_physmap_init(args)` 之后 | **命中（本轮之前）** |
+| 63 | `set_mmu_ttb_alternate(...)` 之后 | 未测 |
+| 64 | `set_mmu_ttb(invalid_ttep)` 之后 | 未测 |
+| **47** | `kva_active = TRUE` 之后 | **本轮要测** |
+| 48 | `pmap_bootstrap()` 之前 | 未命中过（旧测量作废） |
+| **49** | `pmap_bootstrap()` 之后 | **未命中（本轮）** |
+
+### 头号嫌疑：`set_mmu_ttb (invalid_ttep)`
+
+那一步把 TTBR0 换成只含无效表项的页表，**当前内核 VA 的映射就没了**。
+XNU 走这一步是为了在建立最终页表期间强制走物理/identity 访问；之后任何一句
+还按 VA 取全局变量的代码都会立刻数据中止 —— 而 SCTLR 的 MMU 仍然开着，
+所以异常向量本身也可能取不到指令，`kprintf` 更没有机会打印。
+
+这也是为什么 68–71（`granular_prot` 内部）都还能命中、62 也命中，
+而到 49 就没声音了：窗口正好夹着 63 / 64。
+
+### 另一个记下来的观察（暂不追）
+
+日志时间戳是 `[49.003290]` —— 内核起来不到一秒却报 49 秒。时间基数换算
+（`nanoseconds_to_absolutetime` / boot_args 的 `TimebaseFrequency`）可能有偏差，
+但它不影响当前二分，先记着。
+
+### 下一轮
+
+`checkpoint=47`：命中说明 63/64 都过去了，故障在 `kva_active`..`pmap_bootstrap`；
+不命中说明故障就在 63/64 附近，再测 64 二分。
