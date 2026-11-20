@@ -1,6 +1,6 @@
 # 交接记录 — Meizu 15 (M8810) 移植 iOS 16 内核
 
-> 更新于 2026-11-20。这份文档的目的：**换一台电脑、换一个 agent，能从这个仓库继续干下去，不用重新摸一遍。**
+> 更新于 2026-11-20 23:55。这份文档的目的：**换一台电脑、换一个 agent，能从这个仓库继续干下去，不用重新摸一遍。**
 >
 > 旧的 `HANDOVER.md`（2026-11-12）记录的是"造出一个能 `fastboot boot` 的 UEFI 镜像"那个早期阶段，已不适用，本次重写。
 
@@ -8,7 +8,7 @@
 
 ## 0. 一句话状态
 
-内核**已经能启动并跑到 `arm_vm_init()` 深处**（远超一个月前"能进 UEFI"的阶段）。最后一道墙 `PAN` 已推倒，现在卡在 `arm_vm_physmap_init()` 里第二次 slide 的两个对齐断言上。
+内核**已经能启动并跑到 `arm_vm_init()` 深处**（远超一个月前"能进 UEFI"的阶段）。最后一道墙 `PAN` 已推倒；第二次 slide 的对齐断言也**已经查到根因并改掉了源码**——不是 `Policy` 算术，是 return stub 尾巴上的 `0x100`（见 5.3）。现在等一次 payload 构建 + 刷机验证。
 
 ---
 
@@ -151,7 +151,7 @@ if (!SecureDTIsLockedDown()) {
 
 ---
 
-## 5. 当前卡点
+## 5. 曾经的卡点（根因已定位，见 5.3）
 
 **`arm_vm_physmap_init()` 里的第二次 slide，映射约 752 MB 物理内存时，`orig_va` 不对齐。**
 
@@ -195,6 +195,45 @@ loader_checkpoint(112 + ptov_index);
 
 **结果：内核完全不返回。** 屏幕停在进入内核前的画面，没有 `kernel returned` 那一行。说明该槽虽然只被打印成 delta，但 **loader 的返回路径依赖它**，覆盖就破坏了返回机制。**这个通道不可用。**
 
+### 5.3 根因：`Used` 被 return stub 的尾巴破坏（2026-11-20 定位）
+
+推算错在一个前提上：`TopOfKernelData = Address + Used` 里的 `Used` **不是** `PlaceImage()` 算出来的那个
+16 KiB 对齐值。`DarwinBoot.c` 在 `PlaceImage()` 之后还要把 return stub 抄进内核窗口，并把它计入 `Used`：
+
+```c
+StubOffset = ALIGN_VALUE (Used, 16);
+StubSpan   = ParameterOffset + 24;                 // 0xE8 + 24 = 0x100 > StubSize 0xF0
+...
+Used = StubOffset + ALIGN_VALUE (StubSpan, 16);    // 只对齐到 16，不是页粒度
+```
+
+于是 `TopOfKernelData` 的低 12 位恒为 `0x100`，`orig_va = Used + gVirtBase` 同样带 `0x100`，
+`ARM_PGMASK`（4 KiB 下 `0xFFF`，16 KiB 下 `0x3FFF`）两种都过不了。
+**残差与 `Policy` / ramdisk / `gPhysBase` 完全无关，恒为 `0x100`** —— 这正好解释了 5.1 里
+"推算三遍都说对齐，实测三遍都说不齐"：推算停在 `Layout->Used`，恰好是 `Used` 被改写的前一行。
+
+用真实段表（`scripts/ci/macho_map.py inputs/kernel.macho`：`Base 0xFFFFFFF007004000`、
+`End 0xFFFFFFF008314000`）与屏幕上的 `WIN D0004000` 复算：
+
+| Policy | Used 旧 | orig_va & 0xFFF | Used 新 | 掩码后 |
+|---|---|---|---|---|
+| 0xD1314000 | 0x1310100 | **0x100** | 0x1314000 | 0 |
+| 0xD2000000 | 0x1FFC100 | **0x100** | 0x2000000 | 0 |
+| 0xD4000000 | 0x3FFC100 | **0x100** | 0x4000000 | 0 |
+| 0xD8000000 | 0x7FFC100 | **0x100** | 0x8000000 | 0 |
+
+**修复**（`edk2-msm-overlay/DarwinBootPkg/Driver/DarwinBoot.c`，stub 分支末尾）：
+
+```c
+Used = ALIGN_VALUE (StubOffset + StubSpan, SIZE_16KB);   // 原：ALIGN_VALUE (…, 16)
+```
+
+stub 仍在 `Used` 之内（内核不会把它当空闲内存发出去），边界回到页粒度；
+`temp_ptov_table[].va` 那条断言是同一根因的第二个症状，一并解决。
+`HeadSize` 一侧有 `DARWIN_WINDOW_RESERVE` ≥ 32 MiB 的余量，多出 ≤16 KiB 无害。
+
+日志细节见 `TESTLOG.md` 2026-11-20 23:55。
+
 ---
 
 ## 6. 放弃的方案（及原因）
@@ -215,18 +254,24 @@ loader_checkpoint(112 + ptov_index);
 
 ## 7. 下一步（三条路，建议并行考虑）
 
-### 7.1 短期：验证"断言是不是过度严格"（已推送，等设备）
+### 7.1 短期：重建 payload，验证 5.3 的对齐修复（下一步就干这个）
 
-两个断言都已放宽（`orig_va` 的改成诊断探针保留，`va` 的直接移除），`slot[3]` 写入已撤销。内核 `1d9314f3e179d0339461510888f6ad228503c246f02391943575367d98f649c1`。
+`DarwinBoot.c` 已改（`Used = ALIGN_VALUE (StubOffset + StubSpan, SIZE_16KB)`），
+**内核不用重编**（`inputs/kernel.macho` 没动），只走 payload：
+
+```powershell
+# 推 DarwinBoot.c 的改动 → build-meizu15-uefi-payload.yml 自动触发（paths: edk2-msm-overlay/**）
+# 约 8 分钟，下载 meizu15-uefi-payload-debug-full（5.2 MB）
+& "$pt\fastboot.exe" boot <image>
+```
 
 启动参数 `checkpoint=89`：
 
 | 结果 | 含义 |
 |---|---|
-| `reason 2` | 断言比移植实际需要的严格，绕过即可，继续推 81 / 67 / 62 |
-| `reason 0` | 对齐是真载荷，必须回到源头修而不是放宽 |
-
-**注意**：上一次刷的镜像（含 `slot[3]` 写入）会让设备卡死，**需要长按电源 12 秒强制重启**才能回到 Flyway/adb。
+| `reason 2` 且没出现 `112` / `113` | `orig_va` 已对齐，第二次 slide 走完；接着测 **62 / 67**，再看 `arm_vm_physmap_init()` 是否整体通过 |
+| `reason 2` 但 `113` 仍命中 | 还有别的未对齐来源（这时探针改动保住了内核不 panic，能继续二分） |
+| `reason 0` | 二次 slide 内部有别的问题，用 83 → 85 → 87 → 89 四点二分 |
 
 ### 7.2 中期：QEMU（**解决"看不见 panic"**）
 
@@ -316,3 +361,5 @@ Start-Sleep 22
 8. **`.NET` 的 `ReadAllText` 用相对路径时解析到进程目录**，不是 PowerShell 的当前目录 —— 始终用绝对路径。
 9. **改 `scripts/ci/*.py` 也会触发内核重建**，因为它在 workflow 的 `paths` 里。
 10. **重写脚本时要让验证逻辑和常量列表对齐** —— 我曾在重写 `apply_nonapple_guards.py` 时漏掉探针 62/63/64，导致 CI 上验证失败、内核根本没构建，白跑一轮 18 分钟。
+11. **`TopOfKernelData` 不等于 `PlaceImage()` 的 `Layout->Used`** —— `DarwinBoot.c` 后面还会把 return stub 计入并把 `Used` 对齐到 **16 字节**。凡是拿 `Policy` 推 `orig_va` 的算术都要算到这一跳之后（见 5.3）。
+12. **这台机器上没有 `git` 在 PATH 里**，用 `D:\WorkBuddy\resources\vendor\PortableGit\cmd\git.exe`；仓库 `http[s].proxy` 已指向 `127.0.0.1:7897`，`adb/fastboot` 在 `C:\Users\54714\Desktop\搞机工具箱9.91\`。刷机前先 `adb devices` 确认 `881QAESM95THY` 在线。

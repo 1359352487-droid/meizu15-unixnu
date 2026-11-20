@@ -1920,3 +1920,1603 @@ cp17
 |---|---|
 | `reason 2` | `configure_*` 全部跑完，stall 也过了；故障在 34 之后 |
 | `reason 0` | 没到 34；用 30/31/32/33 把剩下那段切开 |
+
+## 2026-11-16 22:40 — checkpoint 34 命中：stall 假设排除，arm_init 前半段全通
+
+### 屏幕
+
+```
+kernel returned: reason 2, log 0 bytes
+x3 0000000000000000  x4 0000000000000000
+x5 0000000000000000  x6 0000000000000000
+x7 0000000000000000
+slot magic 545352444C554E58  stub 0000000D1304000
+checkpoint 34 delta 00000010C900000
+(log empty)
+```
+
+参数 `-v loader_return_after=60 checkpoint=34`，两个独立位置都确认了编号
+（顶部 `checkpoint 34`，中部 `DARWINBOOT: checkpoint requested 34`）。
+
+### 排除掉的最大嫌疑
+
+`platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_ARM_INIT)` 在
+checkpoint 34 的**前一行**。34 命中，说明这个调用**正常返回了**。
+
+这是这几轮里最想确认的一件事：它是 `#if (DEVELOPMENT || DEBUG)` 里的
+bring-up 钩子，如果走进自旋分支，现象就是「不 panic、不打日志、画面定住」——
+和我们看到的一模一样。**现在这条假设正式排除。**
+
+### 已确认通过的完整路径
+
+```
+arm_init(args)
+  cpu_data_init(&BootCpuData)
+    do_cacheid()                    ← 日志那两行，早已确认
+  PE_init_platform(FALSE, args)     ← cp11 命中
+  configure_timer_apple_regs()      ← cp30
+  wfe_timeout_configure()           ← cp31
+  wfe_timeout_init()                ← cp32
+  configure_misc_apple_boot_args()  ← cp33
+  configure_misc_apple_regs()
+  platform_stall_panic_or_spin()    ← cp34 命中，不是 stall
+```
+
+**`arm_init` 的前半段完全健康。** 之前所有关于「内核死在这段」的推测都作废了。
+
+### 下一个目标：17
+
+34 之后到 17 之间还有：`cp35`、`ml_parse_cpu_topology()`、`cp12`、
+`cp40~44`、`cp13~16`，然后是 `arm_vm_init(xmaxmem, args)` 和 `cp17`。
+
+选 17 而不是 35/12/40/13 的理由有两个：
+
+1. **它证明 `arm_vm_init()` 跑完** —— 这是 `arm_init` 里最后一个未知的大块
+2. **它应该第一次给出非空日志** —— `kprintf` 在 checkpoint 18/19 附近初始化，
+   而 17 在 `arm_vm_init` 之后，那时 `msgbuf` 该有内容了
+
+第 2 点尤其重要：到现在为止所有检测点的日志都是 0 字节，我们始终看不到
+内核自己说了什么。17 如果命中且日志非空，就能读到 `kprintf` 的实际内容。
+
+### 判读
+
+| 结果 | 含义 |
+|---|---|
+| `reason 2` + 非空日志 | `arm_init()` 跑完了，故障在 `machine_startup()` 或更后 |
+| `reason 2` + 空日志 | 到了 `arm_vm_init` 但 `kprintf` 没起来，这本身是个发现 |
+| `reason 0` | 死在 34 和 `arm_vm_init` 之间，用 35/12/40~44/13~16 切开 |
+
+## 2026-11-16 22:59 — checkpoint 17 未命中：故障窗口两侧都封住了
+
+### 屏幕
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 17 delta 00000010C900000
+--- kernel message buffer ---
+[  67.947725]: vm_cache_geometry_colors: 16
+[  67.947737]: do_cacheid() - 65536 bytes Unknown cache (I: 32768 D: 32768 (separate)),
+              16-way assoc, 64 bytes/line
+```
+
+`reason 0`，不是 2。**checkpoint 17 没有命中。**
+
+### 现在的窗口
+
+三次结果放在一起，范围第一次有了两侧边界：
+
+| 检测点 | 结果 | 位置 |
+|---|---|---|
+| 11 | `reason 2` | `PE_init_platform()` 之后 |
+| 34 | `reason 2` | `platform_stall_panic_or_spin()` 之后 |
+| **17** | **`reason 0`** | **`arm_vm_init()` 之后 —— 未到达** |
+
+所以内核死在 **cp34 之后、`arm_vm_init()` 完成之前**。
+
+### 中间这 11 个检测点
+
+```
+cp34  ★命中
+      chosen = NULL;  dt_entry_size = 0;
+cp35
+      ml_parse_cpu_topology();
+cp12
+      master_cpu = ml_get_boot_cpu_number();
+cp40
+      assert(master_cpu >= 0 && master_cpu <= ml_get_max_cpu_number());
+      BootCpuData.cpu_number = (unsigned short)master_cpu;
+      CpuDataEntries[master_cpu].cpu_data_paddr = ...;
+cp41
+      thread = thread_bootstrap();
+cp42
+      thread->machine.CpuDatap = &BootCpuData;
+      thread->machine.pcpu_data_base = 0;
+      machine_set_current_thread(thread);
+cp43
+      thread->machine.preemption_count = 0;
+cp44
+      cpu_bootstrap();
+cp13
+      rtclock_early_init();
+cp14
+      kernel_debug_string_early("kernel_startup_bootstrap");
+      kernel_startup_bootstrap();
+cp15
+      timer_call_init();
+      cpu_init();
+cp16
+      processor_bootstrap();
+      arm_vm_init(xmaxmem, args);
+cp17  ✗未命中
+```
+
+### 日志仍是 192 字节，这本身是一条线索
+
+`kernel_debug_string_early("kernel_startup_bootstrap")` 在 cp14 之后。
+它如果执行了，日志应该会变长。日志没变，说明**内核没走到 cp14**。
+
+这把范围进一步收到 cp34 到 cp14 之间：
+
+```
+35, 12, 40, 41, 42, 43, 44, 13
+```
+
+### 下一个：44（中点）
+
+34→17 的中点附近就是 44，无论命中与否都能把区间砍半。
+
+| 结果 | 新的窗口 |
+|---|---|
+| `reason 2` | 故障在 44 → 17（cpu_bootstrap / rtclock / startup / cpu_init / processor_bootstrap / arm_vm_init） |
+| `reason 0` | 故障在 34 → 44（拓扑解析 / assert / thread_bootstrap 那一段） |
+
+理论上再 3 次就能定位到单个函数。
+
+## 2026-11-16 23:28 — checkpoint 44 命中：窗口收窄到 44 之后
+
+```
+kernel returned: reason 2, log 0 bytes
+checkpoint 44 delta 00000010C900000
+DARWINBOOT: checkpoint requested 44
+```
+
+### 四次的完整图景
+
+| 检测点 | 结果 | 已确认通过的最后一步 |
+|---|---|---|
+| 11 | `reason 2` | `PE_init_platform()` |
+| 34 | `reason 2` | `platform_stall_panic_or_spin()` |
+| 44 | `reason 2` | `thread_bootstrap()` 及其后续设置 |
+| 17 | `reason 0` | —— `arm_vm_init()` 从未完成 |
+
+故障窗口：**cp44 之后、`arm_vm_init()` 完成之前**。
+
+剩下四个检测点和五处调用：
+
+```
+cp44  ★
+      cpu_bootstrap();                          13
+      rtclock_early_init();                     14
+      kernel_debug_string_early("kernel_startup_bootstrap");
+      kernel_startup_bootstrap();               15
+      timer_call_init();  cpu_init();           16
+      processor_bootstrap();
+      arm_vm_init(xmaxmem, args);               17  ✗
+```
+
+### 下一个：15（中点）
+
+同时还有一个额外信号：`kernel_debug_string_early()` 在 cp14 之前，
+而到现在为止日志一直是 **0 字节**。
+
+- 15 命中 + 日志仍空 → 那个调用也没产出，问题可能在 console 而不在代码
+- 15 命中 + 日志变长 → **第一次看到内核自己说话**，文本本身即是发现
+
+### 已用过的时间
+
+从 checkpoint 11 命中（20:42）到 44 命中（23:28），约 2 小时 45 分，
+中间经历了 3 次完整构建+刷机循环。每轮约 25 分钟（构建 10 分 + 下载 + 刷机 + 拍照）。
+
+## 2026-11-17 00:21 — checkpoint 15 命中：只剩一个检测点
+
+```
+kernel returned: reason 2, log 0 bytes
+checkpoint 15 delta 00000010C900000
+DARWINBOOT: checkpoint requested 15
+```
+
+### 五次的完整图景
+
+| 检测点 | 结果 | 已确认通过的最后一步 |
+|---|---|---|
+| 11 | `reason 2` | `PE_init_platform()` |
+| 34 | `reason 2` | `platform_stall_panic_or_spin()` |
+| 44 | `reason 2` | `thread_bootstrap()` |
+| **15** | **`reason 2`** | **`kernel_startup_bootstrap()`** |
+| 17 | `reason 0` | —— `arm_vm_init()` 从未完成 |
+
+### 只剩三处调用、一个检测点
+
+```
+cp15  ★
+      timer_call_init();
+      cpu_init();                          16  ← 最后一个
+      processor_bootstrap();
+      arm_vm_init(xmaxmem, args);          17  ✗
+```
+
+### 一个必须记下来的发现：日志始终是 0 字节
+
+从 cp11 到 cp15，**四次的日志都是 `log 0 bytes`**。
+
+而 `kernel_debug_string_early("kernel_startup_bootstrap")` 就在 cp15 之前执行过。
+它同样没有产出任何东西。
+
+这说明：**内核的 console 通路在这个阶段完全没建立**，而不是「某个函数卡住了它」。
+`kprintf` 要到 cp18/19 之后（`kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF)`），
+`PE_init_printf` 在 cp20 之后。
+
+所以这段区间里，内核即使有话说也发不出来。**想拿到调用栈，只能靠检测点，
+不能指望内核自己打印。**
+
+### 下一步
+
+cp16 是最后一个已埋好的检测点。之后要往前推进，必须改内核——
+在 `processor_bootstrap()` 和 `arm_vm_init()` 前后各加一个检测点。
+
+| 16 的结果 | 新的窗口 | 下一步 |
+|---|---|---|
+| `reason 2` | `processor_bootstrap()` 或 `arm_vm_init()` | 需要新增检测点 |
+| `reason 0` | `timer_call_init()` 或 `cpu_init()` | 需要新增检测点 |
+
+无论哪种结果，下一轮都要重编内核（约 10 分钟），不能再靠换 bootarg 了。
+
+## 2026-11-17 00:39 — checkpoint 16 命中，窗口收到最后两处调用
+
+```
+kernel returned: reason 2, log 0 bytes
+checkpoint 16 delta 00000010C900000
+DARWINBOOT: checkpoint requested 16
+```
+
+### 六次检测点的完整结果
+
+| 检测点 | 结果 | 已确认通过的最后一步 |
+|---|---|---|
+| 11 | `reason 2` | `PE_init_platform()` |
+| 34 | `reason 2` | `platform_stall_panic_or_spin()` |
+| 44 | `reason 2` | `thread_bootstrap()` |
+| 15 | `reason 2` | `kernel_startup_bootstrap()` |
+| **16** | **`reason 2`** | **`timer_call_init()` 和 `cpu_init()`** |
+| 17 | `reason 0` | —— `arm_vm_init()` 从未完成 |
+
+**`arm_init` 里只剩两处调用没有验证过：**
+
+```
+cp16  ★
+      processor_bootstrap();
+      arm_vm_init(xmaxmem, args);
+cp17  ✗
+```
+
+### 二分法到此为止，必须动内核
+
+已埋好的检测点用完了。要继续走，只能在 `processor_bootstrap()` 和
+`arm_vm_init()` 之间新埋一个。
+
+### 参考 meizu21 项目得到的两个改动
+
+翻了 `UniXNU/UniXNU` 的 `docs/xnu/four-k-page-tables.md` 和
+`patches/xnu/non-apple-cache-monitor.patch`，发现两件事：
+
+**1. `ml_enable_monitor()` 缺 guard —— 头号嫌疑**
+
+`osfmk/arm64/arm_vm_init.c` 里：
+
+```c
+arm_vm_physmap_init(args);
+set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
+
+#if XNU_MONITOR          ← UniXNU 加的，我们没有
+ml_enable_monitor();
+#endif
+
+set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
+```
+
+**这是 `arm_vm_init()` 干的第一件事**，而 `arm_vm_init()` 正是检测点 17 之前
+最后一段没验证的代码。Apple 平台上这行开 PPL（页保护层），本 SoC 没有 PPL。
+
+grep 我们的 `hakios.patch`：`ml_enable_monitor` 出现 **0 次**。
+
+**2. 新增检测点 45**
+
+埋在 `processor_bootstrap()` 之后、`arm_vm_init()` 之前。这样如果 17 仍然
+不命中，一次上机就能分清是 `processor_bootstrap()` 还是 `arm_vm_init()`。
+
+### 实现
+
+新脚本 `scripts/ci/apply_nonapple_guards.py`，在 CI 里于 apply.sh 之后运行：
+
+```
+guarded ml_enable_monitor() in .../osfmk/arm64/arm_vm_init.c
+added loader_checkpoint(45) after processor_bootstrap() in .../osfmk/arm/arm_init.c
+done (2 change(s))
+```
+
+内核构建成功，说明 `XNU_MONITOR` 宏在该文件可见、guard 语法正确。
+
+### 下一次上机的判读
+
+启动参数回到 `checkpoint=17`：
+
+| 结果 | 含义 |
+|---|---|
+| `reason 2` | `ml_enable_monitor()` 就是卡点，`arm_vm_init()` 第一次跑完 |
+| `reason 0` | 还卡着 → 用 `checkpoint=45` 分清是哪个函数 |
+
+### 另外记录：参考项目与我们路线的差异
+
+`loolooc/UniXNU-meizu21` 和 `XiaoChen8371/unixnu-meizu21` 都是 SM8650 的
+魅族 21，目标 iPadOS 17 / iOS 16.5。它们的 `/STARTUP.md` 明确写着
+「r20 使用固定 boot image 中已经验证的组合，不要自行替换其中任意一项」——
+**它们不自己编译 XNU**，用已验证的内核快照。
+
+这解释了为什么它们能进 iOS 桌面而我们卡在 `arm_init`：它们绕开了最难的一段。
+但 UniXNU 官方的 `four-k-page-tables.md` 因为同样使用 BCM2837 4K 配置，
+对我们直接适用，列出了完整的必备补丁清单。逐条比对后我们缺的是：
+
+| 补丁 | 影响 |
+|---|---|
+| `non-apple-cache-monitor` | `ml_enable_monitor()` —— **已补** |
+| `apple-only-cpu-tunables` | `APPLY_TUNABLES` 在非 Apple 上也会跑 |
+| `native-4k-user-abi` | 4K 用户态页 shift（影响用户态，不影响启动） |
+| `pgz-aligned-validation` | PGZ 地址解码 |
+
+`BOOTSTRAP_TABLE_SIZE`（`*20`）和 `zzx-pmap-sync-64bit-pa` 我们已经有了。
+
+## 2026-11-17 01:39 — guard 加上后 17 仍不命中：ml_enable_monitor 排除
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 17 delta 00000010C900000
+--- kernel message buffer ---
+[  67.960823]: vm_cache_geometry_colors: 16
+[  67.960835]: do_cacheid() - 65536 bytes Unknown cache (I: 32768 D: 32768 (separate)),
+              16-way assoc, 64 bytes/line
+```
+
+给 `ml_enable_monitor()` 加了 `#if XNU_MONITOR` guard、重新编译内核
+（`babcf01e…`，与上一版差 21437 字节）、确认装进镜像（镜像内哈希一致）之后，
+**checkpoint 17 依然 `reason 0`，日志依然 192 字节。**
+
+### 结论
+
+**`ml_enable_monitor()` 不是卡点**，至少不是唯一的一个。
+
+这是一个干净的排除：内核确实换了（字节差异 + 镜像内哈希双重确认），
+guard 确实生效（CI 日志有 `guarded ml_enable_monitor() in ...`），
+行为却没有变化。
+
+### 下一步：45
+
+好在同一轮里已经把 checkpoint 45 埋进了内核，位置正好在
+`processor_bootstrap()` 之后、`arm_vm_init()` 之前：
+
+```
+cp16  ★命中（timer_call_init / cpu_init 都过了）
+      processor_bootstrap();
+cp45  ← 这次测
+      arm_vm_init(xmaxmem, args);
+cp17  ✗
+```
+
+| 45 的结果 | 含义 |
+|---|---|
+| `reason 2` | `processor_bootstrap()` 没问题，故障在 `arm_vm_init()` 内部，需要在它里面再埋细的检测点 |
+| `reason 0` | 故障就在 `processor_bootstrap()` —— 这个函数此前从未被单独验证过 |
+
+这次**不需要重编内核**，因为 45 已经在 `inputs/kernel.macho` 里了，
+只改 launcher 触发 payload 重建即可（约 8 分钟，比之前省一半）。
+
+### 如果落到 arm_vm_init 里面
+
+`arm_vm_init()` 是个很大的函数（源码 89 KB），它开头是：
+
+```c
+arm_vm_physmap_init(args);
+set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
+ml_enable_monitor();          ← 已排除
+set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
+flush_mmu_tlb();
+kva_active = TRUE;
+...
+```
+
+后面还有 `pmap_bootstrap`、CPU 拓扑、页表建立等。真到那一步，
+需要在里面再埋 2～3 个检测点，一次构建全部埋进去，避免一轮一个。
+
+## 2026-11-17 01:57 — checkpoint 45 命中：故障在 arm_vm_init() 内部
+
+```
+kernel returned: reason 2, log 0 bytes
+checkpoint 45 delta 00000010C900000
+DARWINBOOT: checkpoint requested 45
+```
+
+### 45 命中意味着什么
+
+45 埋在 `processor_bootstrap()` 之后、`arm_vm_init()` 之前。它命中，说明：
+
+- `processor_bootstrap()` **没有问题**（这个函数此前从未被单独验证过）
+- 故障确定在 **`arm_vm_init()` 内部**
+
+### arm_vm_init 的结构
+
+这个函数 580 行（源码 89 KB），关键里程碑：
+
+```
+1816  arm_vm_init 开始
+1955  cpu_ttep = kvtophys((vm_offset_t)cpu_tte);
+2141  arm_set_user_tbi();
+2143  arm_vm_physmap_init(args);
+2144  set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
+2146  ml_enable_monitor();          ← 已排除
+2148  set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
+2150  flush_mmu_tlb();
+2151  kva_active = TRUE;            ← 从 bootstrap 页表切走的时刻
+2200  flush_mmu_tlb();
+2247  pmap_bootstrap(dynamic_memory_begin);
+```
+
+### 决定：一次埋四个点，不再一轮一个
+
+前面为了走完 `arm_init` 花了 6 次上机、约 3 小时。这个函数有 580 行，
+按老办法要 6～8 轮。所以这次一次埋 46/47/48/49：
+
+```
+arm_vm_init()
+    46  arm_set_user_tbi() 之前     → 前 ~300 行都过了
+    47  kva_active = TRUE 之后      → physmap + 两次 set_mmu_ttb +
+                                       flush_mmu_tlb + 切换页表都过了
+    48  pmap_bootstrap() 之前       → AuxKC 和 arm_vm_map 那一大块过了
+    49  pmap_bootstrap() 之后       → pmap_bootstrap 自身过了
+```
+
+一次构建，四次上机就能把 580 行切成五段。
+
+### 先测 48 的理由
+
+48 之前全是普通的页表操作；`pmap_bootstrap()` 才是 pmap 真正建立的地方。
+
+而日志里那条一直存在的可疑信息是：
+
+```
+do_cacheid() - 65536 bytes Unknown cache (I: 32768 D: 32768 (separate)),
+               16-way assoc, 64 bytes/line
+```
+
+**32K+32K / 16-way / 64B line 这个组合在真实硅片上不存在**（A53 的 L1 是 2-way，
+只有 L2 才是 16-way；A73 的 L1 是 64K）。
+
+`pmap_bootstrap()` 正是第一个会因为缓存几何不正确而行为异常的地方
+（它要按 cache line 对齐、按 way 组织）。所以 48 这一跳的信息量最大。
+
+### 顺带
+
+`arm_vm_init.c` 里原本没有 `loader_checkpoint` 的声明（hakios 补丁只在
+`arm_init.c` 里加了 `extern`），脚本里一并补上，否则 C99 下会因隐式声明
+编译失败。
+
+## 2026-11-17 02:42 — checkpoint 48 未命中：故障在 pmap_bootstrap 之前
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 48 delta 00000010C900000
+DARWINBOOT: checkpoint requested 48
+```
+
+日志仍是 192 字节，仍是 `do_cacheid` 那两行。
+
+### 窗口
+
+| 检测点 | 结果 | 位置 |
+|---|---|---|
+| 45 | `reason 2` | `processor_bootstrap()` 之后、`arm_vm_init()` 之前 |
+| **48** | **`reason 0`** | **`pmap_bootstrap()` 之前 —— 未到达** |
+
+所以故障在 **cp45 与 cp48 之间**，也就是 `arm_vm_init()` 的前三分之一。
+
+### 剩下两个点
+
+```
+cp45  ★命中
+      ...前 ~300 行...
+cp46  arm_set_user_tbi() 之前
+      arm_set_user_tbi();  arm_vm_physmap_init();  set_mmu_ttb_alternate();
+      set_mmu_ttb(invalid_ttep);  flush_mmu_tlb();  kva_active = TRUE;
+cp47  ← 下一步
+      ...AuxKC、arm_vm_map 循环...
+cp48  ✗未命中
+      pmap_bootstrap(dynamic_memory_begin);
+cp49
+```
+
+### 下一步：47
+
+| 47 的结果 | 新的窗口 |
+|---|---|
+| `reason 2` | 切出 bootstrap 页表成功；故障在 `kva_active` 到 `pmap_bootstrap` 之间（AuxKC 块、`arm_vm_map` 循环） |
+| `reason 0` | 没走到那里；再用 46 区分「前 300 行」和「physmap / set_mmu_ttb / flush」 |
+
+### 一个观察
+
+从 cp45 命中到 cp48 未命中，日志**始终是同样的 192 字节**。也就是说
+`arm_vm_init()` 里没有任何一行成功输出过。
+
+这不奇怪——`kprintf` 要到 checkpoint 18/19 之后才初始化，而 18/19 在
+`arm_vm_init()` **之后**。所以这段区间内核即便想报错也发不出来。
+无论这里是挂起还是静默 panic，屏幕上都只剩那两行。
+
+### 效率
+
+这次仍然不需要重编内核——46/47/48/49 都在 `inputs/kernel.macho`
+（`c8f24d1b…`）里了。改 launcher → payload 重建约 8 分钟 → 刷机。
+若 47 也不命中，接下来测 46，同样只重建 payload。
+
+## 2026-11-17 03:10 — checkpoint 46 也未命中：窗口收到 arm_vm_init 的前 325 行
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 46 delta 00000010C900000
+```
+
+### 四个预先埋好的检测点全部用完
+
+| 检测点 | 结果 | 位置 |
+|---|---|---|
+| 45 | `reason 2` | 进入 `arm_vm_init()` |
+| 46 | `reason 0` | `arm_set_user_tbi()` 之前 —— 未到达 |
+| 47 | `reason 0` | `kva_active = TRUE` 之后 —— 未到达 |
+| 48 | `reason 0` | `pmap_bootstrap()` 之前 —— 未到达 |
+
+故障在 **`arm_vm_init()` 的 1816–2141 行**，即函数开头 325 行。
+
+### 这一段在做什么
+
+```c
+1831  gVirtBase = args->virtBase;
+1832  gPhysBase = args->physBase;
+1836  real_phys_size = args->memSize;
+1847  gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
+1857  if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2))
+1858      panic("Unsupported memory configuration %lx", mem_size);
+1865  physmap_base = phystokv(args->topOfKernelData);
+1869  uint64_t physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;
+1872  physmap_base += physmap_slide;
+1888  static_memory_end = physmap_base + mem_size + (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE);
+1914  boot_tte = (tt_entry_t *)&bootstrap_pagetables;
+1917  #if DEVELOPMENT || DEBUG
+1924      if (pages_used > BOOTSTRAP_TABLE_SIZE)
+1925          panic("BOOTSTRAP_TABLE_SIZE too small for memory config");
+1947  invalid_tte = (tt_entry_t *)alloc_ptpage(TRUE);
+1954  cpu_tte = (tt_entry_t *)alloc_ptpage(TRUE);
+1973  init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin, TRUE, ...);
+1993  segPRELINKTEXTB = getsegdatafromheader(&_mh_execute_header, "__PRELINK_TEXT", ...);
+     （后面十几个 getsegdatafromheader）
+2076  vm_set_page_size();
+2097  arm_vm_prot_init(args);
+2121  init_ptpages(cpu_tte, dynamic_memory_begin, ROUND_L1(dynamic_memory_begin), FALSE, ...);
+2127  init_ptpages(cpu_tte, dynamic_memory_begin, VM_MAX_KERNEL_ADDRESS, TRUE, ...);
+```
+
+### 三个具体的嫌疑
+
+**1. `early_random()`（1869 行）**
+
+在这么早的阶段取随机数。如果熵源（通常是 timer 或 SoC 的 RNG）没起来，
+这个调用本身就可能挂住。而 Physmap slide 依赖它。
+
+**2. `init_ptpages()`（1973 行）**
+
+这是**页表真正建立的地方**。它遍历 kernel 的段列表，为每一段建 L1/L2 表项。
+如果段信息（来自 boot_args / Mach-O header）不对，或者页表池不够，这里会出问题。
+
+**3. `BOOTSTRAP_TABLE_SIZE` 检查（1917–1927）**
+
+```c
+#if DEVELOPMENT || DEBUG
+    size_t bytes_mapped = dynamic_memory_begin - gVirtBase;
+    size_t l1_entries = 1 + ((bytes_mapped + ARM_TT_L1_SIZE - 1) / ARM_TT_L1_SIZE);
+    size_t pages_used = 2 * (l1_entries + 1);
+    if (pages_used > BOOTSTRAP_TABLE_SIZE) {
+        panic("BOOTSTRAP_TABLE_SIZE too small for memory config");
+    }
+#endif
+```
+
+我们的内核是 DEVELOPMENT 构建，这个检查会执行。hakios 已把
+`BOOTSTRAP_TABLE_SIZE` 从 `ARM_PGBYTES * 8` 改成 `* 20`。
+
+注意单位：`pages_used` 是**页数**，而 `BOOTSTRAP_TABLE_SIZE` 是**字节数**
+（`ARM_PGBYTES * 20` = 81920）。页数永远小于 81920，所以这个比较**恒为假**，
+不可能触发 panic。这一条可以排除。
+
+### 新埋的四个点（50–53）
+
+```
+cp45  ★命中
+      98 行：内存几何、real_phys_size、physmap_base、early_random()、physmap_end
+cp50  boot_tte = (tt_entry_t *)&bootstrap_pagetables;
+      alloc_ptpage() × 2（invalid_tte、cpu_tte）
+cp51  init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin, TRUE, ...)
+cp52  ★ 这次测这里
+      段查找、vm_set_page_size、arm_vm_prot_init、第二个 init_ptpages
+cp53  arm_set_user_tbi() 之前
+cp46  ✗未命中
+```
+
+51 和 52 **夹住 `init_ptpages()`**：如果 51 命中而 52 不命中，就直接锁定了这个调用。
+
+### 本地先验证了脚本
+
+用下载的 `arm_vm_init.c` 在本地跑了一遍插入，确认：
+
+- 8 个检测点全部插入（46–53）
+- 位置正确：50@1916、51@1976、52@1978、53@2103、46@2147、47@2159、48/49@2255/2257
+- 幂等性通过（第二次运行无变化）
+
+避免又一次 10 分钟的构建失败。
+
+## 2026-11-17 18:30 — 新探针 50–53 埋入，先在本机验证
+
+checkpoint 46 未命中，窗口锁定在 `arm_vm_init()` 的 1816–2141 行（325 行）。
+四个原有探针（45–49）已全部用完，所以在这一段里新埋四枚。
+
+### 新探针的位置
+
+| 探针 | 源码行 | 之前已完成的内容 |
+|---|---|---|
+| 50 | 1916 | 98 行：`gVirtBase`/`gPhysBase`、`real_phys_size`、`gPhysSize`、`physmap_base`、`early_random()` 取 slide、`physmap_end` 算术 |
+| 51 | 1976 | `boot_tte` 赋值 + 两次 `alloc_ptpage()`（`invalid_tte`、`cpu_tte`）及 `bzero` |
+| 52 | 1978 | **第一个 `init_ptpages()` 完成** |
+| 53 | 2103 | 段查找、`vm_set_page_size()`、`arm_vm_prot_init()`、第二个 `init_ptpages()` |
+
+51 与 52 **夹住 `init_ptpages()`**：若 51 命中而 52 不命中，就直接锁定这个调用。
+
+### 先在本地验证，避免又一次 10 分钟构建失败
+
+用下载的 `arm_vm_init.c` 在临时目录跑了一遍插入脚本：
+
+```
+added loader_checkpoint(50)
+added loader_checkpoint(51)
+added loader_checkpoint(52)
+added loader_checkpoint(53)
+added loader_checkpoint(46) ... (49)
+```
+
+插入后核对行号：50@1916、51@1976、52@1978、53@2103、46@2147、47@2159、48/49@2255/2257 —— 顺序正确。
+幂等性也验证了（第二次运行无任何新增）。
+
+### 三个嫌疑点的排查
+
+**1. `early_random()`（1869 行）—— 证据不支持它是卡点**
+
+```c
+rc = ccdrbg_init(&erandom.drbg_info, ..., bootseed, ...);
+if (rc != CCDRBG_STATUS_OK) {
+    panic("ccdrbg_init() returned %d", rc);      // 早期 panic 打印不出来
+}
+```
+
+失败路径确实是静默 panic，符合症状。但它的依赖是 `ccsha256_ltc_di`
+（corecrypto 自带的轻量实现，已静态链进内核），**不需要 crypto provider 注册**。
+HakiOS 还专门在别处加了 `if (g_crypto_funcs == NULL) return;` 的 guard。
+所以这条链大概率是通的。若测 50 不命中，它就是第一嫌疑；若 50 命中，则排除。
+
+**2. `BOOTSTRAP_TABLE_SIZE` 检查（1917–1927）—— 可以排除**
+
+```c
+size_t pages_used = 2 * (l1_entries + 1);
+if (pages_used > BOOTSTRAP_TABLE_SIZE) {
+    panic("BOOTSTRAP_TABLE_SIZE too small for memory config");
+}
+```
+
+`pages_used` 是**页数**，`BOOTSTRAP_TABLE_SIZE` 是**字节数**（`ARM_PGBYTES * 20`
+= 81920）。页数永远小于 81920，比较恒为假。这条 panic 不可能触发。
+
+**3. `alloc_ptpage()` 无边界检查 —— 结构性问题，值得记下**
+
+```c
+#if !(defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR))
+	map_static = FALSE;                       // 我们没有 KTRR/CTRR
+#endif
+	if (map_static) {
+		assert(ropage_next < (vm_offset_t)&ropagetable_end);   // 有保护
+		...
+	} else {
+		vaddr = phystokv(avail_start);         // 无 assert、无边界检查
+		avail_start += ARM_PGBYTES;
+	}
+```
+
+本机没有 `KERNEL_INTEGRITY_KTRR/CTRR`，于是 `map_static` 被强制改成 FALSE，
+走的是**完全没有保护**的那一支。`init_ptpages()` 每映射 1 GB 就取一页，
+池若不够就一路往上加，既不看边界也不看那页是否可用。
+
+UniXNU 的 `native-4k-bootstrap-capacity` 补丁正是在 `start.s` 里加了容量检查：
+
+```asm
+add $6, x25, #(BOOTSTRAP_TABLE_BYTES >> 12), lsl #12
+cmp $4, $6
+b.hs Lbootstrap_tables_exhausted
+```
+
+但那只保护 `start.s` 里的分配，**不保护 C 代码里 `init_ptpages()` 的循环**。
+如果 52 不命中而 51 命中，就要从这里入手。
+
+按我们的几何估算，循环次数并不多：`gVirtBase = 0xFFFFFFF007004000`，
+`dynamic_memory_begin` 约 `physmap_base + mem_size + 2 MB`，再叠加最多 1 GB 的
+slide，大约 4–6 次迭代。而池有 20 页。所以单纯「池不够」不成立，
+除非 `dynamic_memory_begin` 算出来异常大——那又会指回 `early_random()` 和
+`physmap_base` 的算术。
+
+### 这一轮的判读表
+
+启动参数 `checkpoint=52`：
+
+| 结果 | 新的窗口 |
+|---|---|
+| `reason 2` | `init_ptpages()` 完成；故障在段查找 / `arm_vm_prot_init` / 第二个 `init_ptpages` |
+| `reason 0` | 测 51 → 命中则是 `init_ptpages()` 本身，不命中则测 50（`early_random` / physmap 算术） |
+
+## 2026-11-17 20:45 — 51 也未命中：init_ptpages 无罪，窗口收到前 98 行
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 51 delta 00000010C900000
+DARWINBOOT: checkpoint requested 51
+```
+
+### 八次检测点的完整结果
+
+| 检测点 | 结果 | 已确认通过的最后一步 |
+|---|---|---|
+| 11 | `reason 2` | `PE_init_platform()` |
+| 34 | `reason 2` | `platform_stall_panic_or_spin()` |
+| 44 | `reason 2` | `thread_bootstrap()` |
+| 15 | `reason 2` | `kernel_startup_bootstrap()` |
+| 16 | `reason 2` | `timer_call_init()` + `cpu_init()` |
+| 45 | `reason 2` | 进入 `arm_vm_init()` |
+| 52 | `reason 0` | —— 第一个 `init_ptpages()` 之后 |
+| **51** | **`reason 0`** | **—— `init_ptpages()` 之前那一行** |
+
+### 一个重要结论：`init_ptpages()` 无罪
+
+51 就在 `init_ptpages(...)` 的上一行，它没命中，说明内核**连那个调用之前的一行都没走到**。
+
+所以之前对 `alloc_ptpage()` 无边界检查的怀疑，以及 `init_ptpages()` 循环分配页表的分析，
+**都不适用于当前卡点**。那些是真实存在的隐患，但不是现在的原因。
+
+### 窗口：`arm_vm_init()` 的前 98 行
+
+```
+cp45  ★命中（进入 arm_vm_init）
+      gVirtBase = args->virtBase;
+      gPhysBase = args->physBase;
+      real_phys_size = args->memSize;
+      gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
+      if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2))
+          panic("Unsupported memory configuration %lx", mem_size);
+      physmap_base = phystokv(args->topOfKernelData);
+      physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;
+      physmap_base += physmap_slide;
+      static_memory_end = physmap_base + mem_size + (PTOV_TABLE_SIZE * ARM_TT_TWIG_SIZE);
+      dynamic_memory_begin = static_memory_end;
+cp50  ← 现在测这里
+      boot_tte = (tt_entry_t *)&bootstrap_pagetables;
+      alloc_ptpage() × 2
+cp51  ✗未命中
+```
+
+### 50 这一跳的意义
+
+| 50 的结果 | 含义 |
+|---|---|
+| `reason 2` | 前 98 行的算术没问题；故障在 `boot_tte`、两次 `alloc_ptpage()`，或者它们中间的 `BOOTSTRAP_TABLE_SIZE` 检查 |
+| `reason 0` | **故障就在这 98 行里**，`early_random()` 成为头号嫌疑 |
+
+### 如果 50 不命中
+
+`early_random()` 在 1869 行，它的懒初始化结尾是：
+
+```c
+rc = ccdrbg_init(&erandom.drbg_info, ..., sizeof(bootseed), bootseed, ...);
+if (rc != CCDRBG_STATUS_OK) {
+    panic("ccdrbg_init() returned %d", rc);
+}
+```
+
+这个阶段 panic 打印不出来（`kprintf` 要到 checkpoint 18 之后），所以机器就是静默停住 ——
+和观察完全一致。
+
+反方证据：`ccdrbg_init()` 只需要 `ccsha256_ltc_di`，它是静态链进内核的轻量实现，
+不需要 crypto provider 注册，理论上零种子也能成功。
+
+两条都要查。下一次上机就能分辨。
+
+### 另外记一笔：`physmap_base = phystokv(args->topOfKernelData)`
+
+这一行在 1865 行，同样在 98 行之内。`topOfKernelData` 由 loader 填进 `boot_args`，
+而我们面板上显示的是 `WIN D0004000 HIGH D0004000 ... window 0x30000000`。
+
+如果这个字段和窗口的关系算错，`physmap_base` 会偏，后面的 `static_memory_end`、
+`dynamic_memory_begin` 全部跟着偏。这是 98 行里第三个值得查的算术。
+
+## 2026-11-17 21:10 — 50 也未命中：只剩 arm_vm_init 的前 98 行
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 50 delta 00000010C900000
+DARWINBOOT: checkpoint requested 50
+```
+
+### 十次检测点的完整结果
+
+| 检测点 | 结果 | 已确认通过的最后一步 |
+|---|---|---|
+| 11 | `reason 2` | `PE_init_platform()` |
+| 34 | `reason 2` | `platform_stall_panic_or_spin()` |
+| 44 | `reason 2` | `thread_bootstrap()` |
+| 15 | `reason 2` | `kernel_startup_bootstrap()` |
+| 16 | `reason 2` | `timer_call_init()` + `cpu_init()` |
+| 45 | `reason 2` | 进入 `arm_vm_init()` |
+| 53 | `reason 0` | —— `arm_vm_prot_init()` 之后 |
+| 52 | `reason 0` | —— 第一个 `init_ptpages()` 之后 |
+| 51 | `reason 0` | —— `init_ptpages()` 之前一行 |
+| **50** | **`reason 0`** | **—— `boot_tte` 赋值之前** |
+
+`arm_vm_init()` 里从 46 往后全部静默，而 50 是其中最早的一个。
+**故障就在函数开头这 98 行（1816–1914）。**
+
+### 三个候选逐个查证，全部排除
+
+**1. `mem_size` 那条 panic —— 不会触发**
+
+面板上 `window 0x30000000`，即 768 MB。
+
+```c
+gPhysSize = mem_size = ((0xD0004000 + 0x30000000) & ~PAGE_MASK) - 0xD0004000 = 0x30000000;
+if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2))
+```
+
+`VM_MAX - VM_MIN = 0xFFFFFFFBFFFFFFFF - 0xFFFFFFE000000000 = 0x1BFFFFFFFF` ≈ 120 GB，
+一半是 60 GB。768 MB 远小于它，不触发。
+
+**2. `random-seed` 缺失 —— 已排除，属性存在且有效**
+
+这是我这一轮最看重的怀疑，因为 `early_random()` 的失败路径是静默 panic：
+
+```c
+n = PE_get_random_seed(seed, sizeof(seed));       // 要 64 字节
+if (n < sizeof(seed))
+    panic("Expected %lu seed bytes from bootloader, but got %u.", 64, n);
+```
+
+而 `PE_get_random_seed()` 只从设备树读：
+
+```c
+if ((SecureDTLookupEntry(NULL, "/chosen", &entryP) == kSuccess)
+    && (SecureDTGetProperty(entryP, "random-seed", ..., &size) == kSuccess)) { ... }
+return size;                                      // 属性不存在则返回 0
+```
+
+所以直接翻了 `meizu15-8plus.adt` 的二进制：
+
+```
+0170  00 00 00 00 07 00 00 00 63 68 6F 73 65 6E 00 00   ........chosen..
+0180  72 61 6E 64 6F 6D 2D 73 65 65 64 00 00 00 00 00   random-seed.....
+01A0  40 00 00 00 09 9B 44 CC 0F 65 8D 58 08 7B EB 16   @.....D.e.X.{...
+```
+
+`40 00 00 00` = 64 字节，后面是真实的随机数据（不是全零）。
+`PE_get_random_seed()` 会返回 64，`bootseed_init_bootloader()` 不会 panic。**排除。**
+
+顺带确认：`ramdisk` / `trust-cache` / `addon` / `policy` 在 ADT 里都没有，
+但 DarwinBoot 只在对应指针非 NULL 时才写那些偏移，我们传的是 NULL，所以无害。
+
+**3. 地址范围 —— 合法**
+
+`gVirtBase = 0xFFFFFFF007004000` 落在
+`VM_MIN_KERNEL_ADDRESS (0xFFFFFFE000000000)` 与 `VM_MAX_KERNEL_ADDRESS (0xFFFFFFFBFFFFFFFF)` 之间。
+
+### 还核对过的：boot_args 布局是对的
+
+之前担心 `BootArgs.h` 注释写的是 **Darwin 23** ABI，而我们跑的是 xnu-8796（Darwin 22）。
+逐字段核对后确认布局一致：
+
+```c
+// DarwinBoot 的 BootArgs.h
+UINT16 Revision;  UINT16 Version;  UINT32 Padding;   // 0x00/0x02/0x04
+UINT64 VirtualBase;                                  // 0x08
+UINT64 PhysicalBase;                                 // 0x10
+UINT64 MemorySize;                                   // 0x18
+UINT64 TopOfKernelData;                              // 0x20
+UINT64 Video[6];                                     // 0x28
+```
+
+XNU 8796 的 `pexpert/pexpert/arm64/boot.h`：
+
+```c
+uint16_t Revision;  uint16_t Version;                // 0x00/0x02
+uint64_t virtBase;                                   // 0x08（编译器自动补 4 字节 padding）
+uint64_t physBase;                                   // 0x10
+uint64_t memSize;                                    // 0x18
+uint64_t topOfKernelData;                            // 0x20
+Boot_Video Video;                                    // 0x28
+```
+
+`STATIC_ASSERT (OFFSET_OF (DARWIN_BOOT_ARGS, Video) == 0x28)` 与 XNU 一致。
+名字不同、偏移相同，二进制兼容。**不是问题。**
+
+### 结论：只能继续埋点
+
+98 行里每个候选都被输入数据排除了，剩下的是 `phystokv()` 和 `early_random()`
+两个调用，以及中间的算术。再分析不会有新信息，所以新增四个探针：
+
+| 探针 | 位置 | 切分意义 |
+|---|---|---|
+| 54 | `gPhysSize` 赋值之后 | 三个字段赋值 + 尺寸算术 |
+| 55 | `physmap_base = phystokv(...)` **之前** | 尺寸 panic 检查 |
+| 56 | `physmap_base += physmap_slide` **之后** | **夹住 `phystokv` + `early_random`** |
+| 57 | `dynamic_memory_begin` 范围检查之前 | `static_memory_end` / `physmap_end` 算术 |
+
+55 与 56 把仅有的两个调用夹在中间。已在本地用真实的 `arm_vm_init.c`
+验证过插入位置与幂等性（12 个探针全部到位）。
+
+下一次上机测 **56**：
+
+| 结果 | 含义 |
+|---|---|
+| `reason 2` | 两个调用都返回了，故障在 56→57 的算术 |
+| `reason 0` | `phystokv()` 或 `early_random()` 没回来，55 再分左右 |
+
+## 2026-11-17 22:25 — 56 未命中：只剩 phystokv 和 early_random
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 56 delta 00000010C900000
+DARWINBOOT: checkpoint requested 56
+```
+
+### 十一个检测点的结果
+
+| 检测点 | 结果 | 位置 |
+|---|---|---|
+| 11、34、44、15、16 | `reason 2` | arm_init 各段 |
+| 45 | `reason 2` | 进入 `arm_vm_init()` |
+| 53、52、51、50 | `reason 0` | arm_vm_init 中段以后 |
+| **56** | **`reason 0`** | **`physmap_base += physmap_slide` 之后** |
+
+56 紧跟在 `physmap_base += physmap_slide;` 之后，它没命中，说明内核没走完上面三行：
+
+```c
+physmap_base  = phystokv(args->topOfKernelData);                         // 调用 1
+physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~PAGE_MASK;  // 调用 2
+assert(physmap_slide < ARM64_PHYSMAP_SLIDE_RANGE);
+physmap_base += physmap_slide;
+```
+
+### 这是整个 98 行里仅有的两个调用
+
+其余全是 `boot_args` 上的算术，而算术逐项对着面板数值核算过，没有能触发 panic 的情况：
+
+| 项 | 实测/推算 | 阈值 |
+|---|---|---|
+| `mem_size` | `0x30000000`（768 MB） | 内核地址空间一半，约 60 GB |
+| `gVirtBase` | `0xFFFFFFF007004000` | `0xFFFFFFE000000000`..`0xFFFFFFFBFFFFFFFF` |
+| `/chosen/random-seed` | 存在，64 字节真实数据 | 需要 64 |
+
+所以嫌疑收敛到 `phystokv()` 和 `early_random()` 两个。
+
+### 下一步：55
+
+55 在 `physmap_base = phystokv(...)` 的上一行。
+
+| 55 的结果 | 含义 |
+|---|---|
+| `reason 2` | 两个调用之一没回来 —— 下一步在它们之间再插一个探针分清 |
+| `reason 0` | 连更前面都没到，用 54 定位尺寸算术 |
+
+### 为什么 early_random 更可疑
+
+它的种子路径结尾是：
+
+```c
+rc = ccdrbg_init(&erandom.drbg_info, ..., sizeof(bootseed), bootseed, ...);
+if (rc != CCDRBG_STATUS_OK)
+    panic("ccdrbg_init() returned %d", rc);
+```
+
+而这个阶段的 panic **一个字都打不出来**——`kprintf` 要到 checkpoint 18 附近才起来，
+那已经是 `arm_vm_init()` 之后很久了。
+
+### 这一轮顺手解决的两个工程问题
+
+**1. 下载从一小时压到两分钟**
+
+内核 artifact 里混着 dSYM 的 66 MB 调试镜像，总共 160 MB，按 40 KB/s 要跑一小时。
+现在 workflow 额外上传一个只含 `kernel.macho.gz` 的 artifact：
+
+```
+meizu15-kernel        5.85 MB
+meizu15-xnu-hakios-v2  133 MB   （顺带把 dSYM 排除掉了）
+```
+
+**2. 注释块替换脚本重复插入 `Request.BootArgs`**
+
+`set_block.py` 会把传入文件整段插到原 `BootArgs` 之前，而我的模板文件末尾
+误带了一行 `Request.BootArgs`，导致出现两行（编译会报重复初始化）。
+已在脚本里过滤掉含 `Request.BootArgs` 的行，从源头修掉。
+
+## 2026-11-17 23:06 — 54 也未命中：在纯赋值处崩，指向栈
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 54 delta 00000010C900000
+DARWINBOOT: checkpoint requested 54
+```
+
+### 十二个检测点
+
+| 检测点 | 结果 |
+|---|---|
+| 11、34、44、15、16（`arm_init` 各段） | `reason 2` |
+| 45（`processor_bootstrap()` 之后、`arm_vm_init()` 之前） | **`reason 2`** |
+| 53、52、51、50、56、55 | `reason 0` |
+| **54（`gPhysSize = mem_size` 之后）** | **`reason 0`** |
+
+### 为什么这一条特别有信息量
+
+45 命中、54 未命中，两者之间只有：
+
+```c
+gVirtBase      = args->virtBase;
+gPhysBase      = args->physBase;
+real_phys_size = args->memSize;
+gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
+```
+
+**四个字段读取 + 一次整数算术，没有调用、没有循环、没有分支。**
+
+一个函数死在这里，不是死于「工作没做完」，而是死于「没能进来」。
+
+### 两个可能，第一个更有希望
+
+**A. 栈溢出**
+
+XNU 内核栈默认 `4*4096 = 16 KiB`，而它自己的注释就警告过这件事
+（`osfmk/mach/arm/vm_param.h` 第 320 行）：
+
+```c
+/*
+ * KERNEL_STACK_MULTIPLIER can be defined externally to get a larger
+ * kernel stack size. For example, adding "-DKERNEL_STACK_MULTIPLIER=2"
+ * helps avoid kernel stack overflows when compiling with "-O0".
+ */
+# define KERNEL_STACK_SIZE (4*4096*KERNEL_STACK_MULTIPLIER)
+```
+
+三条事实叠在一起：
+
+1. 我们的构建是 `KERNEL_CONFIGS=DEVELOPMENT`（`xnu-build.sh` 第 20 行），
+   这类配置通常不做激进优化，栈槽不会合并
+2. `arm_init()` 把 `boot_args` 的副本（**0x480 = 1152 字节**）放在自己栈上，
+   并把它的地址传给 `arm_vm_init()`：
+   ```c
+   const_boot_args = *args;
+   BootArgs = args = &const_boot_args;
+   ...
+   arm_vm_init(xmaxmem, args);
+   ```
+3. **45 在 `arm_init` 的帧里跑，命中；54 在 `arm_vm_init` 的帧里跑，静默。**
+   越深越崩——这正是栈溢出的特征
+
+**B. `args` 指针失效**
+
+如果指针坏了，1831 行第一次解引用就崩，而 45 在调用之前，仍会命中。
+但 `args` 指向的是 `arm_init` 栈上的副本，只要 `arm_init` 的帧还在就有效，
+所以这个可能性低于 A。
+
+### 决定：把栈放大四倍，一次分辨两种可能
+
+`KERNEL_STACK_MULTIPLIER` 从 1 改成 4（16 KiB → 64 KiB）。它只影响栈的分配大小，
+不改变任何 ABI，风险很低。
+
+加进 `apply_nonapple_guards.py` 作为第 6 处修改，本地已验证锚点唯一、幂等。
+
+启动参数保持 `checkpoint=54`：
+
+| 结果 | 结论 |
+|---|---|
+| **`reason 2`** | **栈溢出确认**，`arm_vm_init()` 的帧在 16 KiB 上放不下；之后可以把栈回调到 2 倍，或按需保留 4 倍 |
+| `reason 0` | 栈不是原因，问题在 `args` 或更早；下一步查 `const_boot_args` 的复制与 `arm_init` 的帧大小 |
+
+## 2026-11-17 23:51 — 把栈放大到 64 KiB 后 54 仍不命中：栈排除
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 54 delta 00000010C900000
+```
+
+`KERNEL_STACK_MULTIPLIER` 从 1 改成 4（16 KiB → 64 KiB），内核字节差异 31 字节
+（就是那个常量），确认装进镜像（`0da79ae4…`）。**54 依旧静默。**
+
+### 栈假设排除
+
+原来的推理是：45 在 `arm_init` 的帧里命中，54 深一层就静默，符合栈溢出特征。
+四倍栈之后依然如此，所以不是栈。
+
+### 顺手查了两件事，都有结论
+
+**1. 四个全局变量在哪个段**
+
+用 `scripts/ci/macho_map.py` 解析内核 Mach-O：
+
+| 段 | vmaddr | vmsize |
+|---|---|---|
+| `__TEXT` | `0xFFFFFFF007004000` | 1,703,936 |
+| `__DATA_CONST` | `0xFFFFFFF0071A4000` | 966,656 |
+| `__TEXT_EXEC` | `0xFFFFFFF007290000` | 8,863,744 |
+| `__DATA` | `0xFFFFFFF007B10000` | 4,456,448 |
+| `__BOOTDATA` | `0xFFFFFFF007F50000` | 311,296 |
+| `__LINKEDIT` | `0xFFFFFFF00802C000` | 2,949,120 |
+
+内核映像整体 `0xFFFFFFF007004000 .. 0xFFFFFFF0082FC000`，19,890,176 字节。
+
+符号位置：
+
+```
+gVirtBase       0xFFFFFFF0071B5110   __DATA_CONST
+gPhysBase       0xFFFFFFF0071B5100   __DATA_CONST
+real_phys_size  0xFFFFFFF0071B5108   __DATA_CONST
+gPhysSize       0xFFFFFFF0071B5120   __DATA_CONST
+mem_size        0xFFFFFFF007BB8880   __DATA
+```
+
+`arm_vm_init` 开头要写的四个变量**全在 `__DATA_CONST`**。
+
+**2. `__DATA_CONST` 在 bootstrap 页表里是不是只读**
+
+查 `osfmk/arm64/proc_reg.h`：
+
+```c
+#define ARM_TTE_BOOT_BLOCK \
+	(ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | \
+	 ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITEBACK) | ARM_TTE_BLOCK_AF)
+```
+
+**没有 `ARM_TTE_BLOCK_AP(...)`**，AP 字段为 0，即 `AP_RWNA`
+（特权级读写、用户级不可访问）。所以 bootstrap 页表对 `__DATA_CONST` 是可写的。
+
+**这条也排除。**
+
+### 所以只剩四个赋值本身
+
+新增三个探针，把 1831–1852 切成四段：
+
+```
+cp58  gVirtBase = args->virtBase; 之前     ← 这次测
+      gVirtBase = args->virtBase;
+      gPhysBase = args->physBase;
+cp59  ← 两个赋值之后
+      real_phys_size = args->memSize;
+cp60  ← 之前
+      gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
+cp54  ← 之后
+```
+
+一次构建，最多四次上机就能定位到单行。
+
+### 58 这一跳改变调查方向
+
+| 结果 | 含义 |
+|---|---|
+| `reason 2` | 函数体进来了，问题在那四个赋值中的一个，用 59/60/54 精确定位 |
+| `reason 0` | **函数体根本没进**——不是赋值的问题，而是调用本身或 prologue。下一步要查 `arm_init()` 怎么传 `xmaxmem` 和 `&const_boot_args` |
+
+## 2026-11-18 00:37 — 58 未命中：函数体没进，根因是中断栈
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 58 delta 00000010C900000
+DARWINBOOT: checkpoint requested 58
+```
+
+58 是 `arm_vm_init` 函数体的**第一条语句**（在 `gVirtBase = args->virtBase;` 之前，
+注释之后）。它不命中，说明连函数体都没进——**问题不在赋值，而在调用或 prologue。**
+
+### 找到了上一轮栈修复无效的原因
+
+我改的是 `KERNEL_STACK_MULTIPLIER`，它只影响：
+
+```c
+# define KERNEL_STACK_SIZE      (4*4096*KERNEL_STACK_MULTIPLIER)
+```
+
+这是**线程栈**。而启动阶段根本不用线程栈。
+
+`start.s` 第 498–510 行：
+
+```asm
+mov     sp, x0                              // SP_EL0 = intstack_top
+...
+adrp    lr, EXT(arm_init)@page
+add     lr, lr, EXT(arm_init)@pageoff
+```
+
+**`arm_init` 跑在中断栈上。** 中断栈的大小是：
+
+```c
+#define INTSTACK_SIZE           (4*4096)     // 16 KiB
+#define EXCEPSTACK_SIZE         (4*4096)     // 16 KiB
+```
+
+### 为什么这解释了一切
+
+这个 16 KiB 要同时装下：
+
+1. `arm_init()` 的帧，其中包含 **`boot_args` 的完整副本，0x480 = 1152 字节**：
+   ```c
+   const_boot_args = *args;
+   BootArgs = args = &const_boot_args;
+   ```
+2. `arm_vm_init()` 的帧——这是个 580 行的大函数，prologue 一次性开辟的栈空间不小
+3. `loader_checkpoint()` → `loader_jump()` 的调用链
+
+**prologue 里 `sub sp, sp, #N` 之后第一次 push 就越过栈底，撞上 guard page，
+当场数据中止，函数体一行都没执行。**
+
+这与观察到的每一条现象都对得上：
+
+| 现象 | 解释 |
+|---|---|
+| 45 命中 | `arm_init` 的帧较浅，还在 16 KiB 内 |
+| 58、54、55、56、50–53 全部静默 | 都在 `arm_vm_init` 的帧里，prologue 即溢出 |
+| 改 `KERNEL_STACK_MULTIPLIER` 无效 | 那是线程栈，与启动无关 |
+| 栈上没有更早的症状 | 溢出点在 guard page 上，直接中止，不写坏别的数据 |
+
+### 修复
+
+`INTSTACK_SIZE` 和 `EXCEPSTACK_SIZE` 各从 `4*4096` 提到 `16*4096`（16 KiB → 64 KiB）。
+8 核的话中断栈总量约 512 KiB，在这个窗口里可以接受。
+
+启动参数保持 `checkpoint=58`：
+
+| 结果 | 结论 |
+|---|---|
+| **`reason 2`** | **中断栈溢出确认**，`arm_vm_init` 的帧在 16 KiB 上放不下；接着连续测 59 / 60 / 54，然后一路往上 |
+| `reason 0` | 中断栈也不是原因，转向查 `arm_vm_init` 的符号解析与调用点 |
+
+这一轮如果对了，前面十几轮「越深越静默」的现象会一次性得到解释。
+
+## 2026-11-18 01:37 — 找到根因：设备树地址用了虚拟地址，而那时只能用物理地址
+
+### 58 未命中，栈彻底排除
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 58 delta 00000010C900000
+DARWINBOOT: checkpoint requested 58
+```
+
+中断栈放大到 64 KiB（内核尺寸 +98,304 字节，`intstack` 符号落在
+`__BOOTDATA 0xFFFFFFF007F88000..0xFFFFFFF007F98000`，正好 64 KiB），
+58 依然静默。**栈这条线到此完全排除。**
+
+### 反汇编给出了两个关键事实
+
+`scripts/ci/dis_prologue.py` 解 `arm_vm_init` 的入口：
+
+```
+0xFFFFFFF007458C3C  D10603FF  sub sp, sp, #96          ← 帧只有 96 字节
+0xFFFFFFF007458C40  A9126FFC  ldp x28, x27, [sp, #288]
+...
+0xFFFFFFF007458C74  52800740  mov w0, #58
+0xFFFFFFF007458C78  940073A3  bl loader_checkpoint     ← 探针确实在二进制里
+```
+
+**prologue 只分配 96 字节。**16 KiB 的栈都绰绰有余，之前怀疑栈溢出是错的。
+探针也确实被编译进去了。
+
+### 真正的断点：`arm_init` 里 processor_bootstrap 之后那一段
+
+XNU 原版 `osfmk/arm/arm_init.c`：
+
+```c
+469  processor_bootstrap();
+470
+471  if (PE_parse_boot_argn("maxmem", &maxmem, sizeof(maxmem))) {
+472      xmaxmem = (uint64_t) maxmem * (1024 * 1024);
+473  } else if (PE_get_default("hw.memsize", &memsize, sizeof(memsize))) {   ← 读设备树
+474      xmaxmem = (uint64_t) memsize;
+475  } else {
+476      xmaxmem = 0;
+477  }
+...
+503  nanoseconds_to_absolutetime(XCALL_ACK_TIMEOUT_NS, &xcall_ack_timeout_abstime);
+512  #if __ARM_PAN_AVAILABLE__
+513      __builtin_arm_wsr("pan", 1);
+514  #endif
+516  arm_vm_init(xmaxmem, args);
+```
+
+探针 45 在 `processor_bootstrap()` 之后，58 在 `arm_vm_init()` 里。
+**中间隔着 `PE_get_default("hw.memsize", ...)`，它要遍历设备树。**
+
+### 设备树地址给错了
+
+`pexpert/arm/pe_init.c`：
+
+```c
+PE_state.deviceTreeHead = boot_args_ptr->deviceTreeP;     // 原样保存，不转换
+```
+
+而虚拟化是**很久以后**才做的，在 `arm_vm_init()` 自己里面
+（`osfmk/arm64/arm_vm_init.c` 第 1571 行附近）：
+
+```c
+// Device tree (if not locked down), ramdisk, boot args
+arm_vm_physmap_slide(temp_ptov_table, end_kern, ..., AP_RWNA, 0);
+if (!SecureDTIsLockedDown()) {
+    PE_slide_devicetree(temp_ptov_table[ptov_index - 1].va - end_kern);
+}
+```
+
+`PE_slide_devicetree()` 才是那个「物理地址 + slide = 虚拟地址」的步骤。
+
+**所以 `deviceTreeP` 必须是在切换页表之前就能访问的地址，也就是物理地址。**
+
+而我们一直在填：
+
+```c
+Args->DeviceTree = Kernel.Base + TreeAddress - Address;   // KVA
+```
+
+### 这解释了整条现象链
+
+| 现象 | 解释 |
+|---|---|
+| 45 命中 | 它在 `PE_get_default()` 之前 |
+| 58 及之后全部静默 | 它们都在 `arm_vm_init()` 里，而内核根本没走到调用 |
+| 日志恒为 192 字节 | `do_cacheid()` 之后没有任何东西能输出，panic 也打印不出来 |
+| `reason 0` 而非 2 | 数据中止 → panic → `halt_all_cpus()` → `loader_return()` |
+| 改栈无效 | 帧只有 96 字节，从来不是栈的问题 |
+| 改 `ml_enable_monitor` 无效 | 那个调用在设备树读取之后，根本没执行到 |
+
+### 修复
+
+`DarwinBoot.c` 第 1679 行：
+
+```c
+Args->DeviceTree = TreeAddress;      // 物理地址
+```
+
+只改这一行，内核不动，需要重建 payload。
+
+| 结果 | 结论 |
+|---|---|
+| 58 命中 | 根因确认，`arm_vm_init` 第一次真正开始执行；接着连测 59 / 60 / 54，再往上到 55–57 和 50–53 |
+| 58 仍静默 | 设备树不是原因，转向 `PE_parse_boot_argn` 与 `nanoseconds_to_absolutetime` |
+
+## 2026-11-18 01:43 — 根因锁定：PAN，ARMv8.0 上没有这个寄存器
+
+### 设备树修复无效
+
+把 `Args->DeviceTree` 从 KVA 改成物理地址（`TreeAddress`）后，58 依然静默：
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 58 delta 00000010C900000
+```
+
+设备树不是（唯一的）原因。回到 `arm_init` 里 45 与 `arm_vm_init` 之间剩下的几行。
+
+### 真凶：`__ARM_PAN_AVAILABLE__`
+
+`hakios.patch` 在 `pexpert/pexpert/arm64/BCM2837.h` 里加了两处：
+
+```c
+/*
+ * The cores this kernel really runs on (Cortex-A55/A78, QEMU cortex-a76) are
+ * ARMv8.2: they set PSTATE.PAN on every exception entry, so the kernel must
+ * know to lift it around user memory accesses.
+ */
+#define __ARM_PAN_AVAILABLE__     1
+```
+
+`makedefs/MakeInc.def`：
+
+```
+MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837 \
+    -Xclang -target-feature -Xclang +pan
+```
+
+**注释自己写明了：这套配置是给 Cortex-A55/A78 用的。**
+
+而 SDM660 的 Kryo 260 是 **4× Cortex-A73 + 4× Cortex-A53，全部 ARMv8.0**。
+PAN 是 ARMv8.1 的可选特性，这两个核都没有实现。
+
+于是 `arm_init()` 里：
+
+```c
+#if __ARM_PAN_AVAILABLE__
+	__builtin_arm_wsr("pan", 1);      // msr pan, #1 —— 未定义指令
+#endif
+	arm_vm_init(xmaxmem, args);
+```
+
+**执行到这一行就触发未定义指令异常。**
+
+### 为什么这能解释全部二十轮的现象
+
+| 现象 | 解释 |
+|---|---|
+| 45 命中 | 它在 `msr pan` 之前 |
+| 58、54、55、56、50–53 全静默 | 都在 `arm_vm_init()` 里，而内核根本没走到调用 |
+| 日志恒为 192 字节 | `do_cacheid()` 的 printf 是早于这里的最后输出；异常在这里 panic，`kprintf` 还没起来 |
+| `reason 0` 而非 2 | panic → `halt_all_cpus()` → `loader_return()` |
+| 反汇编显示帧只有 96 字节 | 从来不是栈的问题 |
+| 改 `KERNEL_STACK_MULTIPLIER`、`INTSTACK_SIZE` 无效 | 同上 |
+| 改 `ml_enable_monitor` 无效 | 那个调用在 `arm_vm_init()` 里，够不着 |
+| 改设备树地址无效 | 那只是同一条路径上更早的另一个隐患，但不是这次的断点 |
+
+### 修复
+
+新增 `scripts/ci/disable_pan.py`，两处一起改：
+
+1. `BCM2837.h`：`__ARM_PAN_AVAILABLE__` 1 → 0
+2. `MakeInc.def`：移除 `-Xclang -target-feature -Xclang +pan`
+
+只关宏不够——编译选项还在的话，编译器仍会为其它路径生成 pan 指令。
+脚本已接入 workflow 的补丁步骤，并在本地用真实文件验证过锚点与幂等。
+
+启动参数保持 `checkpoint=58`。
+
+## 2026-11-18 02:07 — 突破：PAN 就是那堵墙
+
+```
+kernel returned: reason 2, log 0 bytes
+checkpoint 58 delta 00000010C900000
+DARWINBOOT: checkpoint requested 58
+```
+
+**`reason 2`。二十轮以来 `arm_vm_init()` 第一次真正开始执行。**
+
+### 修复内容回顾
+
+`hakios.patch` 为它的目标核（Cortex-A55/A78，ARMv8.2）在
+`pexpert/pexpert/arm64/BCM2837.h` 里开了 PAN：
+
+```c
+#define __ARM_PAN_AVAILABLE__     1
+```
+
+并在 `makedefs/MakeInc.def` 里要求编译器生成 pan 指令：
+
+```
+MACHINE_FLAGS_ARM64_BCM2837 = ... -Xclang -target-feature -Xclang +pan
+```
+
+而 SDM660 的 Kryo 260 是 4× Cortex-A73 + 4× Cortex-A53，**全部 ARMv8.0**，
+PAN 是 ARMv8.1 的可选特性，这两个核没有实现。
+
+`arm_init()` 里 `__builtin_arm_wsr("pan", 1)` 于是成为一条未定义指令，
+位置恰好在探针 45 之后、`arm_vm_init()` 之前。
+
+新增 `scripts/ci/disable_pan.py` 两处一起改（只关宏不够，编译选项还在的话
+编译器仍会为其它路径生成 pan 指令）。
+
+### 二进制层面的确认
+
+扫描两个内核里 `MSR (immediate)` 家族指令：
+
+| 内核 | `0xD500409F` | `0xD500419F` |
+|---|---|---|
+| PAN 开启 | 9 处 | 15 处 |
+| PAN 关闭 | 0 | 0 |
+
+**共 24 条 `msr pan` 全部消失。**
+
+### 一个副作用观察
+
+日志从 192 字节变成 **0 字节**。192 字节是 `do_cacheid()` 写进 `msgbuf` 的两行；
+现在内核走到了比那更远的位置，`msgbuf` 被重新初始化，所以读到空。
+
+### 下一步
+
+**此前 46–57 的全部测量作废**——它们都是在 PAN 指令还在的时候做的，
+`reason 0` 与探针位置无关。
+
+不再逐个往上走，直接测最远的 **49**（`pmap_bootstrap()` 之后，接近
+`arm_vm_init()` 末尾）：
+
+| 结果 | 含义 |
+|---|---|
+| `reason 2` | `arm_vm_init()` 完整跑完，那堵墙从头到尾只是 PAN |
+| `reason 0` | 中段还有别的故障，用 53 二分 |
+
+探针时间顺序：58 → 59 → 60 → 54 → 55 → 56 → 57 → 50 → 51 → 52 → 53 → 46 → 47 → 48 → 49
+
+## 2026-11-20 23:55 — 对齐的真正来源：不是 Policy，是 return stub 的 0x100 尾巴
+
+卡点回顾：第二次 slide 的 `orig_va`（= `args->topOfKernelData - gPhysBase + gVirtBase`）
+不对齐，探针 113 确认。所有推算都说应该对齐，因为推算只算到 `Layout->Used`。
+
+### 漏掉的最后一跳
+
+`DarwinBoot.c` 在 `PlaceImage()` 之后还有一段：把 return stub 抄进内核窗口，
+并把 `Used` 扩展到覆盖它：
+
+```c
+StubOffset = ALIGN_VALUE (Used, 16);
+StubSpan   = ParameterOffset + 24;      // 0xE8 + 24 = 0x100，大于 StubSize 0xF0
+...
+Used = StubOffset + ALIGN_VALUE (StubSpan, 16);   // ← 只对齐到 16
+```
+
+`Layout->Used` 是 16 KiB 对齐的（`ALIGN_VALUE(..., SIZE_16KB) - Address`，
+`Address` 也是 16 KiB 倍数），但 `StubOffset` 同样是 16 KiB 倍数，
+再加上只对 16 对齐的 `StubSpan = 0x100`，最终
+
+```
+TopOfKernelData = Address + Used      → 低 12 位 = 0x100
+orig_va         = Used + gVirtBase    → 低 12 位 = 0x100  ≠ ARM_PGMASK+1
+```
+
+`ARM_PGMASK = 0xFFF`（4 KiB），16 KiB 配置下是 `0x3FFF` —— `0x100` 两种都不算对齐。
+
+### 数值复算（本地用真实段表算的）
+
+`Kernel.Base = 0xFFFFFFF007004000`、`Kernel.End = 0xFFFFFFF008314000`
+（`scripts/ci/macho_map.py inputs/kernel.macho`），屏幕 `WIN D0004000` 即 `Address`：
+
+| Policy 取值 | Used（旧） | orig_va & 0xFFF | orig_va & 0x3FFF | Used（新） | 掩码后 |
+|---|---|---|---|---|---|
+| 0xD1314000 | 0x1310100 | **0x100** | **0x100** | 0x1314000 | 0 |
+| 0xD2000000 | 0x1FFC100 | **0x100** | **0x100** | 0x2000000 | 0 |
+| 0xD4000000 | 0x3FFC100 | **0x100** | **0x100** | 0x4000000 | 0 |
+| 0xD8000000 | 0x7FFC100 | **0x100** | **0x100** | 0x8000000 | 0 |
+
+`Policy` 怎么变，残差恒为 `0x100`。所以这不是设备树、不是 ramdisk 大小、
+不是 `gPhysBase` 换算错——是 stub 尾巴。也解释了为什么"推算三遍都说对齐，
+实测三遍都说不齐"：推算是从 `Layout->Policy` 一路 `ALIGN_VALUE` 到 `Layout->Used`，
+恰好停在 `Used` 被改写的那一行之前。
+
+### 修复
+
+`edk2-msm-overlay/DarwinBootPkg/Driver/DarwinBoot.c`，stub 分支末尾：
+
+```c
+Used = ALIGN_VALUE (StubOffset + StubSpan, SIZE_16KB);   // 原来是 ALIGN_VALUE (…, 16)
+```
+
+- 内核仍然不会把 stub 当空闲内存发出去（stub 仍在 `Used` 之内）
+- `TopOfKernelData` 回到页粒度边界，`orig_va` 对齐断言与 `temp_ptov_table[].va`
+  断言同时满足（后者是同一根因的第二个症状）
+- `HeadSize` 那边有 `DARWIN_WINDOW_RESERVE` ≥ 32 MiB 的余量，多出的 ≤16 KiB 无害
+
+### 修复后该验证什么
+
+断言已改成探针 112 + ptov_index（`apply_nonapple_guards.py`），不会 panic，
+所以一次启动能给两件事：
+
+1. `checkpoint=89`（第二次 slide 的 `len` 计算之后）→ `reason 2` 说明第二次 slide 走完，
+   接着测 **62 / 67** 看 `arm_vm_physmap_init()` 是否整体通过
+2. 同一次启动里如果 `112 + 1` 命中，说明还有别的未对齐来源，那就在这个点上继续查
+
+镜像需要重编 payload：`DarwinBoot.c` 在 `edk2-msm-overlay/**` 下，
+`build-meizu15-uefi-payload.yml` 的 `paths` 会自己触发；内核**不用重编**
+（`inputs/kernel.macho` 未变）。

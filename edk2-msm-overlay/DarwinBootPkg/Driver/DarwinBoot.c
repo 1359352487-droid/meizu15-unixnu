@@ -1548,7 +1548,28 @@ Boot (
         // upwards from TopOfKernelData, and a stub outside that range would be
         // handed out and overwritten before it was ever needed.
         //
-        Used = StubOffset + ALIGN_VALUE (StubSpan, 16);
+        // The boundary is rounded to SIZE_16KB, not merely to 16, and that
+        // difference is the whole reason checkpoint 113 fired.
+        //
+        // args->TopOfKernelData is Address + Used, and XNU turns it back into a
+        // virtual address on the second physmap slide:
+        //
+        //     orig_va = args->topOfKernelData - gPhysBase + gVirtBase
+        //             = Used + gVirtBase            (gPhysBase == Address)
+        //
+        // then asserts ((orig_va & ARM_PGMASK) == 0). Used used to be the
+        // 16 KiB-aligned Layout->Used plus StubSpan (0x100 for this kernel's
+        // 0xF0 stub, since ParameterOffset + 24 = 0x100), so the sum ended in
+        // 0x100 and the assert had nothing to do with Layout->Policy at all --
+        // which is why every reconstruction from Policy and the segment sizes
+        // said "aligned" while the phone said otherwise. The tail has to be a
+        // page-granule multiple, both for ARM_PGMASK (4 KiB here) and for the
+        // 16 KiB configuration the same source has to support.
+        //
+        // This also keeps the stub inside the region the kernel owns, so it is
+        // not handed out to the first allocation above TopOfKernelData.
+        //
+        Used = ALIGN_VALUE (StubOffset + StubSpan, SIZE_16KB);
 
         Print (
           L"DARWINBOOT: checkpoint requested %lu\n",
