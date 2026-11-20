@@ -262,26 +262,10 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=49 -- pmap_bootstrap() finished, i.e. the far end of arm_vm_init().
+  // checkpoint=47 -- arm_set_user_tbi() is behind us (61 fired) and 49 never runs, so the fault sits between arm_vm_physmap_init() and pmap_bootstrap().
   //
-  // 62 fired on this board (reason 2, slot XNULDRST, stub 0xD131C000), so
-  // arm_vm_physmap_init() completed: both slides and all three
-  // arm_vm_page_granular_prot() calls went through, and probe 112 -- orig_va
-  // unaligned -- never fired. The Used fix in DarwinBoot.c holds.
-  //
-  // 62 also retires the earlier "silent" rows: 62 / 67 / 81 / 85 / 87 / 89 were
-  // all measured before PAN was fixed and before the alignment was fixed, so they
-  // said nothing about where the port actually stopped.
-  //
-  // Next: jump to the farthest remaining probe instead of walking up. 49 sits
-  // after pmap_bootstrap(), near the end of arm_vm_init().
-  //
-  //   reason 2 at 49   arm_vm_init() ran essentially to completion; finish by
-  //                    testing 48 -> 47 and then the arm_init() tail
-  //   reason 0 at 49   something between 62 and 49 faults, i.e. kva_active,
-  //                    pmap_bootstrap or the segments; bisect 48 -> 47
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=49";
+  // 47 is kva_active = TRUE right after it, the middle of that window.
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=47";
   //
   // DeviceTree must stay NULL here.
   //
