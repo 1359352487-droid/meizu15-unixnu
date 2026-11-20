@@ -262,25 +262,26 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=62 -- arm_vm_physmap_init() as a whole, not just its second slide.
+  // checkpoint=49 -- pmap_bootstrap() finished, i.e. the far end of arm_vm_init().
   //
-  // 89 fired on this board: "kernel returned: reason 2", slot magic XNULDRST,
-  // stub 0xD131C000. That only says the slide reached its len calculation, and a
-  // real pass and a probe at 112 (orig_va unaligned) both end the run the same
-  // way, so one panel cannot tell them apart. 62 sits past the whole function: if
-  // it fires, both slides and all three arm_vm_page_granular_prot() calls
-  // completed, and 112 never fired.
+  // 62 fired on this board (reason 2, slot XNULDRST, stub 0xD131C000), so
+  // arm_vm_physmap_init() completed: both slides and all three
+  // arm_vm_page_granular_prot() calls went through, and probe 112 -- orig_va
+  // unaligned -- never fired. The Used fix in DarwinBoot.c holds.
   //
-  // The alignment is fixed in DarwinBoot.c: args->topOfKernelData is Address +
-  // Used, Used used to be the 16 KiB-aligned Layout->Used plus the return stub's
-  // 0x100 span and was only rounded to 16 -- so orig_va kept a 0x100 tail whatever
-  // Layout->Policy was. Used is now rounded to SIZE_16KB. Kernel unchanged.
+  // 62 also retires the earlier "silent" rows: 62 / 67 / 81 / 85 / 87 / 89 were
+  // all measured before PAN was fixed and before the alignment was fixed, so they
+  // said nothing about where the port actually stopped.
   //
-  //   reason 2 at 62   physmap built; next stops are 47 / 49, then the rest of arm_vm_init
-  //   reason 0 at 62   112 or 113 still fires, or something after the second slide
-  //                    fails; bisect with 67 -> 66 -> 65
+  // Next: jump to the farthest remaining probe instead of walking up. 49 sits
+  // after pmap_bootstrap(), near the end of arm_vm_init().
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=62";
+  //   reason 2 at 49   arm_vm_init() ran essentially to completion; finish by
+  //                    testing 48 -> 47 and then the arm_init() tail
+  //   reason 0 at 49   something between 62 and 49 faults, i.e. kva_active,
+  //                    pmap_bootstrap or the segments; bisect 48 -> 47
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=49";
   //
   // DeviceTree must stay NULL here.
   //

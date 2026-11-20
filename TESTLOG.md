@@ -3559,3 +3559,34 @@ WIN D0004000 HIGH D0004000 RUN ADFA0000 @ D0000000
 112 从未触发；62 不命中 = 还在 slide 里，用 67 → 66 → 65 倒着二分。
 
 launcher 里 `Request.BootArgs` 已从 89 改成 62（只改这一行，注释同步）。
+## 2026-11-21 00:27 — 62 命中：`arm_vm_physmap_init()` 整体通过
+
+```
+kernel returned: reason 2, log 0 bytes
+slot magic 545352444C554E58  stub 00000000D131C000
+checkpoint 62 delta 00000010C900000
+```
+
+`checkpoint=62` 是 `arm_vm_physmap_init(args)` **之后**的第一条。它命中意味着：
+
+1. 第一次 slide（`gVirtBase`..`segLOWEST`）完成
+2. `arm_vm_page_granular_RWNX()` 完成
+3. 第二次 slide（`topOfKernelData`..`real_avail_end`，约 752 MB）完成
+4. 三次 `arm_vm_page_granular_prot()` 全部完成
+5. **探针 112 从未触发** —— 若 `orig_va` 仍不对齐，内核会停在 slide 里，走不到 62
+
+所以 5.3 的修复（`Used` 圆整到 SIZE_16KB）是成立的，物理映射这一段**结束**。
+
+### 作废的旧测量
+
+62 / 67 / 81 / 85 / 87 / 89 这几个"未命中"都是在 **PAN 还没修**、且**对齐还没修**的时候测的，
+它们不说明移植停在哪里。现在按新基线重排：45 → 58 → 61 → 65 → 66 → 68-71 → 83 → 89 → **62** 全部可达。
+
+### 下一站：49
+
+不再逐个往上走，直接跳到剩下的最远点 **49**（`pmap_bootstrap()` 之后，`arm_vm_init()` 收尾前）：
+
+| 结果 | 含义 |
+|---|---|
+| `reason 2` | `arm_vm_init()` 基本跑完；接着补 48 → 47，再往 `arm_init()` 尾部走 |
+| `reason 0` | 62 与 49 之间有故障（`kva_active`、`pmap_bootstrap`、段处理），用 48 → 47 二分 |
