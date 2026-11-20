@@ -262,37 +262,25 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=89 -- both alignment asserts out of the way, does the slide complete?
+  // checkpoint=62 -- arm_vm_physmap_init() as a whole, not just its second slide.
   //
-  // Last build wrote orig_va into loader_stub_slot[3] to read it off the screen. That
-  // did not work: the panel showed the pre-branch banner instead of "kernel returned",
-  // so overwriting that word broke the loader's return path. slot[3] is not a spare
-  // channel even though it is only printed as "delta". Reverted.
+  // 89 fired on this board: "kernel returned: reason 2", slot magic XNULDRST,
+  // stub 0xD131C000. That only says the slide reached its len calculation, and a
+  // real pass and a probe at 112 (orig_va unaligned) both end the run the same
+  // way, so one panel cannot tell them apart. 62 sits past the whole function: if
+  // it fires, both slides and all three arm_vm_page_granular_prot() calls
+  // completed, and 112 never fired.
   //
-  // Trying to measure the value has now cost two builds and told us only that the
-  // asserts are unhappy. The value itself keeps defying derivation:
+  // The alignment is fixed in DarwinBoot.c: args->topOfKernelData is Address +
+  // Used, Used used to be the 16 KiB-aligned Layout->Used plus the return stub's
+  // 0x100 span and was only rounded to 16 -- so orig_va kept a 0x100 tail whatever
+  // Layout->Policy was. Used is now rounded to SIZE_16KB. Kernel unchanged.
   //
-  //   orig_va = topOfKernelData - gPhysBase + gVirtBase
-  //           = (Address + Used) - Address + gVirtBase        since gPhysBase = Address
-  //           = Used + gVirtBase
+  //   reason 2 at 62   physmap built; next stops are 47 / 49, then the rest of arm_vm_init
+  //   reason 0 at 62   112 or 113 still fires, or something after the second slide
+  //                    fails; bisect with 67 -> 66 -> 65
   //
-  // Used = ALIGN_VALUE(Layout->Policy + PolicySize, SIZE_16KB) - Address, and the
-  // Address handed to PlaceImage is BLOCK_SIZE + (Kernel.Base & (BLOCK_SIZE-1)),
-  // which is 0x204000 -- itself a multiple of SIZE_16KB. So Used should be 16 KiB
-  // aligned, and gVirtBase ends in 0x4000, which survives even a 0x3FFF mask.
-  // Every term checks out and the measurement still disagrees.
-  //
-  // So this build stops trying to explain it and asks the question that actually
-  // matters: with both asserts gone, does the physmap get built?
-  //
-  //   reason 2 at 89   the slide ran past len and on into arm_vm_page_granular_prot.
-  //                    The asserts were stricter than this port needs; keep them out
-  //                    and carry on to 81 and beyond.
-  //   reason 0 at 89   the mapping fails for a reason that is not the asserts, so the
-  //                    alignment really is load-bearing and has to be fixed at the
-  //                    source rather than relaxed here.
-  //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=89";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=62";
   //
   // DeviceTree must stay NULL here.
   //
