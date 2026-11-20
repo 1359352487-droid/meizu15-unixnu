@@ -8,7 +8,7 @@
 
 ## 0. 一句话状态
 
-内核**已经能启动并跑到 `arm_vm_init()` 深处**（远超一个月前"能进 UEFI"的阶段）。最后一道墙 `PAN` 已推倒；第二次 slide 的对齐断言也**已经查到根因并改掉了源码**——不是 `Policy` 算术，是 return stub 尾巴上的 `0x100`（见 5.3）。现在等一次 payload 构建 + 刷机验证。
+内核**已经能启动并跑到 `arm_vm_init()` 深处**（远超一个月前"能进 UEFI"的阶段）。最后一道墙 `PAN` 已推倒；第二次 slide 的对齐断言也**查到根因并改掉了源码**——不是 `Policy` 算术，是 return stub 尾巴上的 `0x100`（见 5.3）。修复版已上机：`checkpoint=89` 拿到 `reason 2`；现在测 `checkpoint=62` 判定 `arm_vm_physmap_init()` 是否整体通过。
 
 ---
 
@@ -60,7 +60,8 @@ WIN D0004000 HIGH D0004000 RUN ADFA0000 @ D0000000
 | 66 | `arm_vm_page_granular_RWNX()` 之后 |
 | 68 / 69 / 70 / 71 | `arm_vm_page_granular_prot()` 内部（入口/循环前/循环后/defer 前）——**注意：这三个函数被调用三次，固定编号无法区分是哪次** |
 | **83** | **第二次 slide 进入 `arm_vm_physmap_slide()` 函数体** |
-| **113** | **第二次 slide 的 `orig_va` 确实不对齐**（`orig_va & ARM_PGMASK != 0`） |
+| **113** | **第二次 slide 的 `orig_va` 确实不对齐**（`orig_va & ARM_PGMASK != 0`）——PAN 修复后、对齐修复前 |
+| **89** | **第二次 slide 的 `len` 计算之后**（2026-11-21 00:12，对齐修复后首次命中） |
 
 ### 3.2 未命中（`reason 0`）——这些位置没走到
 
@@ -74,7 +75,7 @@ WIN D0004000 HIGH D0004000 RUN ADFA0000 @ D0000000
 | 64 | `set_mmu_ttb(invalid_ttep)` 之后 |
 | 67 | 第二次 slide 之后 |
 | 81 | 第二次 slide 调 `arm_vm_page_granular_prot()` 之前 |
-| 85 / 87 / 89 | 第二次 slide 内的 `orig_va` 断言后 / `va` 断言后 / `len` 计算后 |
+| 85 / 87 | 第二次 slide 内的 `orig_va` 断言后 / `va` 断言后 |
 
 **59 / 60 / 63 从未测过。**
 
@@ -254,24 +255,44 @@ stub 仍在 `Used` 之内（内核不会把它当空闲内存发出去），边�
 
 ## 7. 下一步（三条路，建议并行考虑）
 
-### 7.1 短期：重建 payload，验证 5.3 的对齐修复（下一步就干这个）
+### 7.1 短期：已经到 `checkpoint=62`（对齐修复的实测进行中）
 
-`DarwinBoot.c` 已改（`Used = ALIGN_VALUE (StubOffset + StubSpan, SIZE_16KB)`），
-**内核不用重编**（`inputs/kernel.macho` 没动），只走 payload：
+`DarwinBoot.c` 的修复（`Used = ALIGN_VALUE (StubOffset + StubSpan, SIZE_16KB)`）已推、
+已构建、已刷机一次。**内核不用重编**（`inputs/kernel.macho` 没动），只走 payload。
 
-```powershell
-# 推 DarwinBoot.c 的改动 → build-meizu15-uefi-payload.yml 自动触发（paths: edk2-msm-overlay/**）
-# 约 8 分钟，下载 meizu15-uefi-payload-debug-full（5.2 MB）
-& "$pt\fastboot.exe" boot <image>
+**`checkpoint=89` 的实测结果（2026-11-21 00:12）**：
+
+```
+kernel returned: reason 2, log 0 bytes
+slot magic 545352444C554E58  stub 00000000D131C000
+checkpoint 89 delta 00000010C900000
+WIN D0004000 HIGH D0004000 RUN ADFA0000 @ D0000000
 ```
 
-启动参数 `checkpoint=89`：
+- `reason 2` → 89（第二次 slide 的 `len` 计算之后）命中，旧内核这一趟 85/87/89 全不亮
+- `stub 0xD131C000` → `StubOffset = 0x1318000 = Layout->Used`，与按 Policy 推的一致
+- `WIN D0004000` → `Address = 0xD0004000`，于是修复前 `orig_va = 0xFFFFFFF008321100`（尾 `0x100`）、
+  修复后 `0xFFFFFFF008320000`（尾 0）
 
-| 结果 | 含义 |
+**分不出来的那一点**：探针 112（`orig_va` 未对齐）真触发时屏幕**也是这四行**，
+所以一张面板无法区分「89 命中」和「112 先命中」。于是改用 `checkpoint=62`
+（`arm_vm_physmap_init()` 之后，在第二次 slide 外面）判定：
+
+| `checkpoint=62` 的结果 | 含义 |
 |---|---|
-| `reason 2` 且没出现 `112` / `113` | `orig_va` 已对齐，第二次 slide 走完；接着测 **62 / 67**，再看 `arm_vm_physmap_init()` 是否整体通过 |
-| `reason 2` 但 `113` 仍命中 | 还有别的未对齐来源（这时探针改动保住了内核不 panic，能继续二分） |
-| `reason 0` | 二次 slide 内部有别的问题，用 83 → 85 → 87 → 89 四点二分 |
+| `reason 2` | 两次 slide + 三次 `arm_vm_page_granular_prot()` 全走完、112 从未触发；接着测 **47 / 49**，再看 `arm_vm_init()` 剩余部分 |
+| `reason 0` | 还在 slide 里，倒着二分 **67 → 66 → 65** |
+
+launcher 里 `Request.BootArgs` 已从 `checkpoint=89` 改成 `checkpoint=62`（提交 `19af911`）。
+
+**刷机命令**（这台机器上 `platform-tools` 不在仓库里）：
+
+```powershell
+$pt='C:\Users\54714\Desktop\搞机工具箱9.91'
+& "$pt\adb.exe" -s 881QAESM95THY reboot bootloader
+Start-Sleep 22
+& "$pt\fastboot.exe" -s 881QAESM95THY boot out\boot-meizu15-payload-debug.img
+```
 
 ### 7.2 中期：QEMU（**解决"看不见 panic"**）
 

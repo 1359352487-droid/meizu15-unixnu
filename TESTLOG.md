@@ -3520,3 +3520,42 @@ Used = ALIGN_VALUE (StubOffset + StubSpan, SIZE_16KB);   // 原来是 ALIGN_VALU
 镜像需要重编 payload：`DarwinBoot.c` 在 `edk2-msm-overlay/**` 下，
 `build-meizu15-uefi-payload.yml` 的 `paths` 会自己触发；内核**不用重编**
 （`inputs/kernel.macho` 未变）。
+## 2026-11-21 00:12 — 89 命中：第二次 slide 走到了 len 之后
+
+修复版 payload（`8efe55e`）刷上机，屏幕：
+
+```
+kernel returned: reason 2, log 0 bytes
+slot magic 545352444C554E58  stub 00000000D131C000
+checkpoint 89 delta 00000010C900000
+WIN D0004000 HIGH D0004000 RUN ADFA0000 @ D0000000
+```
+
+### 能确定的三件事
+
+1. **`reason 2`** —— `checkpoint=89`（第二次 slide 的 `len` 计算之后）命中了。
+   旧内核在这一趟里 85 / 87 / 89 一个都不亮。
+2. **`stub 0xD131C000`** → `StubOffset = 0xD131C000 - 0xD0004000 = 0x1318000`
+   = `Layout->Used`，与按 `Policy` 推出的值一致（Args 0xD1314000 → Tree…Policy 0xD131C000）。
+   也就是说修复后的 `Used = ALIGN(0x1318000 + 0x100, 16K) = 0x131C000`，
+   屏幕这一行正是 stub 自己的地址，不是 `TopOfKernelData`。
+3. **`WIN D0004000`** —— `Address` 确认是 0xD0004000，于是
+
+   | | orig_va | & 0xFFF |
+   |---|---|---|
+   | 修复前（Used 0x1318100） | 0xFFFFFFF008321100 | **0x100** |
+   | 修复后（Used 0x131C000） | 0xFFFFFFF008320000 | **0** |
+
+### 还确定不了的一件事
+
+探针 112（`orig_va & ARM_PGMASK != 0`）如果真的触发，屏幕上**也是这四行**
+—— 探针只让 `loader_checkpoint` 停住，不改变 launcher 请求的 `checkpoint=89`
+和 `delta`。所以从这一张面板分不出「89 真命中」和「112 先命中」。
+
+### 所以下一轮直接测 62
+
+`checkpoint=62`（`arm_vm_physmap_init(args)` 之后）在第二次 slide 的外面。
+62 命中 = 两次 slide + 三次 `arm_vm_page_granular_prot()` 全部走完、
+112 从未触发；62 不命中 = 还在 slide 里，用 67 → 66 → 65 倒着二分。
+
+launcher 里 `Request.BootArgs` 已从 89 改成 62（只改这一行，注释同步）。
