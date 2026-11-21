@@ -194,6 +194,14 @@ LOADER_HELPER_ANCHOR = ("/* Patched by the loader: { magic, PA of its return stu
 LOADER_HELPER = """/* The number of the probe just reached, and of the last one reached at all. */
 static uint64_t loader_last_checkpoint;
 
+/*
+ * How much of the log the stub is asked to print. The console scrolls and the
+ * stub paints its barcodes at y = 1694..1888, so a longer log has its final
+ * lines covered by them -- and the final lines are the ones worth reading.
+ * Roughly thirty 80-column lines fit above the barcodes.
+ */
+#define LOADER_RETURN_TAIL 448
+
 /* "cp 62\\n" -- digits only, so no printf and no locale; safe this early. */
 static void
 loader_log_number(const char *prefix, uint64_t n)
@@ -231,6 +239,12 @@ LOADER_TAIL_NEW = """\t/*
 \t */
 \tif (loader_last_checkpoint != 0) {
 \t\tloader_log_number("last cp ", loader_last_checkpoint);
+\t}
+\t/* Hand the stub only the tail: that is the part above its barcodes. */
+\tif (loader_log_len > LOADER_RETURN_TAIL) {
+\t\t__builtin_memmove(loader_log, loader_log + loader_log_len - LOADER_RETURN_TAIL,
+\t\t    LOADER_RETURN_TAIL);
+\t\tloader_log_len = LOADER_RETURN_TAIL;
 \t}
 \tloader_jump(0, 0);
 """

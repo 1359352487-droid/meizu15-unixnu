@@ -262,11 +262,10 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- checkpoint=0: do not stop, let it run and let the log carry the trail.
+  // checkpoint=0 -- The trail works: 905 bytes reached cp 71. Its last lines, though, land under
   //
-  // Every probe now writes 'cp N'; loader_return repeats the last one it saw,
-  // so the panel's final line names the probe the kernel actually died at.
-  // loader_return_after=60 still hands the log back if it simply hangs.
+  // the stub's barcodes (y=1694..1888), so 'last cp' was covered.
+  // loader_return now hands the stub only the final 448 bytes, which sit above them.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.
