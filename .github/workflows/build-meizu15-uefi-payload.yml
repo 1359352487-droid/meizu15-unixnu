@@ -168,8 +168,12 @@ jobs:
             echo "::warning::no kernel in the tree, using a placeholder"
           fi
           cp meizu15/inputs/meizu15-8plus.adt /tmp/payload.adt
+          # 15.9 MiB, not 15.5: the kernel grew by 393 KB when the interrupt and
+          # exception stacks went from 64 KiB to 256 KiB each, and 15.5 MiB is
+          # 16,252,928 bytes -- smaller than the kernel alone. It still has to
+          # stay under 16 MiB, or GenFds promotes the volume to LARGE_FILE.
           bash meizu15/scripts/build-esp.sh "$K" /tmp/payload.adt \
-               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 15.5
+               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img 15.9
           ls -l edk2-msm/Platform/Meizu/sdm660/payload/
 
       - name: Build the firmware (RELEASE)
@@ -411,7 +415,7 @@ jobs:
           cp "${ADT_SRC:-meizu15/inputs/meizu15-8plus.adt}" /tmp/payload.adt
           ls -l /tmp/kernel.macho /tmp/payload.adt
           bash meizu15/scripts/build-esp.sh /tmp/kernel.macho /tmp/payload.adt \
-               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img "${ESP_MB:-15.5}"
+               edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img "${ESP_MB:-15.9}"
           IMG=edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img
           # SimpleInit's prober builds its candidate list from
           # ARCH1_FILE("boot","aa64") in src/boot/efi_path.c, i.e. the literal string

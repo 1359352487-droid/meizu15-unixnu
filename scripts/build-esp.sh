@@ -20,7 +20,7 @@ set -euo pipefail
 KERNEL=${1:?usage: build-esp.sh <kernel.macho> <kernel.macho.adt> <out.img> [size_mb]}
 ADT=${2:?missing the ADT sidecar}
 OUT=${3:?missing the output image path}
-SIZE_MB=${4:-15.5}
+SIZE_MB=${4:-15.9}
 
 for tool in mformat mmd mcopy mdir; do
   command -v "$tool" >/dev/null || { echo "build-esp: $tool not found (apt install mtools)" >&2; exit 1; }
