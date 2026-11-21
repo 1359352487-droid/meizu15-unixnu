@@ -262,11 +262,11 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=90 -- 48 fires and 49 does not, so the stop is inside pmap_bootstrap().
+  // checkpoint=90 -- 90 went silent, so the stop is above it: the head of pmap_bootstrap().
   //
-  // 90/91 bracket pmap_data_bootstrap, 92/93 uat_bootstrap, 94/95 sart_bootstrap;
-  // a hit at 90 with nothing at 91 means the pv_head/avail_start arithmetic,
-  // while a hit at 92 means the UAT node the ADT may not carry.
+  // pmap_compute_max_asids() asserts a root /defaults node and this ADT only has
+  // /smc/defaults, so that assert was the panic; it now returns MAX_ASIDS instead.
+  // 96/97/98 walk that head so the next panel is decisive even if 90 fires.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=90";
   //
   // DeviceTree must stay NULL here.

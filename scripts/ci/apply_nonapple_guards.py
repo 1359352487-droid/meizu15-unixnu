@@ -123,7 +123,37 @@ PMAP_PROBES = [
     ("\tsart_bootstrap();\n", 94, 95),
 ]
 
-PMAP_EXPECTED = (90, 91, 92, 93, 94, 95)
+# 90 went silent, so the stop is in the head of pmap_bootstrap(): three probes
+# walk that stretch. 96 is the first statement of the body, 97 is after the pmap
+# lock, 98 is right after the ASID count is computed from the device tree.
+PMAP_AFTER_PROBES = [
+    ("\tvm_map_offset_t maxoffset;\n", 96),
+    ("\tpmap_lock_init(kernel_pmap);\n", 97),
+    ("\tpmap_max_asids = pmap_compute_max_asids();\n", 98),
+]
+
+PMAP_EXPECTED = (90, 91, 92, 93, 94, 95, 96, 97, 98)
+
+# pmap_compute_max_asids() asserts that the device tree carries a root-level
+# /defaults node:
+#
+#     err = SecureDTLookupEntry(NULL, "/defaults", &entry);
+#     assert(err == kSuccess);
+#
+# This ADT only has /smc/defaults, so that assert is a panic() in a DEVELOPMENT
+# build -- and it runs before kprintf, which is why the panel shows reason 0 and
+# the same 192-byte log. Missing /defaults simply means "use the built-in
+# MAX_ASIDS default", which is what the code already does when the property is
+# absent, so return that instead of trapping.
+PMAP_DEFAULTS_ASSERT = (
+    '\terr = SecureDTLookupEntry(NULL, "/defaults", &entry);\n'
+    '\tassert(err == kSuccess);\n')
+PMAP_DEFAULTS_PATCH = (
+    '\terr = SecureDTLookupEntry(NULL, "/defaults", &entry);\n'
+    '\tif (err != kSuccess) {\n'
+    '\t\t/* No root /defaults in this ADT; MAX_ASIDS is the documented default. */\n'
+    '\t\treturn MAX_ASIDS;\n'
+    '\t}\n')
 
 
 def find(root, suffix):
@@ -332,8 +362,23 @@ def add_arm_init_probe(path):
     return True
 
 
+def patch_pmap_defaults_assert(path):
+    """Turn the root-/defaults assert into the documented MAX_ASIDS default."""
+    text = path.read_text(encoding="utf-8")
+    if PMAP_DEFAULTS_PATCH in text:
+        print("  /defaults assert already relaxed")
+        return False
+    if text.count(PMAP_DEFAULTS_ASSERT) != 1:
+        raise SystemExit("%s: expected one /defaults assert, found %d"
+                         % (path, text.count(PMAP_DEFAULTS_ASSERT)))
+    path.write_text(text.replace(PMAP_DEFAULTS_ASSERT, PMAP_DEFAULTS_PATCH, 1),
+                    encoding="utf-8")
+    print("  /defaults assert -> return MAX_ASIDS")
+    return True
+
+
 def add_pmap_probes(path):
-    """Probes 90-95 inside pmap_bootstrap(), one pair per bootstrap it calls."""
+    """Probes 90-98 inside pmap_bootstrap(), one pair per bootstrap it calls."""
     text = path.read_text(encoding="utf-8")
     changed = False
     if "extern void loader_checkpoint" not in text:
@@ -356,6 +401,16 @@ def add_pmap_probes(path):
             1)
         print("  added loader_checkpoint(%d/%d) around %s"
               % (before, after, needle.strip()))
+        changed = True
+    for needle, number in PMAP_AFTER_PROBES:
+        if "loader_checkpoint(%d);" % number in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip(), text.count(needle)))
+        text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
+        print("  added loader_checkpoint(%d) after %s" % (number, needle.strip()))
         changed = True
     if changed:
         path.write_text(text, encoding="utf-8")
@@ -385,6 +440,7 @@ def main(argv):
     changed += relax_orig_va_assert(vm)
     changed += add_vm_probes(vm)
     changed += add_arm_init_probe(init)
+    changed += patch_pmap_defaults_assert(pmap)
     changed += add_pmap_probes(pmap)
 
     vm_text = vm.read_text(encoding="utf-8")
@@ -407,6 +463,8 @@ def main(argv):
     pmap_missing = [n for n in PMAP_EXPECTED if "loader_checkpoint(%d);" % n not in pmap_text]
     if pmap_missing:
         raise SystemExit("verification failed in pmap.c: probes missing %s" % pmap_missing)
+    if PMAP_DEFAULTS_ASSERT in pmap_text:
+        raise SystemExit("verification failed in pmap.c: /defaults assert still present")
     if "KERNEL_STACK_MULTIPLIER (%d)" % STACK_MULTIPLIER not in vmp.read_text(encoding="utf-8"):
         raise SystemExit("verification failed in vm_param.h")
 
