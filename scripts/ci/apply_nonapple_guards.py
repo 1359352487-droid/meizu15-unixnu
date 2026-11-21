@@ -944,6 +944,23 @@ def add_kernel_bootstrap_late_probes(path):
 # stack check -> scheduler bookkeeping -> PMAP_ACTIVATE_USER -> machine_load_context.
 # PMAP_ACTIVATE_USER is the one that touches TTBR0, which this port deliberately
 # leaves pointing at an invalid table, so it heads the suspect list.
+MACHINE_CONTEXT_DUMP = """\t{
+\t\t/*
+\t\t * machine_load_context() starts with set_thread_registers, which does
+\t\t *
+\t\t *     ldr  $1, [thread, ACT_CPUDATAP]
+\t\t *     ldrsh $2, [$1, CPU_NUMBER_GS]
+\t\t *
+\t\t * so a NULL act_cpudatap aborts in the first instruction of the switch.
+\t\t * Probe 113 fires and the switch does not happen -- print the three fields
+\t\t * it depends on instead of guessing which one is bad.
+\t\t */
+\t\tloader_log_number("kstack ", (uint64_t)thread->machine.kstackptr);
+\t\tloader_log_number("pc     ", (uint64_t)thread->machine.pc);
+\t\tloader_log_number("cdata  ", (uint64_t)(uintptr_t)thread->machine.act_cpudatap);
+\t}
+"""
+
 LOAD_CONTEXT_PROBES = [
     ("\tmachine_set_current_thread(thread);\n", 108),
     ("\tPMAP_ACTIVATE_KERNEL(processor->cpu_id);\n", 109),
@@ -980,6 +997,13 @@ def add_load_context_probes(path):
                              % (path, needle.strip()[:46], text.count(needle)))
         text = text.replace(needle, "\tloader_checkpoint(%d);\n" % number + needle, 1)
         print("  added loader_checkpoint(%d) before %s" % (number, needle.strip()[:46]))
+        changed = True
+    if MACHINE_CONTEXT_DUMP not in text:
+        anchor = "\tloader_checkpoint(113);\n"
+        if anchor not in text:
+            raise SystemExit("%s: probe 113 not found" % path)
+        text = text.replace(anchor, MACHINE_CONTEXT_DUMP + anchor, 1)
+        print("  added machine-context dump (kstack/pc/cpudatap) before 113")
         changed = True
     if changed:
         path.write_text(text, encoding="utf-8")
