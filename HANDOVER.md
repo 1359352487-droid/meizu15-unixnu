@@ -8,7 +8,7 @@
 
 ## 0. 一句话状态
 
-内核**已经能启动并跑到 `arm_vm_init()` 深处**（远超一个月前"能进 UEFI"的阶段）。最后一道墙 `PAN` 已推倒；第二次 slide 的对齐断言也**查到根因并改掉了源码**——不是 `Policy` 算术，是 return stub 尾巴上的 `0x100`（见 5.3）。修复版已上机：`checkpoint=89` 拿到 `reason 2`；现在测 `checkpoint=62` 判定 `arm_vm_physmap_init()` 是否整体通过。
+内核**已经能启动、跑完 `arm_vm_init()`（含第二次 slide 与 `pmap_bootstrap()`）、并且 `kprintf` 已经可用**（屏幕上能读到内核自己的带时间戳日志）。四道墙都推倒了：`PAN`（ARMv8.0 没这个寄存器）、`TopOfKernelData` 的页粒度（return stub 尾巴 `0x100`，见 5.3）、中断栈耗尽（64 KiB → 256 KiB）、`XNU_MONITOR` 分支导致设备树从未被 rebase（见 7.1）。现在卡在 `cpu_timebase_init()`（探针 25 → 26 之间），下一步是 `machine_startup()`。
 
 ---
 
@@ -49,35 +49,24 @@ WIN D0004000 HIGH D0004000 RUN ADFA0000 @ D0000000
 
 ### 3.1 已命中（`reason 2`）——这些位置确认可达
 
-| 探针 | 位置 |
-|---|---|
-| 45 | `arm_init.c`：`processor_bootstrap()` 之后、`arm_vm_init()` 之前 |
-| 46 | `arm_vm_init.c`：`arm_set_user_tbi()` 之前 |
-| 52 | 第一个 `init_ptpages()` 之后 |
-| **58** | **`arm_vm_init()` 函数体第一条语句**（PAN 修复后才命中） |
-| 61 | `arm_set_user_tbi()` 之后（TBI 没问题） |
-| 65 | `arm_vm_physmap_init()` 里第一次 slide 之后 |
-| 66 | `arm_vm_page_granular_RWNX()` 之后 |
-| 68 / 69 / 70 / 71 | `arm_vm_page_granular_prot()` 内部（入口/循环前/循环后/defer 前）——**注意：这三个函数被调用三次，固定编号无法区分是哪次** |
-| **83** | **第二次 slide 进入 `arm_vm_physmap_slide()` 函数体** |
-| **113** | **第二次 slide 的 `orig_va` 确实不对齐**（`orig_va & ARM_PGMASK != 0`）——PAN 修复后、对齐修复前 |
-| **89** | **第二次 slide 的 `len` 计算之后**（2026-11-21 00:12，对齐修复后首次命中） |
+**截至 2026-11-21 15:40，整条链都通了**（有 12:05 那份逐点轨迹 + 之后每轮的实测）：
 
-### 3.2 未命中（`reason 0`）——这些位置没走到
+`10 → 11 → 30…35 → 12 → 40…44 → 13 → 14 → 15 → 16 → 45`（`arm_init` 前半）
+`→ 58/59/60/54/55/56/57 → 50/51/52/53 → 46 → 61`（`arm_vm_init` 头部）
+`→ 82/84/86/88/80 → 66 → 68/69/70/71 → 67 → 83/85/87/89/81 → 62`（physmap，第二次 slide 含）
+`→ 63 → 64 → 47 → 48 → 96 → 97 → 98 → 90 → 24 → 25`（`pmap_bootstrap` 头部 → `arm_init` 尾部）
 
-| 探针 | 位置 |
-|---|---|
-| 47 | `kva_active = TRUE` 之后 |
-| 48 / 49 | `pmap_bootstrap()` 前后 |
-| 50 / 51 / 53 | `boot_tte` 赋值前 / `init_ptpages` 前 / `arm_vm_prot_init` 后 |
-| 54 / 55 / 56 / 57 | physmap 计算各点 |
-| 62 | `arm_vm_physmap_init(args)` 之后 |
-| 64 | `set_mmu_ttb(invalid_ttep)` 之后 |
-| 67 | 第二次 slide 之后 |
-| 81 | 第二次 slide 调 `arm_vm_page_granular_prot()` 之前 |
-| 85 / 87 | 第二次 slide 内的 `orig_va` 断言后 / `va` 断言后 |
+**`kprintf` 已可用**（屏幕上出现带时间戳的内核日志），这是 2026-11-21 的里程碑。
 
-**59 / 60 / 63 从未测过。**
+### 3.2 当前卡点与未命中
+
+| 探针 | 位置 | 状态 |
+|---|---|---|
+| 26 | `cpu_timebase_init(TRUE)` 之后 | 未命中（**当前窗口**：25 → 26） |
+| 29 / 31 | `cpu_timebase_init()` 内部（`getCpuDatap` 后 / `ml_get_hwclock` 后） | 本轮新埋，待测 |
+| 27 / 28 | `/chosen` 的 dram 查询后 / `machine_startup()` 前 | 未到达 |
+
+`checkpoint=0` + 轨迹日志是现在的标准跑法：一次启动就能拿到"最后到达哪一枚"。
 
 ### 3.3 索引探针（区分第几次调用）
 
@@ -85,6 +74,38 @@ WIN D0004000 HIGH D0004000 RUN ADFA0000 @ D0000000
 
 - `ptov_index == 0` → 第一次 slide（`gVirtBase`..`segLOWEST`，几 MB）
 - `ptov_index == 1` → 第二次 slide（`topOfKernelData`..`real_avail_end`，**约 752 MB**）
+
+### 3.4 轨迹日志：探针自己报号（2026-11-21 起）
+
+**这是最有用的一个工具，务必先读。** 原来 `loader_checkpoint(n)` 只做一件事：
+
+```c
+if (loader_stub_slot[2] == n) { loader_jump(2, n); }
+```
+
+于是"命中"和"没到达"在屏幕上**完全一样**（都只打印请求的编号），一次只能测一个探针。
+现在改了 `osfmk/arm64/loader_return.c`：
+
+| 改动 | 效果 |
+|---|---|
+| `loader_log_number(prefix, n)` | 把数字写成一行，不用 printf（早期可用） |
+| `loader_checkpoint()` 每次进入都写 `cp N`，并记进 `loader_last_checkpoint` | 日志里有完整轨迹 |
+| `loader_return()` 在 `loader_jump(0, 0)` 前再写一行 `last cp N` | 屏幕最后一行必是"最后到达的探针" |
+| 同上，交出日志前只保留末尾 448 字节 | 否则末几行被 stub 画在 y=1694..1888 的条码盖住 |
+| `loader_log_number()` 末尾 `dc cvac` + `dsb sy` | fault 走早期异常向量，不经过 `loader_jump()` 的回写，最后一行会留在 cache 里 |
+
+启动参数用 **`checkpoint=0`**（不停止）：让内核跑到底，日志交出来，一次启动拿到整条链。
+
+**2026-11-21 12:05 拿到的第一份完整轨迹**：
+
+```
+58 59 60 54 55 56 57 50 51 52 53 46 61
+82 84 86 88 80 / 66 67 / 83 85 87 89 81
+62 63 64 47 48
+```
+
+即 `arm_vm_init()` 从入口到 `pmap_bootstrap()` 调用之前**全部可达**；`cp 68/69/70/71`
+各出现三次，正是 `arm_vm_page_granular_prot()` 的三次调用。此后 `96` 不出现。
 
 ---
 
@@ -242,7 +263,7 @@ stub 仍在 `Used` 之内（内核不会把它当空闲内存发出去），边�
 | 方案 | 结论 | 依据 |
 |---|---|---|
 | `KERNEL_STACK_MULTIPLIER` 1→4 | **无效** | 它只影响**线程栈**（`KERNEL_STACK_SIZE`），而启动阶段跑在**中断栈**上 |
-| `INTSTACK_SIZE` / `EXCEPSTACK_SIZE` 4×4096→16×4096 | **无效** | 内核因此大了 98,304 字节（证明改动生效），但探针结果不变。反汇编 `arm_vm_init` 入口发现 **prologue 只分配 96 字节**——16 KiB 的栈绰绰有余，从来不是栈的问题 |
+| `INTSTACK_SIZE` / `EXCEPSTACK_SIZE` 4×4096→16×4096 | **当时判"无效"，这个结论错了** | 那次测量是在 PAN 还没修的时候做的，内核根本到不了栈真正被吃光的位置。2026-11-21 把它们放大到 64×4096（**256 KiB**）后，`pmap_bootstrap()` 入口的 96 / 97 立刻从"从不执行"变成"执行" —— **中断栈耗尽就是 48 之后那堵墙**。教训：不要用"探针没变化"否定一个改动，先确认探针机制本身可靠（见 3.4） |
 | `ml_enable_monitor()` 加 `#if XNU_MONITOR` 守卫 | **无效** | BCM2837 配置里 `XNU_MONITOR` 未定义（= 0），该调用根本不编译；即使编译，它也在 `arm_vm_init()` 内部，够不着当时的卡点 |
 | 怀疑 `boot_args` 字段名 PascalCase vs camelCase 不匹配 | **排除** | `BootArgs.h` 里的 `STATIC_ASSERT` 证明偏移完全一致（`Video` 都在 0x28），二进制兼容 |
 | 怀疑 `/chosen/random-seed` 缺失导致 `bootseed_init` panic | **排除** | 直接翻 `meizu15-8plus.adt` 二进制，`random-seed` 属性存在且是真实 64 字节数据 |
@@ -255,44 +276,52 @@ stub 仍在 `Used` 之内（内核不会把它当空闲内存发出去），边�
 
 ## 7. 下一步（三条路，建议并行考虑）
 
-### 7.1 短期：已经到 `checkpoint=62`（对齐修复的实测进行中）
+### 7.1 短期：卡在 `cpu_timebase_init()`（`arm_init()` 的倒数第二段）
 
-`DarwinBoot.c` 的修复（`Used = ALIGN_VALUE (StubOffset + StubSpan, SIZE_16KB)`）已推、
-已构建、已刷机一次。**内核不用重编**（`inputs/kernel.macho` 没动），只走 payload。
-
-**`checkpoint=89` 的实测结果（2026-11-21 00:12）**：
+**现在的位置**（2026-11-21 15:40）：`kprintf` 已可用，屏幕上能读到内核自己的日志；
 
 ```
-kernel returned: reason 2, log 0 bytes
-slot magic 545352444C554E58  stub 00000000D131C000
-checkpoint 89 delta 00000010C900000
-WIN D0004000 HIGH D0004000 RUN ADFA0000 @ D0000000
+[ 48.800558]: pe_arm_map_interrupt_controller: failed to find the interrupt-controller
+[ 48.800579]: pe_arm_init_debug: failed to find cpu-debug-interface
+last cp 25
 ```
 
-- `reason 2` → 89（第二次 slide 的 `len` 计算之后）命中，旧内核这一趟 85/87/89 全不亮
-- `stub 0xD131C000` → `StubOffset = 0x1318000 = Layout->Used`，与按 Policy 推的一致
-- `WIN D0004000` → `Address = 0xD0004000`，于是修复前 `orig_va = 0xFFFFFFF008321100`（尾 `0x100`）、
-  修复后 `0xFFFFFFF008320000`（尾 0）
+`last cp 25` = `ml_map_cpu_pio()` 之后。25 与 26 之间**只有一个调用** `cpu_timebase_init(TRUE)`
+（`APPLE_ARM64_ARCH_FAMILY` 未定义，`configure_late_apple_regs()` 不编译）。
+这个函数只有三段：`getCpuDatap()`、一组 `rtclock_timebase_func` 指针赋值、`ml_set_reset_time(ml_get_hwclock())`。
+新埋的两枚探针就是为了切开它：
 
-**分不出来的那一点**：探针 112（`orig_va` 未对齐）真触发时屏幕**也是这四行**，
-所以一张面板无法区分「89 命中」和「112 先命中」。于是改用 `checkpoint=62`
-（`arm_vm_physmap_init()` 之后，在第二次 slide 外面）判定：
-
-| `checkpoint=62` 的结果 | 含义 |
+| 现象 | 含义 |
 |---|---|
-| `reason 2` | 两次 slide + 三次 `arm_vm_page_granular_prot()` 全走完、112 从未触发；接着测 **47 / 49**，再看 `arm_vm_init()` 剩余部分 |
-| `reason 0` | 还在 slide 里，倒着二分 **67 → 66 → 65** |
+| 没有 `cp 29` | `getCpuDatap()` 崩 —— arm64 上通常意味着 `start.s` 没把 `BootCpuData` 写进 `TPIDR_EL1` |
+| `cp 29` + 日志里 `cdp 0` | 拿到了但值是 0，紧随其后的 `cdp->cpu_get_fiq_handler` 就是在读地址 0 |
+| `cp 29` 正常高 VA、无 `cp 31` | 崩在 `ml_get_hwclock()`（`CNTPCT_EL0` 路径） |
+| `cp 31` 出现 | 这一段全通，26/27/28 应该也到 |
 
-launcher 里 `Request.BootArgs` 已从 `checkpoint=89` 改成 `checkpoint=62`（提交 `19af911`）。
+**过了这一关之后**：27（`/chosen` 的 `dram-base`/`dram-size` 查询）→ 28（`machine_startup()` 前）。
+`machine_startup` 里会碰到下一类问题 —— **GIC 初始化**：屏幕上那两条
+`failed to find the interrupt-controller` 现在是警告，但中断使能阶段是硬依赖，
+而我们的 ADT 里没有 XNU 期望的 `interrupt-controller` 节点（`make-meizu15-adt.py`
+只写了 GIC 的地址范围，没写节点树）。届时要么补节点，要么先让 GIC 路径容错。
 
-**刷机命令**（这台机器上 `platform-tools` 不在仓库里）：
+**标准跑法与命令**：
 
 ```powershell
+# 一轮 = 改探针/补丁 -> 内核 CI -> 换 inputs/kernel.macho -> payload CI -> 刷机
+python out\kernelround.py 0 "commit message ..."     # 需要重编内核时（约 20-30 分钟）
+python out\round.py 0 "commit message ..."           # 只改 launcher 时（约 10 分钟）
+
 $pt='C:\Users\54714\Desktop\搞机工具箱9.91'
 & "$pt\adb.exe" -s 881QAESM95THY reboot bootloader
 Start-Sleep 22
 & "$pt\fastboot.exe" -s 881QAESM95THY boot out\boot-meizu15-payload-debug.img
 ```
+
+两个驱动脚本都在 `out/`（被 `.gitignore` 忽略），会自动探测本地代理是否可用、
+会轮询 **artifacts** 而不是 run 状态（这个 workflow 的绿灯不可信，见第 9 节）。
+
+**判读设备状态**：`reason 2` = 命中了请求的 checkpoint；`reason 0` = 走了
+`halt_all_cpus()`/`loader_return_after` 到期这条路（panic 或 hang，看日志末尾的 `last cp`）。
 
 ### 7.2 中期：QEMU（**解决"看不见 panic"**）
 
@@ -384,3 +413,8 @@ Start-Sleep 22
 10. **重写脚本时要让验证逻辑和常量列表对齐** —— 我曾在重写 `apply_nonapple_guards.py` 时漏掉探针 62/63/64，导致 CI 上验证失败、内核根本没构建，白跑一轮 18 分钟。
 11. **`TopOfKernelData` 不等于 `PlaceImage()` 的 `Layout->Used`** —— `DarwinBoot.c` 后面还会把 return stub 计入并把 `Used` 对齐到 **16 字节**。凡是拿 `Policy` 推 `orig_va` 的算术都要算到这一跳之后（见 5.3）。
 12. **这台机器上没有 `git` 在 PATH 里**，用 `D:\WorkBuddy\resources\vendor\PortableGit\cmd\git.exe`；仓库 `http[s].proxy` 已指向 `127.0.0.1:7897`，`adb/fastboot` 在 `C:\Users\54714\Desktop\搞机工具箱9.91\`。刷机前先 `adb devices` 确认 `881QAESM95THY` 在线。
+13. **green 的 run 不等于构建成功** —— 这个 workflow 有三处会吞错误：`bash xnu-build.sh | tail || echo`、`Pack the payload` 的 `continue-on-error: true`、两个 upload 的 `if-no-files-found: warn`。2026-11-21 15:09 就出现过"run success、artifacts 为空"：`cpu.c` 用了没声明的 `loader_log_number()`，implicit declaration 在 XNU 里是 error。**唯一可信的判据是 artifacts 里有没有 `meizu15-kernel`**（`out/kernelround.py` 就是这么判的）。
+14. **探针"命中"和"从未到达"在屏幕上完全一样** —— `loader_checkpoint()` 原来只比较编号然后 `loader_jump()`，请求值不变，所以两种情况的四行输出一致。改成每个探针写 `cp N` 进 `loader_log`、并在 `loader_return()` 末尾重复 `last cp N` 之后，一次启动就能拿到整条轨迹（见 3.4）。**不要再用"一次一探针"的方式二分**。
+15. **补丁要插在会编译的那一支** —— `arm_vm_physmap_init()` 有两份实现，`PE_slide_devicetree()` 只在 `#if XNU_MONITOR` 里，而 BCM2837 未定义 `XNU_MONITOR`。第 4.2 节引用的那段代码属于不编译的分支；2026-11-21 把 `SecureDTInit()` 插进去后毫无效果，正是这个原因。
+16. **`SecureDTInit()` 不校验任何东西** —— `pexpert/gen/device_tree.c` 里它只存 `base`/`size`；`SecureDT` 会完全信任这个指针。所以"设备树地址对不对"只能由内核自己保证（`gVirtBase - gPhysBase` 的 physmap 别名），`PE_slide_devicetree()` 是闭源的，别指望它。
+17. **ADT 不是标准 FDT** —— 它是 Apple-format DT：节点的 `<uint32_t nProperties, uint32_t nChildren>`、属性 `char name[32] + uint32_t length`、四字节对齐。用 XNU 自己的 `skipTree()` 算法遍历 `inputs/meizu15-8plus.adt` 得到 `13996 -> 13996 EXACT`，可以作为"ADT 是否自洽"的本地检查。

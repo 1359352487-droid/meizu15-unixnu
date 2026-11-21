@@ -3843,3 +3843,512 @@ msgbuf 和 panic buffer 追加进去。
 
 用真实的 `loader_return.c` 跑过补丁：三处都命中（helper、函数体、末尾），
 第二次运行零改动。锚点唯一性也确认过（`loader_jump(0, 0);` 在文件里只有一处）。
+## 2026-11-21 12:05 — 第一份完整的探针轨迹
+
+`checkpoint=0` + 日志尾部截断后的第一张面板，`log 448 bytes`：
+
+```
+cp 71   cp 68  cp 68  cp 68  cp 69  cp 70  cp 71
+cp 68   cp 68  cp 53  cp 46  cp 61
+cp 82   cp 84  cp 86  cp 88  cp 80
+cp 68   cp 69  cp 70  cp 71  cp 66
+cp 83   cp 85  cp 87  cp 89  cp 81
+cp 68   cp 69  cp 70  cp 71  cp 67
+cp 62   cp 63  cp 64  cp 47  cp 48
+```
+
+### 这条链说明什么
+
+1. **`arm_vm_init()` 从入口一路走到 48**（`pmap_bootstrap()` 调用之前），
+   中间没有任何断点：58 → 59 → 60 → 54 → 55 → 56 → 57 → 50 → 51 → 52 → 53 → 46 → 61
+   → `arm_vm_physmap_init` 内部（82/84/86/88/80、66/67、83/85/87/89/81）
+   → 62 → 63 → 64 → 47 → **48**。
+2. **第二次 slide 确实完整通过了**（83 → 85 → 87 → 89 → 81 → 68/69/70/71 → 67），
+   与之前 `checkpoint=62` 的结论一致，但现在有逐点的证据。
+3. **`cp 68` / `69` / `70` / `71` 各出现三次** —— 正是 `arm_vm_page_granular_prot()`
+   被调用三次（第一次 slide、RWNX、第二次 slide），索引探针的假设得到证实。
+4. **最后一条是 48**，之后 `96` 没有出现。
+
+### 但 96 是编进内核的
+
+反汇编 `kernel.macho` 的 `_pmap_bootstrap`（`0xFFFFFFF00743A628`）：
+
+```
+ 0  d10243ff   sub  sp, sp, #0x240
+ 1-5 a90467fa … stp  x26,x25 / x24,x23 / x22,x21 / x20,x19 / x29,x30
+ 6  910203fd   mov  x29, sp
+ 7  aa0003f3   mov  x19, x0
+ 8  52800c00   mov  x0, #96
+ 9  9400eb8e   bl   0xFFFFFFF007475484   ; loader_checkpoint
+```
+
+`loader_checkpoint` 在整个内核里有 65 处 `bl`，栈帧只有 0x240 字节 —— 既不是没编进去，
+也不是栈的问题。
+
+### 所以有两种可能，这一轮同时验证
+
+| 现象 | 解释 |
+|---|---|
+| 96 执行了，但那一行还在 cache 里 | fault 走的是 `start.s` 的早期异常向量，**不经过** `loader_jump()` 的 `dc cvac` 回写；日志最后几行没落地 |
+| 96 根本没执行 | 崩在 `pmap_bootstrap` 的 prologue（`sub sp` / 那五个 `stp`） |
+
+判据：把 `checkpoint` 设成 **98**（pmap_bootstrap 头部最后一枚）。
+
+- `reason 2` → 96、97 都跑过，问题在 98 之后到 90 之间（`pmap_compute_max_asids` 之后那几行）
+- `reason 0` 且日志里仍只有 `cp 48` → 96 从未执行，prologue 就是断点
+
+另外给 `loader_log_number()` 加了"写完即写穿"（`dc cvac` + `dsb sy`），
+下一次内核重建后即使走 fault 路径，最后一行也不会丢。
+## 2026-11-21 12:42 — 栈就是那堵墙：48 之后 96 / 97 立刻通过
+
+```
+cp 48
+sp 18446744005124062640        = 0xFFFFFFF007FC7DB0
+cp 96
+cp 97
+```
+
+**这是从 PAN 以来最干净的一次判定。** 三种改动一起上（256 KiB 栈、调用前打印 SP、
+日志行写穿），屏幕上直接给出答案：
+
+1. **`sp` 是 `0xFFFFFFF007FC7DB0`** —— 落在内核数据区里（映像
+   `0xFFFFFFF007004000..0xFFFFFFF008314000`），高 VA、有效。
+2. **`cp 96` 出现** —— `pmap_bootstrap()` 入口通过。之前它不出现不是 cache 问题
+   （上一轮的 `checkpoint=98` 走的是命中路径，`loader_jump()` 会刷 cache，结果仍是
+   `reason 0`），而是**真的没执行到**。
+3. 所以 `sub sp, sp, #0x240` 之后那五个 `stp` 落在了栈外 —— **64 KiB 的中断栈
+   在 `arm_vm_init()` 深处已经用尽**。
+
+### 修复
+
+`osfmk/mach/arm/vm_param.h`：
+
+```c
+#define INTSTACK_SIZE           (64*4096)    /* 原有 16*4096 = 64 KiB */
+#define EXCEPSTACK_SIZE         (64*4096)
+```
+
+即 64 KiB → **256 KiB**。内核因此从 15,889,280 涨到 16,282,496 字节（+393 KB），
+顺带把 payload 卷从 15.5 MiB 撑爆，需要一并调到 15.9 MiB（见下一条）。
+
+### 为什么之前的判断都指向"代码"而不是"栈"
+
+`pmap_bootstrap` 的反汇编看着完全正常：`sub sp,#0x240` + 五个 `stp`，帧只有 576 字节。
+问题不在**这个**函数要用多少栈，而在于**进来时还剩多少**。`arm_vm_init()` 依次调用
+`arm_vm_physmap_init` → `arm_vm_physmap_slide` → `arm_vm_page_granular_prot`（三次）→
+`pmap_bootstrap`，每一层都留帧，64 KiB 就是这样被吃掉的。
+HANDOVER 第 6 节记的"栈改大无效"是 PAN 还没修时的测量，那时内核根本到不了这里。
+
+### 附带修掉的两件事
+
+| 问题 | 修复 |
+|---|---|
+| payload 卷 15.5 MiB = 16,252,928 字节，比新内核还小 | 卷 → 15.9 MiB = 16,672,256 字节（仍 < 16 MiB 的 `LARGE_FILE` 门槛） |
+| 448 字节日志 ≈ 74 行，`last cp` 压在条码区（y=1694..1888）下面 | 日志尾 → 224 字节（约 37 行），末尾落在条码上方 |
+
+### 下一站
+
+窗口现在是 **97 → 90**：`pmap_compute_max_asids()` 之后到 `pmap_data_bootstrap()` 之前。
+`checkpoint=90` 命中则继续推 91（`pmap_data_bootstrap` 之后，也就是 `uat_bootstrap` 之前）。
+## 2026-11-21 13:09 — `last cp 97`：KVA 生效后第一个真正查设备树的人
+
+```
+kernel returned: reason 0, log 224 bytes
+checkpoint 90 delta 00000010C900000
+sp 18446744005124062640     (行首被控制台滚动截掉，只剩尾部的 24062640)
+cp 96
+cp 97
+--- kernel message buffer ---
+last cp 97
+```
+
+日志尾截断到 224 字节后，`last cp 97` 终于落在条码上方，读得很干净。
+
+### 窗口只剩一行
+
+97 是 `pmap_lock_init(kernel_pmap);` 之后，98 是 `pmap_max_asids = pmap_compute_max_asids();`
+之后。中间只有那一个调用。所以断点就在 `pmap_compute_max_asids()` 里面。
+
+### 先排除了两个可能
+
+1. **补丁没生效？** 不是。构建日志里有
+   `  /defaults assert -> return MAX_ASIDS`，`done (41 change(s), 26 fixed probes + indexed 80)`。
+2. **ADT 格式不对？** 不是。`scripts/make-meizu15-adt.py` 生成的是 **Apple-format DT**
+   （`node()` 写的是 `<II>` 属性数/子节点数 + 32 字节 key + 4 字节长度 + 数据），
+   文件头 `07 00 00 00 08 00 00 00` 就是版本号，这正是 SecureDT 认的格式，不是标准 FDT。
+
+### 剩下的解释：地址
+
+`DarwinBoot.c` 交出去的是**物理地址**：
+
+```c
+Args->DeviceTree = TreeAddress;      /* 物理地址；KVA 由 arm_vm_init 内部自己算 */
+```
+
+XNU 侧靠 `arm_vm_init()` 里 physmap 之后的 `PE_slide_devicetree()` 把它重定位到虚拟地址。
+`pmap_compute_max_asids()` 是 **`kva_active = TRUE` 之后第一个真正去查树的调用** ——
+前面那些 `SecureDT` 用户都在 V=P 阶段。若那次 slide 没有真正生效，
+这里就是"把物理地址当虚拟地址遍历"，数据中止，而且 `kprintf` 还没起来，屏幕上
+只有 `reason 0` 和 `last cp 97`。
+
+### 处理
+
+先把这里彻底绕开（`apply_nonapple_guards.py` 的 `PMAP_DEFAULTS_PATCH` 改成
+`err = 1; (void)entry; if (err != kSuccess) return MAX_ASIDS;`），保留后续代码可达、
+变量都被使用，编译器不会报 unused：
+
+```c
+	/*
+	 * Do not ask SecureDT anything here. ... MAX_ASIDS is what an absent
+	 * pmap-max-asids property yields anyway.
+	 */
+	err = 1;
+	(void)entry;
+	if (err != kSuccess) {
+		return MAX_ASIDS;
+	}
+```
+
+### 悬着的问题（必须记住）
+
+这只是把**第一个** SecureDT 用户绕开。后面还有一批：`uart` 配置、中断控制器、
+`arm_vm_prot_init` 的后续、`machine_config` 读取等等，都会走同一条地址路径。
+真正的修法只有两个方向：
+
+1. **让 `PE_slide_devicetree()` 真正生效**（查 `TreeSize`、`end_kern`、slide 值对不对），
+   或者
+2. **直接给内核一个已经是虚拟地址的 DT**，即让 DarwinBoot 自己算 `Kernel.Base + TreeAddress - Address`
+   ——这正是第 4.2 节当年**改掉**的那一行，当时改是因为 V=P 阶段用虚拟地址会崩。
+   两个阶段的地址需求是矛盾的，最终要按 `arm_vm_init` 的时序给：**V=P 阶段物理、之后虚拟**，
+   而 XNU 的设计是让它自己 slide。
+
+等这一轮 `checkpoint=90` 的结果，再决定要不要立刻回去查 slide。
+## 2026-11-21 13:32 — 90 命中：SecureDT 那次查询就是断点
+
+```
+kernel returned: reason 2, log 738 bytes
+checkpoint 90 delta 00000010C900000
+```
+
+`checkpoint=90` 命中（`reason 2`），也就是说 **98 和 90 都执行了**。
+上一轮 `last cp 97`、这一轮 90 命中 —— 唯一的差别就是 `pmap_compute_max_asids()`
+里那条 SecureDT 查询被换成了 `err = 1; return MAX_ASIDS;`。
+
+**结论**：断点不是 `pmap_data_bootstrap`，也不是 `pmap_compute_max_asids` 的算术，
+而是它查设备树那一步。合理解释仍然是地址 —— `kva_active = TRUE` 之后第一个
+真正遍历 DT 的地方，而 DT 交过来的是物理地址、靠 `PE_slide_devicetree()` 重定位。
+
+### 这个坑要按"待修"处理，不是"已修"
+
+绕开一次只是让 `pmap` 这一关过去。这些地方迟早会再撞上同一条路径：
+
+- `uart` 的配置读取（`pmap_bootstrap` 之后不远）
+- 中断控制器 / `machine_config` 的节点查找
+- `arm_vm_prot_init` 之后任何 `SecureDT*`
+
+真修法的两个方向（择一，别再逐个绕）：
+
+1. **让 `PE_slide_devicetree()` 真正生效**：查 `TreeSize`、`end_kern`、`ptov_table[].va`
+   传进去的 slide 值，以及 `SecureDTIsLockedDown()` 的返回；
+2. **让 DarwinBoot 按阶段给地址**：V=P 阶段给物理地址（现在这样做是对的），
+   但 `arm_vm_init` 内部的 slide 需要 DT 的物理地址与长度都正确，
+   才能算出正确的虚拟地址。这一点需要读 `PE_slide_devicetree` 的调用参数是否对得上。
+
+### 现在的进度
+
+`pmap_bootstrap()`：96 ✓ 97 ✓ 98 ✓ → **90 ✓**。下一个点是 91
+（`pmap_data_bootstrap()` 之后、`uat_bootstrap()` 之前）。
+## 2026-11-21 13:43 — `last cp 90`：DT 地址是一个"类"，不是一次调用
+
+```
+cp 97
+cp 98
+cp 90
+--- kernel message buffer ---
+last cp 90
+```
+
+90 通、91 不通 → 崩在 `pmap_data_bootstrap()` 内部。而它的第一件事就是：
+
+```c
+pmap_compute_pv_targets();                        /* Scan the device tree ... */
+const vm_size_t io_attr_table_size = pmap_compute_io_rgns();   /* Scan the device tree ... */
+```
+
+**又是 SecureDT。** 这已经不是"某个调用写错了"，而是一整类：`kva_active = TRUE`
+之后每一个查树的调用都会踩。继续一个个绕没有意义。
+
+### 查到的关键事实
+
+| 事实 | 出处 |
+|---|---|
+| `SecureDTInit(void const *base, size_t size)` **只存指针和长度，不做任何校验** | `pexpert/gen/device_tree.c:234` |
+| `PE_slide_devicetree()` **不在开源树里**，`pexpert/pexpert/arm64/` 下只有 12 个头文件 | 目录列表 |
+| 内核侧调用：`PE_slide_devicetree(temp_ptov_table[ptov_index - 1].va - end_kern);` | `arm_vm_init.c:1571` |
+| 紧挨着上面一行就是 `arm_vm_physmap_slide(temp_ptov_table, end_kern, ...)` —— DT 所在区间刚被映射 | `arm_vm_init.c:1569` |
+
+所以可以把 SecureDT 直接指到那块内容在 **physmap 里的别名**，不必猜闭源函数的行为：
+
+```c
+	if (!SecureDTIsLockedDown()) {
+		PE_slide_devicetree(temp_ptov_table[ptov_index - 1].va - end_kern);
+	}
+	/*
+	 * Point SecureDT at the physmap alias of the blob rather than trusting the
+	 * closed-source rebase above. args->deviceTreeP is the physical address the
+	 * loader handed over; gVirtBase - gPhysBase is the physmap offset.
+	 */
+	SecureDTInit((void const *)((uintptr_t)args->deviceTreeP + (gVirtBase - gPhysBase)),
+	    (size_t)args->deviceTreeLength);
+```
+
+### 这一次把 `/defaults` 查询也放回去了
+
+上一轮为了排除干扰，把 `pmap_compute_max_asids()` 里的查询整个短路掉了。现在改了
+`apply_nonapple_guards.py`：
+
+- `PMAP_DEFAULTS_PATCH` 恢复成"调用照旧，只是 `err != kSuccess` 时 return MAX_ASIDS"
+- 新增 `add_secure_dt_reinit()`，把 `SecureDTInit()` 插在 `PE_slide_devicetree()` 之后
+
+于是**下一张面板就是判决**：
+
+| `last cp` | 含义 |
+|---|---|
+| 仍为 **97** | SecureDT 的地址不是问题（那两条都白猜），得回头查 `SecureDTLookupEntry` 内部 |
+| **90** 或更远 | DT 地址就是根因，而且这一类问题一次性解决了 —— 后面 uart / 中断 / machine_config 都不用再绕 |
+
+本地已用真 `arm_vm_init.c` 与 `pmap.c` 验过：插入位置正确、两处补丁幂等、`/defaults` 查询保留。
+## 2026-11-21 14:01 — 补丁插到了不编译的分支：`XNU_MONITOR` 的那一支
+
+上一轮把 `SecureDTInit()` 插在 `PE_slide_devicetree()` 后面，结果仍是 `last cp 97`。
+两条线索同时确认这不是"修复无效"，而是**修在了死代码里**：
+
+1. **补丁确实编进去了** —— 构建日志有 `  SecureDTInit() after PE_slide_devicetree()`
+   与 `done (42 change(s), 26 fixed probes + indexed 80)`。
+2. **ADT 本身完全自洽** —— 用 XNU 自己的算法（`device_tree.c` 的 `skipProperties` /
+   `skipTree`，含 `next_prop` 的 `(prop + length + 39) & ~3`）在本地走了一遍：
+
+   ```
+   size 13996
+   walk ends at 13996 of 13996 -> EXACT
+   ```
+
+   也就是说节点头（`uint32_t nProperties, nChildren`）、属性（`char name[32] + uint32_t length`）、
+   四字节对齐全部符合 SecureDT 的期望，遍历不会越界，不会碰 `ASSERT_IN_DT`。
+
+### 真正的原因
+
+`arm_vm_physmap_init()` 有**两份实现**：
+
+```c
+#if XNU_MONITOR
+	... arm_vm_physmap_slide(temp_ptov_table, end_kern, ...);
+	if (!SecureDTIsLockedDown()) {
+		PE_slide_devicetree(temp_ptov_table[ptov_index - 1].va - end_kern);   // ← 只在这里
+	}
+	...
+#else
+static void
+arm_vm_physmap_init(boot_args *args)
+{
+	...
+	arm_vm_page_granular_RWNX(end_kern, ...);      /* Device Tree ... */
+	arm_vm_physmap_slide(temp_ptov_table, (args->topOfKernelData - gPhysBase + gVirtBase), ...);
+	...                                            // ← 没有 PE_slide_devicetree
+}
+#endif
+```
+
+而 **BCM2837 不定义 `XNU_MONITOR`**（本仓库第 4 节早就知道，`ml_enable_monitor()`
+那一处 guard 就是这么加的），所以内核走的是 `#else` 那一支 —— **DT 从来没有被 rebase 过**。
+`SecureDT` 手里始终是 DarwinBoot 填的物理地址，`kva_active = TRUE` 之后第一次查树
+（`pmap_compute_max_asids`）就把它当虚拟地址读。
+
+### 修复
+
+把 `SecureDTInit()` 挪到 `#else` 分支的第二个 `arm_vm_physmap_slide(...)` 之后，
+也就是真正会编译、而且 physmap 已经建好的那个位置：
+
+```c
+	arm_vm_physmap_slide(temp_ptov_table, (args->topOfKernelData - gPhysBase + gVirtBase),
+	    real_avail_end - args->topOfKernelData, AP_RWNA, ARM64_GRANULE_ALLOW_BLOCK | ARM64_GRANULE_ALLOW_HINT);
+	/*
+	 * No PE_slide_devicetree() in this (non-XNU_MONITOR) arm, so nothing rebased the
+	 * blob the loader handed over as a physical address. ...
+	 */
+	SecureDTInit((void const *)((uintptr_t)args->deviceTreeP + (gVirtBase - gPhysBase)),
+	    (size_t)args->deviceTreeLength);
+```
+
+### 附带纠正文档
+
+HANDOVER 第 4.2 节引用那段 `arm_vm_physmap_slide(temp_ptov_table, end_kern, ...)` +
+`PE_slide_devicetree(...)` 时，没说它属于 `#if XNU_MONITOR` —— 而这个板子根本不走那一支。
+这一节现在补上了这个前提，免得下一个人（包括我自己）再按不存在的代码推理。
+## 2026-11-21 14:29 — 里程碑：内核开始自己打印日志
+
+```
+_arm_map_interrupt_controller: soc_phys: 0x17000000
+[ 48.824721]: pe_arm_map_interrupt_controller: failed to find the interrupt-controller
+[ 48.824733]: pe_arm_init_debug: failed to find cpu-debug-interface
+last cp 20
+```
+
+带 `[ 48.824721]` 时间戳的三行是**内核自己的 `kprintf`**。这是这个项目从
+"只能看 reason 码 + 192 字节旧日志"到"内核会说话"的转折点：
+
+- `SecureDT` 修好之后，`pmap_bootstrap()`（含 `pmap_data_bootstrap` 里的两次扫树）、
+  `arm_vm_physmap_init()`、`arm_vm_init()` 全部走完
+- `cpu_bootstrap` / `rtclock_early_init` / `kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF)`
+  都过了（探针 13/14/15/16 在 HakiOS 自己的编号里）
+- `PE_create_console()` 之后 `kprintf` 可用，`pe_arm_*` 那些"failed to find …"是**警告**，
+  不是 panic（我们这份 ADT 本来就没有 interrupt-controller / cpu-debug-interface 节点）
+
+### 探针编号的真正来源（补记）
+
+之前一直没弄清 10–21 是哪来的 —— 它们来自 **HakiOS 的 `xnu/hakios.patch`**，
+不在这台仓库里。从 patch 里把 `arm_init()` 的编号全查出来了：
+
+| 探针 | 位置 |
+|---|---|
+| 10 | `arm_init()` 开头，`cpu_data_init` 前 |
+| 11 | `PE_init_platform(FALSE, args)` 之后 |
+| 30–33 | `configure_timer_apple_regs` / `wfe_timeout_configure` / `wfe_timeout_init` / `configure_misc_apple_regs` 之后 |
+| 34 | `platform_stall_panic_or_spin` 之后 |
+| 35 / 12 | `ml_parse_cpu_topology` 前 / 后 |
+| 40 / 41 | `master_cpu` 取到后 / `CpuDataEntries[]` 赋值后 |
+| 42 / 43 / 44 | `thread_bootstrap` 后 / `machine_set_current_thread` 后 / `preemption_count=0` 后 |
+| 13 / 14 | `cpu_bootstrap` 后 / `rtclock_early_init` 后 |
+| 15 / 16 | `kernel_startup_bootstrap` 后 / `cpu_init` 后 |
+| **17** | **`arm_vm_init()` 之后** |
+| 18 / 19 | `serial_init()` 后 / `kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF)` 后 |
+| **20** | **`PE_create_console()` 之后** |
+| 21 | `machine_startup(args)` 之前 |
+
+所以 **`last cp 20` 表示：`arm_vm_init` 早过了，`kprintf` 初始化也过了，卡在
+`PE_create_console()` 到 `machine_startup()` 之间**。
+
+### 新探针 22–28（这一段原来一枚都没有）
+
+| 探针 | 位置 |
+|---|---|
+| 22 | `PE_init_printf(FALSE)` 之后 |
+| 23 | `cpu_machine_idle_init(TRUE)` 之后 |
+| 24 | **第二次** `PE_init_platform(TRUE, &BootCpuData)` 之后 |
+| 25 | `ml_map_cpu_pio()` 之后 |
+| 26 | `cpu_timebase_init(TRUE)` 之后 |
+| 27 | `gDramSize = *dram_size;` 之后（即 `/chosen` 的 dram-base/dram-size 都查到了） |
+| 28 | `machine_startup(args)` 之前 |
+
+其中 24 和 27 特别值得看：`PE_init_platform(TRUE, …)` 是第二次调用（会做 I/O 映射），
+而 27 之前的 `SecureDTLookupEntry(NULL, "/chosen")` 如果 DT 还有问题，会在这里
+**panic 并打印**（`kprintf` 已经起来）—— 不再是静默中止。
+## 2026-11-21 14:54 — `last cp 25`：`cpu_timebase_init()` 是下一个点
+
+```
+last cp 25
+[ 48.800558]: pe_arm_map_interrupt_controller: failed to find the interrupt-controller
+[ 48.800579]: pe_arm_init_debug: failed to find cpu-debug-interface
+```
+
+24（第二次 `PE_init_platform(TRUE, &BootCpuData)`）、25（`ml_map_cpu_pio()`）都过了。
+25 与 26 之间**只剩一个调用**：
+
+```c
+	ml_map_cpu_pio();
+	loader_checkpoint(25);
+#if APPLE_ARM64_ARCH_FAMILY
+	configure_late_apple_regs();      /* 不编译：BCM2837 未定义 APPLE_ARM64_ARCH_FAMILY */
+#endif
+#endif /* __arm64__ */
+	cpu_timebase_init(TRUE);
+	loader_checkpoint(26);
+```
+
+### `cpu_timebase_init()` 全文（`osfmk/arm64/cpu.c:954`）
+
+```c
+void
+cpu_timebase_init(boolean_t from_boot)
+{
+	cpu_data_t *cdp = getCpuDatap();
+
+	if (cdp->cpu_get_fiq_handler == NULL) {
+		cdp->cpu_get_fiq_handler      = rtclock_timebase_func.tbd_fiq_handler;
+		cdp->cpu_get_decrementer_func = rtclock_timebase_func.tbd_get_decrementer;
+		cdp->cpu_set_decrementer_func = rtclock_timebase_func.tbd_set_decrementer;
+		cdp->cpu_tbd_hardware_addr    = (void *)rtclock_timebase_addr;
+		cdp->cpu_tbd_hardware_val     = (void *)rtclock_timebase_val;
+	}
+
+	if (!from_boot && (cdp == &BootCpuData)) {
+		rtclock_base_abstime = wake_abstime - ml_get_hwclock();
+	} else if (from_boot) {
+		ml_set_reset_time(ml_get_hwclock());
+	}
+
+	cdp->cpu_decrementer = 0x7FFFFFFFUL;
+	cdp->cpu_timebase = 0x0UL;
+	cdp->cpu_base_timebase = rtclock_base_abstime;
+}
+```
+
+可疑点只有三个：`getCpuDatap()`（拿 CPU 数据，arm64 上通常走 `TPIDR_EL1`）、
+`rtclock_timebase_func`（若未初始化则全 NULL，**赋值无害**，不是崩因）、
+`ml_get_hwclock()`（读 `CNTPCT_EL0`）。
+
+### 新探针 29 / 31
+
+| 探针 | 位置 |
+|---|---|
+| 29 | `cdp = getCpuDatap();` 之后，同时把 `cdp` 的值以十进制写进日志（`cdp <value>`） |
+| 31 | `cdp->cpu_decrementer = 0x7FFFFFFFUL;` 之前，即 `ml_set_reset_time(ml_get_hwclock())` 之后 |
+
+判读：
+
+| 现象 | 含义 |
+|---|---|
+| 没有 `cp 29` | `getCpuDatap()` 自己崩 —— arm64 上意味着 `TPIDR_EL1` 没被 `start.s` 设成 `BootCpuData` |
+| `cp 29` + `cdp 0` | `getCpuDatap()` 返回 0，紧随其后的 `cdp->cpu_get_fiq_handler` 就是读地址 0 |
+| `cp 29` 有值、无 `cp 31` | 崩在 `ml_get_hwclock()`（`CNTPCT_EL0` 在这个 SoC/配置下没被接受） |
+| `cp 31` 出现 | 这一段全通，26 应该也到 |
+
+顺带一提，这块是经典的"Apple 专属硬件路径"：`rtclock_timebase_func` /
+`cpu_tbd_hardware_*` 都是 Apple Silicon 的 timebase 抽象，和前面 PAN、`invalid_ttep`
+属于同一类问题 —— 前面已经踩过两次，这次有 `kprintf` 和探针，判读会快得多。
+## 2026-11-21 15:09 — 构建失败被 `continue-on-error` 吞掉了
+
+现象很别扭：内核 workflow 的 run 显示 **success**，但 `actions/runs/<id>/artifacts` 是**空数组**。
+
+原因链：
+
+1. `Build the kernel` 步骤失败了（`make[1]: *** [MakeInc.top:524: build_all_bootstrap_DEVELOPMENT^ARM64^BCM28…] Error 2`）
+2. 但这一步写的是 `bash xnu-build.sh 2>&1 | tail -300 || echo "(xnu-build.sh returned non-zero)"`
+   —— 管道 + `||` 把退出码吃掉了，步骤本身仍然"成功"
+3. `Pack the payload volume` 有 **`continue-on-error: true`**，它找不到内核就直接退出，`/tmp/kernel.macho.gz` 没有生成
+4. 两个 upload 步骤是 `if: always()` + `if-no-files-found: warn` —— 缺文件只警告，不失败
+
+于是整条链**一路绿到底，产物为零**。
+
+### 真正的编译错误
+
+`cpu.c` 里新加的探针调用了 `loader_log_number()`，但**没有声明**。XNU 的编译选项把
+implicit function declaration 当作 error，于是整个 `cpu.c` 编译失败。
+（`pmap.c` 那边加过 `extern void loader_checkpoint(...)`，`cpu.c` 是新文件，漏了。）
+
+而且 `tail -300` 把真正的错误行切掉了 —— 日志里只剩 `make: *** Error 2`。
+
+### 修了两处
+
+| 修的地方 | 内容 |
+|---|---|
+| `apply_nonapple_guards.py` | `add_cpu_timebase_probes()` 先给 `cpu.c` 补 `extern void loader_checkpoint(...)` 与 `extern void loader_log_number(...)`（锚点 `#include <arm/machine_routines.h>`） |
+| `build-meizu15-xnu-hakios-v2.yml` | `tail -300` → `tail -2000`，下次能直接看到 `error:` 行 |
+
+### 教训（写给下一个人）
+
+**"run 是绿的"不等于"构建成功"。** 这个 workflow 里有三处会吞错误：
+`| tail || echo`、`continue-on-error: true`、`if-no-files-found: warn`。
+判断一次内核构建是否成功，只看一件事：**artifacts 里有没有 `meizu15-kernel`**。
+`out/kernelround.py` 正是这么做的（轮询 artifacts 而不是 run 状态），所以它这轮
+正确地卡在 `waiting for kernel` 上，没有被绿灯骗过去。
