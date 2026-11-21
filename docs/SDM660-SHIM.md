@@ -67,6 +67,21 @@ osfmk/arm64/sdm660_timer.c		standard
 `apply_nonapple_guards.py` 之后调用它，`paths` 里也加了 `kernel/sdm660/**`
 与脚本本身，所以改这一层会触发内核重建。
 
+## 状态
+
+**2026-11-21 18:40：已编入内核并通过构建**（`meizu15-kernel` artifact 正常生成）。
+
+第一次进 XNU 树时踩了三个头文件问题，都记在 `TESTLOG.md` 里：
+
+- `kern/printf.h` 不存在（`osfmk/kern/` 只有 `printf.c`，`kprintf` 声明在 `pexpert/pexpert.h`）；
+- `#include <libkern/libkern.h>` 在 osfmk 里解析到 **BSD 那份**，把 `bsd/sys/types.h`
+  带进来，`daddr_t` / `dev_t` / `clock_t` / `copyinstr` 全部和 osfmk 的定义冲突；
+- `vsnprintf` 在两处都拿不到，所以这一层**自带格式化器**，内核侧只用
+  `kprintf` 与 `va_list`。
+
+结论：新增编译单元要在这棵树里活下来，先得过它的头文件审查 —— osfmk / bsd / pexpert
+三套并行，同名头文件指向不同实现。
+
 ## 已知的空白（不要假装它已经完备）
 
 | 项 | 现状 |

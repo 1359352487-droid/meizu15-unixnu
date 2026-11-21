@@ -4352,3 +4352,100 @@ implicit function declaration 当作 error，于是整个 `cpu.c` 编译失败�
 判断一次内核构建是否成功，只看一件事：**artifacts 里有没有 `meizu15-kernel`**。
 `out/kernelround.py` 正是这么做的（轮询 artifacts 而不是 run 状态），所以它这轮
 正确地卡在 `waiting for kernel` 上，没有被绿灯骗过去。
+## 2026-11-21 17:49 — `last cp 26`：`cpu_timebase_init()` 通过，卡在它之后
+
+```
+last cp 26
+[ 48.810901]: pe_arm_map_interrupt_controller: failed to find the interrupt-controller
+[ 48.810913]: pe_arm_init_debug: failed to find cpu-debug-interface
+```
+
+**26 命中** —— `cpu_timebase_init(TRUE)` 返回了。也就是说昨晚新埋的 29 / 31 两个点
+（`getCpuDatap()` 之后、`ml_set_reset_time(ml_get_hwclock())` 之后）都在里面过了：
+`cdp` 拿到了、`CNTPCT_EL0` 那条路也没问题。这一关不用再管。
+
+### 关键观察：这一段**没有 panic 文本**
+
+26 到 27 之间这些调用，如果 `SecureDTLookupEntry("/chosen")` 失败是会 `panic()` 的，
+而 `kprintf` 现在可用，panic 一定会打印。屏幕上没有任何 panic 文字 —— 所以这不是
+"树查不到"，而是**在到达那些查询之前就静默中止了**（数据中止一类）。
+
+窗口里的东西（26 → 27）：
+
+```c
+	cpu_timebase_init(TRUE);           /* 26 */
+#if KPERF
+	kptimer_curcpu_up();               /* KPERF 是否开，待查 */
+#endif
+	PE_init_cpu();
+	fiq_context_init(TRUE);
+#if HIBERNATION
+	pal_hib_init();
+#endif
+	loader_checkpoint(37);             /* 新 */
+	unsigned long const *dram_base;
+	unsigned long const *dram_size;
+	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess) { panic(...); }
+	... dram-base / dram-size 两次 SecureDTGetProperty ...
+	gDramSize = *dram_size;            /* 27 */
+```
+
+### 新探针 36 / 37（HakiOS 已占 30–35，所以从 36 起）
+
+| 探针 | 位置 |
+|---|---|
+| 36 | `PE_init_cpu();` + `fiq_context_init(TRUE);` **都返回之后**（锚点用这两行组合，避开 `arm_init_cpu()` 里的同名调用） |
+| 37 | `/chosen` 的 `dram-base` / `dram-size` 查询**之前**（锚点用 `dram_base`/`dram_size` 声明 + `if (SecureDTLookupEntry...)` 三行组合，避开第 377 行那个同名 `if`） |
+
+判读：
+
+| `last cp` | 含义 |
+|---|---|
+| 26（仍） | 崩在 `kptimer_curcpu_up()` 或 `PE_init_cpu()`，两者还没被 36 覆盖 |
+| **36** | `PE_init_cpu` / `fiq_context_init` 都过了，崩在 `pal_hib_init` 或紧随其后的 `SecureDT` 查询之前 |
+| **37** | 到了 `/chosen` 查询门口；此后若失败会**打印 panic**，不会再静默 |
+
+本地已用真 `arm_init.c` 验证：36 落在 `fiq_context_init(TRUE);` 之后、37 落在 `dram_base` 声明之前，
+两处锚点唯一、脚本幂等。
+## 2026-11-21 18:40 — SDM660 转移层编译通过
+
+`kernel/sdm660/` 四个 `.c` 第一次进 XNU 树，花了三轮才编过。三个错误都不是笔误，
+而是"XNU 的头文件世界是三套并行的"这件事的三种表现：
+
+| 轮次 | 错误 | 根因 |
+|---|---|---|
+| 1 | `fatal error: 'kern/printf.h' file not found` | `osfmk/kern/` 只有 `printf.c`，**没有** `printf.h`；`kprintf()` 声明在 `pexpert/pexpert.h` |
+| 2 | `typedef redefinition`（`daddr_t` / `dev_t` / `clock_t`）+ `conflicting types for 'copyinstr'` | `#include <libkern/libkern.h>` 在 osfmk 里解析到 **BSD 那份**（`EXPORT_HDRS/bsd/libkern/libkern.h`），它带进 `bsd/sys/types.h` |
+| 2 | `incompatible integer to pointer conversion` | `ml_io_map()` 返回 `vm_offset_t`（整数），不是 `void *` |
+| 3 | `call to undeclared function 'vsnprintf'` | `kern/misc_protos.h` 里也没有；`libkern.h` 又不能用 |
+
+### 最终做法
+
+这一层**不依赖任何格式化库**：`sdm660_shim.c` 自带一个几百字节的格式化器
+（`%s %c %x %u %d %%` 与 `ll` 修饰），内核侧只拿 `kprintf`（`pexpert.h`）和
+`va_list`（`stdarg.h`）。其它三个文件连 `misc_protos.h` 都不需要。
+
+理由不是"图省事"，而是这一层的定位：它要在**最早能读寄存器的那一刻**就出日志，
+为格式一行字去拖更多内核子系统进来，方向就错了。
+
+### 结果
+
+`meizu15-kernel` artifact 正常生成（5.8 MB），run 的 `failure` 只来自
+`Publish to a Release`（老问题）。构建日志里有：
+
+```
+  copied sdm660_shim.c / sdm660_uart.c / sdm660_gic.c / sdm660_timer.c
+  added 4 file(s) to osfmk/conf/files.arm64
+             CC sdm660_shim.o
+```
+
+### 顺带：这个内核比设备上跑的那版更新
+
+因为远端之前缺 `scripts/ci/apply_nonapple_guards.py` 与 launcher 的改动，这次一并补上了，
+所以这一版内核同时带：
+
+- `cpu_timebase_init()` 里的 29 / 31 探针（`cdp` 值打印）
+- `arm_init()` 尾部的 22–28 探针
+- SDM660 转移层（默认关闭，`sdm660_shim=1` 才启用）
+
+设备空闲时刷它，一次能得到"时间基卡点"与"转移层首次报告"两份信息。
