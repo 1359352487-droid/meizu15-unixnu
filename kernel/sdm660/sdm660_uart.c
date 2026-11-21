@@ -135,7 +135,6 @@ sdm660_uart_init(uint64_t override_pa, uint32_t baud)
 		}
 	}
 
-	uart_kind = uart_kind;  /* keep the choice visible in a debugger */
 	return true;
 }
 

@@ -262,11 +262,10 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- last cp 26: cpu_timebase_init passed (so did 29/31 inside it), 27 never runs and there
+  // checkpoint=0 -- last cp 26 again with 36/37 in place: the stop is between cpu_timebase_init and
   //
-  // is no panic text, so the stop is a silent abort in a stretch with no probe:
-  // kptimer_curcpu_up / PE_init_cpu / fiq_context_init / pal_hib_init. 36 sits after the two
-  // init calls, 37 right before the /chosen dram-base/dram-size lookups.
+  // PE_init_cpu. 38 goes after the KPERF block and before PE_init_cpu, 39 between
+  // PE_init_cpu and fiq_context_init, 36 stays after both.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.

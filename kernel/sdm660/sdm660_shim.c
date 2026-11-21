@@ -16,9 +16,9 @@
 
 #include <pexpert/pexpert.h>
 #include <pexpert/device_tree.h>
+#include <mach/kern_return.h>
 #include <machine/machine_routines.h>
 #include <kern/assert.h>
-#include <kern/printf.h>
 #include <kern/startup.h>
 #include <libkern/libkern.h>
 #include <vm/vm_kern.h>

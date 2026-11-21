@@ -644,29 +644,35 @@ ARM_LATE_EXPECTED = (22, 23, 24, 25, 26, 27, 28)
 # probe: kptimer_curcpu_up (KPERF), PE_init_cpu(), fiq_context_init(TRUE),
 # pal_hib_init (HIBERNATION), then the /chosen dram-base/dram-size lookups.
 # HakiOS already owns 30..35, so these take 36/37.
+# 38 sits between the KPERF block and PE_init_cpu(), 39 between PE_init_cpu() and
+# fiq_context_init(), 36 after both. With 26 firing and 36 not, that pins the stop
+# to one of: kptimer_curcpu_up() (only if KPERF is compiled in), PE_init_cpu()
+# itself, or fiq_context_init().
 ARM_LATE2_AFTER = [
-    ("\tPE_init_cpu();\n\tfiq_context_init(TRUE);\n", 36),
+    ("\tPE_init_cpu();\n\tfiq_context_init(TRUE);\n",
+     "\tloader_checkpoint(38);\n\tPE_init_cpu();\n\tloader_checkpoint(39);\n"
+     "\tfiq_context_init(TRUE);\n\tloader_checkpoint(36);\n"),
 ]
 ARM_LATE2_BEFORE = [
     ("\tunsigned long const *dram_base;\n\tunsigned long const *dram_size;\n\n"
      "\tif (SecureDTLookupEntry(NULL, \"/chosen\", &chosen) != kSuccess) {\n", 37),
 ]
-ARM_LATE2_EXPECTED = (36, 37)
+ARM_LATE2_EXPECTED = (36, 37, 38, 39)
 
 
 def add_arm_late2_probes(path):
     """Probes 36/37 between cpu_timebase_init() and the /chosen dram lookups."""
     text = path.read_text(encoding="utf-8")
     changed = False
-    for needle, number in ARM_LATE2_AFTER:
-        if needle + "\tloader_checkpoint(%d);\n" % number in text:
-            print("  already present: checkpoint %d" % number)
+    for needle, replacement in ARM_LATE2_AFTER:
+        if replacement in text:
+            print("  already present: checkpoints 38/39/36")
             continue
         if text.count(needle) != 1:
             raise SystemExit("%s: expected one PE_init_cpu/fiq_context pair, found %d"
                              % (path, text.count(needle)))
-        text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
-        print("  added loader_checkpoint(%d) after PE_init_cpu/fiq_context_init" % number)
+        text = text.replace(needle, replacement, 1)
+        print("  added checkpoints 38 (before PE_init_cpu), 39 (after it), 36 (after fiq_context_init)")
         changed = True
     for needle, number in ARM_LATE2_BEFORE:
         if "\tloader_checkpoint(%d);\n" % number + needle in text:
