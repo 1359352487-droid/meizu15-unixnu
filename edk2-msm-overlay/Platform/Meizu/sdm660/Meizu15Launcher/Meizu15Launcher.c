@@ -262,12 +262,10 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=90 -- last cp 97, and the /defaults patch was in the build, so the stop is pmap_compute_max_asids()
+  // checkpoint=0 -- 90 hits once SecureDT is out of the way, so 98 and 90 both run: the stop really
   //
-  // itself: it is the first KVA-time user of SecureDT, and the tree was handed over as a
-  // physical address for PE_slide_devicetree to rebase. Stop asking SecureDT here;
-  // MAX_ASIDS is what an absent pmap-max-asids property yields anyway.
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=90";
+  // was the tree lookup. Now run free and let the log say where it lands next.
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.
   //
