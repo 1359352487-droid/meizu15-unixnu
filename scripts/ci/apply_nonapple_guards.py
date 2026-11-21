@@ -198,9 +198,10 @@ static uint64_t loader_last_checkpoint;
  * How much of the log the stub is asked to print. The console scrolls and the
  * stub paints its barcodes at y = 1694..1888, so a longer log has its final
  * lines covered by them -- and the final lines are the ones worth reading.
- * Roughly thirty 80-column lines fit above the barcodes.
+ * A probe line is six bytes ("cp 62\n") and one console line, and about forty
+ * console lines fit above the barcodes, hence 224 rather than 448.
  */
-#define LOADER_RETURN_TAIL 448
+#define LOADER_RETURN_TAIL 224
 
 /* "cp 62\\n" -- digits only, so no printf and no locale; safe this early. */
 void

@@ -262,12 +262,12 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- 98 misses and the trail still ends at 48, so 96 never runs even though it is
+  // checkpoint=90 -- 96 and 97 now run: the interrupt stack was the wall, not the code.
   //
-  // pmap_bootstrap's first statement and the prologue is only sub sp,#0x240 plus five stp.
-  // That leaves the stack it is handed: log SP right before the call, and raise the
-  // interrupt/exceptions stacks to 256 KiB instead of 64.
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
+  // 256 KiB fixed the entry, so the window is now 97 -> 90 (compute_max_asids tail
+  // to pmap_data_bootstrap). Also cut the stub's log tail 448 -> 224 bytes so
+  // 'last cp' lands above the barcodes instead of under them.
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=90";
   //
   // DeviceTree must stay NULL here.
   //
