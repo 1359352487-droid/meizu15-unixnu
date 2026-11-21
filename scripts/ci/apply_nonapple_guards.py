@@ -1083,6 +1083,40 @@ def fix_boot_cpu_data(path):
     path.write_text(text, encoding="utf-8")
     return True
 
+# osfmk/kern/startup.c, kernel_bootstrap_thread(): what runs *after* the context
+# switch. Everything in machine_load_context() turned out to be legal on ARMv8.0
+# (the S3_3_C4_C4_0 accesses are FPCR), so probe 113 firing and then silence may
+# simply mean the switch worked and this function is where it dies.
+BOOTSTRAP_THREAD_ENTRY = "kernel_bootstrap_thread(void)\n{\n"
+BOOTSTRAP_THREAD_PROBES = [
+    (BOOTSTRAP_THREAD_ENTRY, 114, "after"),
+    ("\tplatform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_KERNEL_BOOTSTRAP);\n", 115, "after"),
+    ("\tidle_thread_create(processor);\n", 116, "after"),
+    ("\tsched_startup();\n", 117, "after"),
+]
+BOOTSTRAP_THREAD_EXPECTED = (114, 115, 116, 117)
+
+
+def add_kernel_bootstrap_thread_probes(path):
+    """Probes 114-117 inside kernel_bootstrap_thread(), the first kernel thread."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for needle, number, position in BOOTSTRAP_THREAD_PROBES:
+        added = "loader_checkpoint(%d);" % number
+        if position == "after":
+            if needle + "\t" + added + "\n" in text:
+                print("  already present: checkpoint %d" % number)
+                continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip()[:46], text.count(needle)))
+        text = text.replace(needle, needle + "\t" + added + "\n", 1)
+        print("  added loader_checkpoint(%d) after %s" % (number, needle.strip()[:46]))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
 
 def main(argv):
     if len(argv) < 2:
@@ -1120,6 +1154,7 @@ def main(argv):
     changed += add_kernel_bootstrap_late_probes(kstartup)
     changed += add_load_context_probes(kstartup)
     changed += fix_boot_cpu_data(kstartup)
+    changed += add_kernel_bootstrap_thread_probes(kstartup)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
