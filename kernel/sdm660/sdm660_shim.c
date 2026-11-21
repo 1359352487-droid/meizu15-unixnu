@@ -20,7 +20,6 @@
 #include <machine/machine_routines.h>
 #include <kern/assert.h>
 #include <kern/startup.h>
-#include <kern/misc_protos.h>
 #include <vm/vm_kern.h>
 
 #include "sdm660_shim.h"
@@ -260,14 +259,98 @@ sdm660_shim_start(void)
  * loader hands back), and the UART once it exists (so the console no longer
  * has to be photographed).
  */
+/*
+ * A formatter of its own, deliberately.
+ *
+ * vsnprintf() is not reachable from here: libkern.h resolves to the BSD copy
+ * (which collides with osfmk's typedefs) and misc_protos.h does not declare it
+ * either. Pulling in more of the tree to format one line is the wrong trade --
+ * the log has to work at the first moment a register can be read, before the
+ * rest of the kernel is in any state to be depended on.
+ *
+ * Supported: %s %c %x %u %d %% and the ll modifier, which is everything this
+ * layer and its callers use.
+ */
+static char *
+sdm660_fmt_uint(char *p, uint64_t v, unsigned base)
+{
+	static const char digits[] = "0123456789abcdef";
+	char tmp[24];
+	int n = 0;
+
+	do {
+		tmp[n++] = digits[v % base];
+		v /= base;
+	} while (v != 0 && n < 24);
+	while (n > 0) {
+		*p++ = tmp[--n];
+	}
+	return p;
+}
+
 void
 sdm660_log(const char *fmt, ...)
 {
 	char    line[256];
+	char   *p = line;
+	char   *end = line + sizeof(line) - 1;
 	va_list ap;
 
 	va_start(ap, fmt);
-	vsnprintf(line, sizeof(line), fmt, ap);
+	for (; *fmt != 0 && p < end; fmt++) {
+		int  llong = 0;
+
+		if (*fmt != '%') {
+			*p++ = *fmt;
+			continue;
+		}
+		fmt++;
+		while (*fmt == 'l') {
+			llong++;
+			fmt++;
+		}
+		switch (*fmt) {
+		case 's': {
+			const char *s = va_arg(ap, const char *);
+			if (s == NULL) {
+				s = "(null)";
+			}
+			while (*s != 0 && p < end) {
+				*p++ = *s++;
+			}
+			break;
+		}
+		case 'x':
+			p = sdm660_fmt_uint(p,
+			    llong ? va_arg(ap, unsigned long long) : va_arg(ap, unsigned int), 16);
+			break;
+		case 'u':
+			p = sdm660_fmt_uint(p,
+			    llong ? va_arg(ap, unsigned long long) : va_arg(ap, unsigned int), 10);
+			break;
+		case 'd': {
+			int v = va_arg(ap, int);
+			if (v < 0) {
+				if (p < end) {
+					*p++ = '-';
+				}
+				p = sdm660_fmt_uint(p, (uint64_t)(-(int64_t)v), 10);
+			} else {
+				p = sdm660_fmt_uint(p, (uint64_t)v, 10);
+			}
+			break;
+		}
+		case 'c':
+			*p++ = (char)va_arg(ap, int);
+			break;
+		case '%':
+			*p++ = '%';
+			break;
+		default:
+			break;
+		}
+	}
+	*p = 0;
 	va_end(ap);
 
 	kprintf("%s", line);
