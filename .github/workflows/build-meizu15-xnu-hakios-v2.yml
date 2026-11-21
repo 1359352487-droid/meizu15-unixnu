@@ -1,4 +1,4 @@
-name: build-meizu15-xnu-hakios-v2
+﻿name: build-meizu15-xnu-hakios-v2
 
 # Build XNU 8796 on Linux by combining two public halves that fit together:
 #
@@ -26,6 +26,8 @@ on:
       # scripts rebuilds the kernel and not just the payload.
       - 'scripts/ci/apply_nonapple_guards.py'
       - 'scripts/ci/disable_pan.py'
+      - 'scripts/ci/install_sdm660_shim.py'
+      - 'kernel/sdm660/**'
 
 jobs:
   kernel:
@@ -169,6 +171,13 @@ jobs:
           set -eux
           python3 ../meizu15/scripts/ci/apply_nonapple_guards.py "$PWD/xnu-src"
           python3 ../meizu15/scripts/ci/disable_pan.py "$PWD/xnu-src"
+          #
+          # The SDM660 translation layer: copies kernel/sdm660/ into osfmk/arm64/
+          # and adds it to osfmk/conf/files.arm64. Nothing in it runs unless the
+          # kernel is booted with sdm660_shim=1, so this cannot disturb a round
+          # that is only chasing a checkpoint.
+          #
+          python3 ../meizu15/scripts/ci/install_sdm660_shim.py "$PWD/xnu-src"
 
       - name: Kernel dependencies (xnu-deps/setup.sh)
         working-directory: hakios
@@ -186,7 +195,7 @@ jobs:
         run: |
           set -eux
           export THEOS="$HOME/theos"
-          bash xnu-build.sh 2>&1 | tail -300 || echo "(xnu-build.sh returned non-zero)"
+          bash xnu-build.sh 2>&1 | tail -2000 || echo "(xnu-build.sh returned non-zero)"
           echo "=== artefacts ==="
           ls -la hakios-kernel 2>/dev/null || echo "(no hakios-kernel)"
           find . -name 'mach.development*' 2>/dev/null | head -5
