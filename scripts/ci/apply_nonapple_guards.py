@@ -648,6 +648,9 @@ ARM_LATE_EXPECTED = (22, 23, 24, 25, 26, 27, 28)
 # and prints it; 31 proves the hwclock path returned.
 CPU_TB_AFTER_CDP = "\tcpu_data_t *cdp = getCpuDatap();\n"
 CPU_TB_BEFORE_DECREMENTER = "\tcdp->cpu_decrementer = 0x7FFFFFFFUL;\n"
+CPU_EXTERN_ANCHOR = "#include <arm/machine_routines.h>\n"
+CPU_EXTERN = ("\nextern void loader_checkpoint(uint64_t n);\n"
+              "extern void loader_log_number(const char *prefix, uint64_t n);\n")
 CPU_TB_PROBE_CODE = """\t{
 \t\tuint64_t cdp_now = (uint64_t)(uintptr_t)cdp;
 \t\tloader_log_number("cdp ", cdp_now);
@@ -688,6 +691,12 @@ def add_cpu_timebase_probes(path):
     """Probes 29/31 inside cpu_timebase_init(), and print the cpu_data pointer."""
     text = path.read_text(encoding="utf-8")
     changed = False
+    if "extern void loader_log_number" not in text:
+        if CPU_EXTERN_ANCHOR not in text:
+            raise SystemExit("%s: cpu.c include anchor not found" % path)
+        text = text.replace(CPU_EXTERN_ANCHOR, CPU_EXTERN_ANCHOR + CPU_EXTERN, 1)
+        print("  added extern declarations to cpu.c")
+        changed = True
     if "loader_checkpoint(29);" not in text:
         if text.count(CPU_TB_AFTER_CDP) != 1:
             raise SystemExit("%s: expected one getCpuDatap() line, found %d"

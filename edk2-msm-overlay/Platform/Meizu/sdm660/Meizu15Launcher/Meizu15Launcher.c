@@ -262,11 +262,11 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- last cp 25: PE_init_platform(TRUE) and ml_map_cpu_pio are behind us. Between 25 and 26
+  // checkpoint=0 -- The last kernel build failed (make Error 2) and the artifact was never produced --
   //
-  // there is only cpu_timebase_init (APPLE_ARM64_ARCH_FAMILY is not defined here, so
-  // configure_late_apple_regs is compiled out). Probe it: 29 after getCpuDatap() plus the
-  // pointer value, 31 after the hwclock calls.
+  // Pack the payload has continue-on-error, so the run still showed green. Cause: cpu.c
+  // used loader_log_number without a declaration, and XNU treats implicit declarations
+  // as errors. Declare it, and keep 2000 lines of the build log instead of 300.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.
