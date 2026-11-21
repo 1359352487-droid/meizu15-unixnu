@@ -262,10 +262,10 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- last cp 26 again with 36/37 in place: the stop is between cpu_timebase_init and
+  // checkpoint=0 -- 38 fires and 39 does not, so the stop is PE_init_cpu(). It has no source in the
   //
-  // PE_init_cpu. 38 goes after the KPERF block and before PE_init_cpu, 39 between
-  // PE_init_cpu and fiq_context_init, 36 stays after both.
+  // open tree and no symbol in the linked kernel, so it cannot be probed from inside:
+  // skip the call and see whether the rest of arm_init still works.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.
