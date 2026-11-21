@@ -958,30 +958,11 @@ def add_kernel_bootstrap_late_probes(path):
 # PMAP_ACTIVATE_USER is the one that touches TTBR0, which this port deliberately
 # leaves pointing at an invalid table, so it heads the suspect list.
 MACHINE_CONTEXT_DUMP = """\t{
-\t\t/*
-\t\t * machine_load_context() begins with set_thread_registers:
-\t\t *
-\t\t *     msr   TPIDR_EL1, x0
-\t\t *     ldr   x1, [x0, ACT_CPUDATAP]
-\t\t *     str   x0, [x1, CPU_ACTIVE_THREAD]
-\t\t *     ldrsh w2, [x1, CPU_NUMBER_GS]
-\t\t *
-\t\t * A NULL ACT_CPUDATAP makes that ldrsh read address 0, and the switch then
-\t\t * dies with no output -- which is what the panel shows (113 reached, no
-\t\t * panic text). The member is not called act_cpudatap in this tree and there
-\t\t * is no pc member either, so take raw words: x[29]+fp/lr/sp/cpsr fill
-\t\t * 0..271, hence words 34..37 cover 272..303 where cpudatap/kstackptr live.
-\t\t *
-\t\t * The numbers go to loader_probe_values, printed by loader_return() after it
-\t\t * trims the tail -- printed here they are lost to later console output.
-\t\t */
-\t\tuint64_t *mt = (uint64_t *)&thread->machine;
-\t\tloader_probe_values[0] = (uint64_t)thread->machine.kstackptr;
-\t\tloader_probe_values[1] = mt[34];
-\t\tloader_probe_values[2] = mt[35];
-\t\tloader_probe_values[3] = mt[36];
-\t\tloader_probe_values[4] = mt[37];
-\t\tloader_probe_values[5] = 22222;
+\t\t/* The real offsets (disassembled): act_cpudatap at 0x1c8, kstackptr at
+\t\t * 0x158. fix_boot_cpu_data() already recorded those in loader_probe_values
+\t\t * 0..3, so only leave a sentinel here: this runs later and would overwrite
+\t\t * them, and the numbers are what the panel needs to show. */
+\t\tloader_probe_values[4] = 31337;
 \t}
 """
 
@@ -1051,6 +1032,56 @@ def add_load_context_probes(path):
         path.write_text(text, encoding="utf-8")
     return changed
 
+# Disassembled from the linked kernel (symbol _machine_load_context at
+# 0xfffffff0074644e0): the very first instructions are
+#
+#     msr  TPIDR_EL1, x0
+#     ldr  x1, [x0, #0x1c8]      <- act_cpudatap, thread offset 0x1c8
+#     str  x0, [x1, #0x30]
+#     ldrsh w2, [x1, ...]        <- dies here, with no output, if x1 is bad
+#     msr  TPIDR_EL0, x2
+#     ldr  x1, [x0, #0x148]      <- cthread
+#     ldr  x1, [x0, #0x158]      <- kstackptr
+#
+# so the offsets to trust are 0x1c8 and 0x158, not the machine_thread member
+# names (which do not exist in this tree) nor word indices.
+ACPUDATAP_OFF = 0x1c8
+KSTACKPTR_OFF = 0x158
+
+BOOT_CPU_FIX = """\t{
+\t\t/*
+\t\t * load_context() reaches 113 and machine_load_context() then dies with no
+\t\t * output. Its second instruction loads act_cpudatap from thread+0x1c8 and
+\t\t * the next one dereferences it (ldrsh from [x1]), so a zero or garbage
+\t\t * value there aborts before anything can be printed.
+\t\t *
+\t\t * Read both offsets, then point act_cpudatap at the boot CPU data.
+\t\t */
+\t\tchar *th = (char *)thread;
+\t\textern char BootCpuData[];
+\t\tloader_probe_values[0] = *(uint64_t *)(th + 0x1c8);
+\t\tloader_probe_values[1] = *(uint64_t *)(th + 0x158);
+\t\tloader_probe_values[2] = (uint64_t)(uintptr_t)BootCpuData;
+\t\t*(uint64_t *)(th + 0x1c8) = (uint64_t)(uintptr_t)BootCpuData;
+\t\tloader_probe_values[3] = *(uint64_t *)(th + 0x1c8);
+\t}
+"""
+
+
+def fix_boot_cpu_data(path):
+    """Point thread+0x1c8 (act_cpudatap) at BootCpuData before the switch."""
+    text = path.read_text(encoding="utf-8")
+    if "act_cpudatap from thread+0x1c8" in text:
+        print("  boot cpu data fix already present")
+        return False
+    anchor = "\tloader_checkpoint(107);\n"
+    if text.count(anchor) != 1:
+        raise SystemExit("%s: expected one probe 107, found %d" % (path, text.count(anchor)))
+    text = text.replace(anchor, BOOT_CPU_FIX + anchor, 1)
+    print("  added act_cpudatap fix before probe 107")
+    path.write_text(text, encoding="utf-8")
+    return True
+
 
 def main(argv):
     if len(argv) < 2:
@@ -1087,6 +1118,7 @@ def main(argv):
     changed += add_kernel_bootstrap_probes(kstartup)
     changed += add_kernel_bootstrap_late_probes(kstartup)
     changed += add_load_context_probes(kstartup)
+    changed += fix_boot_cpu_data(kstartup)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
