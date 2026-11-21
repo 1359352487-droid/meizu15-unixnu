@@ -262,11 +262,12 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- The trail works: 905 bytes reached cp 71. Its last lines, though, land under
+  // checkpoint=98 -- 98 is the last of the pmap_bootstrap head probes: hitting it proves 96 and 97
   //
-  // the stub's barcodes (y=1694..1888), so 'last cp' was covered.
-  // loader_return now hands the stub only the final 448 bytes, which sit above them.
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
+  // also ran, so 48 -> 96 is not where the kernel dies. Missing it means the
+  // prologue of pmap_bootstrap never completes, since 96 is its first statement.
+  // The trail is still on, so either way the log says which probe was last.
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=98";
   //
   // DeviceTree must stay NULL here.
   //
