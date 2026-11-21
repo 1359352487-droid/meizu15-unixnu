@@ -262,11 +262,11 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=90 -- 96 and 97 now run: the interrupt stack was the wall, not the code.
+  // checkpoint=90 -- last cp 97, and the /defaults patch was in the build, so the stop is pmap_compute_max_asids()
   //
-  // 256 KiB fixed the entry, so the window is now 97 -> 90 (compute_max_asids tail
-  // to pmap_data_bootstrap). Also cut the stub's log tail 448 -> 224 bytes so
-  // 'last cp' lands above the barcodes instead of under them.
+  // itself: it is the first KVA-time user of SecureDT, and the tree was handed over as a
+  // physical address for PE_slide_devicetree to rebase. Stop asking SecureDT here;
+  // MAX_ASIDS is what an absent pmap-max-asids property yields anyway.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=90";
   //
   // DeviceTree must stay NULL here.

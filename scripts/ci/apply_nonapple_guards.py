@@ -149,9 +149,22 @@ PMAP_DEFAULTS_ASSERT = (
     '\terr = SecureDTLookupEntry(NULL, "/defaults", &entry);\n'
     '\tassert(err == kSuccess);\n')
 PMAP_DEFAULTS_PATCH = (
-    '\terr = SecureDTLookupEntry(NULL, "/defaults", &entry);\n'
+    '\t/*\n'
+    '\t * Do not ask SecureDT anything here.\n'
+    '\t *\n'
+    '\t * The device tree is handed over as a physical address (see DarwinBoot.c:\n'
+    '\t * Args->DeviceTree = TreeAddress) and PE_slide_devicetree() is what rebases\n'
+    '\t * it once the physmap exists. By this point kva_active is TRUE, so if that\n'
+    '\t * slide did not take, the very first lookup walks a physical address as if it\n'
+    '\t * were virtual -- a data abort with no kprintf yet to say so, which is exactly\n'
+    '\t * what the panel shows (reason 0, last cp 97).\n'
+    '\t *\n'
+    '\t * MAX_ASIDS is the value the code below returns when pmap-max-asids is absent,\n'
+    '\t * and this ADT has no such property, so nothing is lost.\n'
+    '\t */\n'
+    '\terr = 1;    /* anything but kSuccess: see above */\n'
+    '\t(void)entry;\n'
     '\tif (err != kSuccess) {\n'
-    '\t\t/* No root /defaults in this ADT; MAX_ASIDS is the documented default. */\n'
     '\t\treturn MAX_ASIDS;\n'
     '\t}\n')
 
