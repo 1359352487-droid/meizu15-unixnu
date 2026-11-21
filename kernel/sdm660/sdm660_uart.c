@@ -31,7 +31,6 @@
  */
 #include <pexpert/pexpert.h>
 #include <machine/machine_routines.h>
-#include <libkern/libkern.h>
 
 #include "sdm660_shim.h"
 

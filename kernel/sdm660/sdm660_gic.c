@@ -24,7 +24,6 @@
  *   GICR_TYPER  0x0008   in the first redistributor frame, per core
  */
 #include <machine/machine_routines.h>
-#include <libkern/libkern.h>
 
 #include "sdm660_shim.h"
 

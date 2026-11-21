@@ -20,7 +20,7 @@
 #include <machine/machine_routines.h>
 #include <kern/assert.h>
 #include <kern/startup.h>
-#include <libkern/libkern.h>
+#include <kern/misc_protos.h>
 #include <vm/vm_kern.h>
 
 #include "sdm660_shim.h"
@@ -169,7 +169,9 @@ map_window(sdm660_window_t *w, const char *what)
 	 * other early driver in this tree uses; it is available once the pmap
 	 * exists, which is where this runs from.
 	 */
-	w->va = ml_io_map((vm_offset_t)w->pa, (vm_size_t)w->size);
+	/* ml_io_map() hands back a kernel virtual address as an integer. */
+	vm_offset_t kva = ml_io_map((vm_offset_t)w->pa, (vm_size_t)w->size);
+	w->va = (volatile void *)kva;
 	if (w->va == NULL) {
 		sdm660_log("sdm660: %s 0x%llx did not map\n", what, w->pa);
 	}

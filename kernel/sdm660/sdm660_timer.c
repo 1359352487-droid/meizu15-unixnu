@@ -21,7 +21,6 @@
  * collapses to zero, which looks like "the timer never fires" from a distance.
  */
 #include <machine/machine_routines.h>
-#include <libkern/libkern.h>
 
 #include "sdm660_shim.h"
 
