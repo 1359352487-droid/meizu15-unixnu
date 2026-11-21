@@ -1117,6 +1117,39 @@ def add_kernel_bootstrap_thread_probes(path):
         path.write_text(text, encoding="utf-8")
     return changed
 
+# osfmk/kern/startup.c, kernel_bootstrap_thread() after sched_startup() (117).
+# This is no longer "can it boot" but "which subsystems can initialise on this SoC";
+# clock_service_create and device_service_create need a working timebase and device
+# tree, and PE_init_iokit is Apple platform code.
+THREAD_LATE_PROBES = [
+    ("\tthread_daemon_init();\n", 118),
+    ("\tkernel_startup_initialize_upto(STARTUP_SUB_THREAD_CALL);\n", 119),
+    ("\tthread_bind(processor);\n", 120),
+    ("\tmapping_adjust();\n", 121),
+    ("\tclock_service_create();\n", 122),
+    ("\tdevice_service_create();\n", 123),
+]
+THREAD_LATE_EXPECTED = (118, 119, 120, 121, 122, 123)
+
+
+def add_thread_late_probes(path):
+    """Probes 118-123 in kernel_bootstrap_thread(), after sched_startup()."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for needle, number in THREAD_LATE_PROBES:
+        if needle + "\tloader_checkpoint(%d);\n" % number in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip()[:46], text.count(needle)))
+        text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
+        print("  added loader_checkpoint(%d) after %s" % (number, needle.strip()[:46]))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
 
 def main(argv):
     if len(argv) < 2:
@@ -1155,6 +1188,7 @@ def main(argv):
     changed += add_load_context_probes(kstartup)
     changed += fix_boot_cpu_data(kstartup)
     changed += add_kernel_bootstrap_thread_probes(kstartup)
+    changed += add_thread_late_probes(kstartup)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
