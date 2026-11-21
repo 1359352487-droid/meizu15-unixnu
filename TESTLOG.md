@@ -3795,3 +3795,51 @@ assert 补丁生效，二次运行零改动。
 `uat_bootstrap()` / `sart_bootstrap()` 读的是同一份设备树，而 ADT 里
 `uat` / `sart` / `iommu` 字符串**一个都没有**（已确认），所以 92–95 这几枚探针
 大概率还会再抓一个同类问题。
+## 2026-11-21 11:30 — 方法论修正：让探针自己报号，一次启动拿到整条轨迹
+
+90 仍不命中（`reason 0`，log 192 bytes，时间戳 48.79 s）。但真正的问题不是结论，是**手段**：
+
+`loader_checkpoint(n)` 的全部行为就是
+
+```c
+if (loader_stub_slot[2] == n) {
+	loader_jump(2, n);
+}
+```
+
+命中就跳回 loader，没命中也什么都不说。于是**命中与未命中的屏幕完全一样**——
+都只打印"请求的那个编号"。96 / 97 / 98 三枚探针一起埋下去，照样分不出谁到了。
+
+### 现成的通道：`loader_log`
+
+`loader_return.c` 里本来就有一条独立于 `kprintf` 的日志 `loader_log`
+（`loader_log_putc` / `loader_log_line`，带自旋锁和 DAIF 屏蔽），
+而 `loader_jump()` 会把它（物理地址 + 长度）交给 stub 打印 ——
+屏幕上那段 `--- kernel message buffer ---` 就是它。`loader_return()` 还会把
+msgbuf 和 panic buffer 追加进去。
+
+所以探针可以**自己说话**：
+
+| 改动 | 位置 |
+|---|---|
+| 新增 `loader_log_number(prefix, n)`：把数字写成一行，不用 printf | `loader_return.c` slot 注释之前 |
+| `loader_checkpoint()` 每进入一次就写 `cp N`，并记进 `loader_last_checkpoint` | 原函数体 |
+| `loader_return()` 在 `loader_jump(0, 0)` **之前**再写一行 `last cp N` | 函数末尾 |
+
+最后一行是重点：日志太长会在控制台上滚掉，但 `last cp N` 写在最后，
+**屏幕的最后一行必然是它** —— 一眼就知道内核死在哪一枚探针之后。
+
+### 启动参数改成 `checkpoint=0`
+
+不再停在某个探针上，让它跑：
+
+- 探针轨迹 `cp 45` / `cp 58` / … 全写进日志
+- 崩了就崩，日志照样交出来，末尾是 `last cp N`（外加 msgbuf / panic buffer）
+- 不崩就等 `loader_return_after=60` 定时交回，同样有轨迹
+
+一次启动 = 以前十几轮的信息量。
+
+### 本地验证
+
+用真实的 `loader_return.c` 跑过补丁：三处都命中（helper、函数体、末尾），
+第二次运行零改动。锚点唯一性也确认过（`loader_jump(0, 0);` 在文件里只有一处）。
