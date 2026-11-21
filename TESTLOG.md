@@ -3722,3 +3722,76 @@ avail_start = PMAP_ALIGN(avail_start, __alignof(bitmap_t));
 
 launcher 同步改成 `checkpoint=90`；内核需要重建（这是自 PAN 修复以来第一次动内核），
 所以这一轮要走 `build-meizu15-xnu-hakios-v2` → 替换 `inputs/kernel.macho` → payload。
+## 2026-11-21 11:08 — 90 未命中：`pmap_bootstrap()` 开头的 `/defaults` 断言
+
+```
+kernel returned: reason 0, log 192 bytes
+checkpoint 90 delta 00000010C900000
+[   48.866860]: vm_cache_geometry_colors: 16
+[   48.866872]: do_cacheid() - 65536 bytes Unknown cache
+```
+
+`48` 命中（调用之前），`90`（`pmap_data_bootstrap()` 之前）**不命中** —— 崩点比 90 还早，
+落在 `pmap_bootstrap()` 开头的几十行里。
+
+### 静态定位
+
+`pmap.c:1977 pmap_compute_max_asids()`：
+
+```c
+	err = SecureDTLookupEntry(NULL, "/defaults", &entry);
+	assert(err == kSuccess);
+```
+
+`pmap_bootstrap()` 在 2164 行调用它，正好在 2103（函数体）与 2181（90 的位置）之间。
+**DEVELOPMENT 构建里 `assert` 就是 `panic()`**，而这时 `kprintf` 还没起来，于是
+`halt_all_cpus()` → `loader_return()` → 屏幕 `reason 0` + 192 字节旧日志。
+
+### 我们的 ADT 里没有根级 `/defaults`
+
+把 `inputs/meizu15-8plus.adt` 的字符串表扫出来看结构：
+
+```
+'smc\0' 02 00 00 00 ... 'name\0' ... 09 00 00 00 'defaults\0' ... 'sleep-disabled\0' ...
+```
+
+`defaults` 是 **`/smc` 下面的节点**（带 `sleep-disabled` 属性），根下没有 `/defaults`。
+`SecureDTLookupEntry(NULL, "/defaults", …)` 从根找，必然 `kNotFound`。
+
+`pmap-max-asids` 属性也不存在（`b"pmap-max-asids"` 在 ADT 里完全找不到），
+所以就算节点在，代码也会走 `return MAX_ASIDS;` —— 也就是说这个 assert 拦下的
+恰恰是"用默认值"这条本来就合法的路径。
+
+### 修复
+
+`apply_nonapple_guards.py` 新增 `patch_pmap_defaults_assert()`：
+
+```c
+	err = SecureDTLookupEntry(NULL, "/defaults", &entry);
+	if (err != kSuccess) {
+		/* No root /defaults in this ADT; MAX_ASIDS is the documented default. */
+		return MAX_ASIDS;
+	}
+```
+
+### 同时加了 96 / 97 / 98
+
+为了让下一次面板**无论结果如何都是决定性的**，又给 `pmap_bootstrap()` 的头部加了三枚：
+
+| 探针 | 位置 |
+|---|---|
+| 96 | 函数体第一条语句之后（`vm_map_offset_t maxoffset;`） |
+| 97 | `pmap_lock_init(kernel_pmap);` 之后 |
+| 98 | `pmap_max_asids = pmap_compute_max_asids();` 之后 |
+
+配合 90（`pmap_data_bootstrap()` 前）就能把开头这段切成
+96 → 97 → 98 → 90 四段。本地用真 `pmap.c` 验证：落点 2104 / 2169 / 2172，
+assert 补丁生效，二次运行零改动。
+
+### 为什么这值得记一笔
+
+这是继 PAN、`Used` 对齐之后的**第三个"用源码讲得通、用现象讲不通"的坑**：
+前两个卡在引导器写的值上，这个卡在**设备树缺少 XNU 期望的一个节点**上。
+`uat_bootstrap()` / `sart_bootstrap()` 读的是同一份设备树，而 ADT 里
+`uat` / `sart` / `iommu` 字符串**一个都没有**（已确认），所以 92–95 这几枚探针
+大概率还会再抓一个同类问题。
