@@ -262,11 +262,11 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- The SecureDT fix went into the #if XNU_MONITOR arm of arm_vm_physmap_init, and BCM2837
+  // checkpoint=0 -- kprintf is alive: the panel now carries the kernel's own lines, and last cp 20 means
   //
-  // does not define XNU_MONITOR -- so the build took the #else arm, which has no
-  // PE_slide_devicetree at all and never rebased the blob. Put SecureDTInit in the arm
-  // that actually compiles; the ADT itself walks EXACT 13996/13996 with XNU's own skipTree.
+  // PE_create_console() is behind us (21 is machine_startup). Probe 22-28 split the stretch
+  // in between: PE_init_printf, idle init, the second PE_init_platform, ml_map_cpu_pio,
+  // cpu_timebase_init, the /chosen dram lookup, and machine_startup itself.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.

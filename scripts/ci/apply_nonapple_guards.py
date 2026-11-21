@@ -622,6 +622,54 @@ def add_secure_dt_reinit(path):
     return True
 
 
+# osfmk/arm/arm_init.c, the stretch between checkpoint 20 (PE_create_console) and
+# 21 (machine_startup). HakiOS already numbers its own probes up to 21, so these
+# take 22..28. With kprintf alive by now, the panel also carries the kernel's own
+# words, not just the trail.
+ARM_LATE_AFTER = [
+    ("\tPE_init_printf(FALSE);\n", 22),
+    ("\tcpu_machine_idle_init(TRUE);\n", 23),
+    ("\tPE_init_platform(TRUE, &BootCpuData);\n", 24),
+    ("\tml_map_cpu_pio();\n", 25),
+    ("\tcpu_timebase_init(TRUE);\n", 26),
+    ("\tgDramSize = *dram_size;\n", 27),
+]
+ARM_LATE_BEFORE = [
+    ("\tmachine_startup(args);\n", 28),
+]
+ARM_LATE_EXPECTED = (22, 23, 24, 25, 26, 27, 28)
+
+
+def add_arm_late_probes(path):
+    """Probes 22-28 between PE_create_console() and machine_startup()."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for needle, number in ARM_LATE_AFTER:
+        if "loader_checkpoint(%d);" % number in text and needle + "\tloader_checkpoint(%d);\n" % number in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip(), text.count(needle)))
+        if needle + "\tloader_checkpoint(%d);\n" % number in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
+        print("  added loader_checkpoint(%d) after %s" % (number, needle.strip()))
+        changed = True
+    for needle, number in ARM_LATE_BEFORE:
+        if needle in text and "\tloader_checkpoint(%d);\n" % number + needle in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip(), text.count(needle)))
+        text = text.replace(needle, "\tloader_checkpoint(%d);\n" % number + needle, 1)
+        print("  added loader_checkpoint(%d) before %s" % (number, needle.strip()))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -646,6 +694,7 @@ def main(argv):
     changed += relax_orig_va_assert(vm)
     changed += add_vm_probes(vm)
     changed += add_arm_init_probe(init)
+    changed += add_arm_late_probes(init)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
