@@ -262,11 +262,11 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- The last kernel build failed (make Error 2) and the artifact was never produced --
+  // checkpoint=0 -- last cp 26: cpu_timebase_init passed (so did 29/31 inside it), 27 never runs and there
   //
-  // Pack the payload has continue-on-error, so the run still showed green. Cause: cpu.c
-  // used loader_log_number without a declaration, and XNU treats implicit declarations
-  // as errors. Declare it, and keep 2000 lines of the build log instead of 300.
+  // is no panic text, so the stop is a silent abort in a stretch with no probe:
+  // kptimer_curcpu_up / PE_init_cpu / fiq_context_init / pal_hib_init. 36 sits after the two
+  // init calls, 37 right before the /chosen dram-base/dram-size lookups.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.

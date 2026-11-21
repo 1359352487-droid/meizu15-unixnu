@@ -639,6 +639,50 @@ ARM_LATE_BEFORE = [
 ]
 ARM_LATE_EXPECTED = (22, 23, 24, 25, 26, 27, 28)
 
+# 26 (cpu_timebase_init) fires, 27 (gDramSize) does not, and there is no panic
+# text on the panel -- so the stop is a silent abort in the stretch that has no
+# probe: kptimer_curcpu_up (KPERF), PE_init_cpu(), fiq_context_init(TRUE),
+# pal_hib_init (HIBERNATION), then the /chosen dram-base/dram-size lookups.
+# HakiOS already owns 30..35, so these take 36/37.
+ARM_LATE2_AFTER = [
+    ("\tPE_init_cpu();\n\tfiq_context_init(TRUE);\n", 36),
+]
+ARM_LATE2_BEFORE = [
+    ("\tunsigned long const *dram_base;\n\tunsigned long const *dram_size;\n\n"
+     "\tif (SecureDTLookupEntry(NULL, \"/chosen\", &chosen) != kSuccess) {\n", 37),
+]
+ARM_LATE2_EXPECTED = (36, 37)
+
+
+def add_arm_late2_probes(path):
+    """Probes 36/37 between cpu_timebase_init() and the /chosen dram lookups."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for needle, number in ARM_LATE2_AFTER:
+        if needle + "\tloader_checkpoint(%d);\n" % number in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one PE_init_cpu/fiq_context pair, found %d"
+                             % (path, text.count(needle)))
+        text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
+        print("  added loader_checkpoint(%d) after PE_init_cpu/fiq_context_init" % number)
+        changed = True
+    for needle, number in ARM_LATE2_BEFORE:
+        if "\tloader_checkpoint(%d);\n" % number + needle in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one /chosen+dram_base block, found %d"
+                             % (path, text.count(needle)))
+        text = text.replace(needle, "\tloader_checkpoint(%d);\n" % number + needle, 1)
+        print("  added loader_checkpoint(%d) before the /chosen lookups" % number)
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 
 # osfmk/arm64/cpu.c, cpu_timebase_init(). Between probe 25 (ml_map_cpu_pio) and 26
 # (cpu_timebase_init returns) there is nothing else -- APPLE_ARM64_ARCH_FAMILY is
@@ -743,6 +787,7 @@ def main(argv):
     changed += add_vm_probes(vm)
     changed += add_arm_init_probe(init)
     changed += add_arm_late_probes(init)
+    changed += add_arm_late2_probes(init)
     changed += add_cpu_timebase_probes(cpu)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
