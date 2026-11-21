@@ -1058,11 +1058,12 @@ BOOT_CPU_FIX = """\t{
 \t\t * Read both offsets, then point act_cpudatap at the boot CPU data.
 \t\t */
 \t\tchar *th = (char *)thread;
-\t\textern char BootCpuData[];
+\t\textern void *cpu_datap(int cpu);   /* _cpu_datap: the CPU data for a cpu number */
+\t\tvoid *cdp = cpu_datap(0);
 \t\tloader_probe_values[0] = *(uint64_t *)(th + 0x1c8);
 \t\tloader_probe_values[1] = *(uint64_t *)(th + 0x158);
-\t\tloader_probe_values[2] = (uint64_t)(uintptr_t)BootCpuData;
-\t\t*(uint64_t *)(th + 0x1c8) = (uint64_t)(uintptr_t)BootCpuData;
+\t\tloader_probe_values[2] = (uint64_t)(uintptr_t)cdp;
+\t\t*(uint64_t *)(th + 0x1c8) = (uint64_t)(uintptr_t)cdp;
 \t\tloader_probe_values[3] = *(uint64_t *)(th + 0x1c8);
 \t}
 """
