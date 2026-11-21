@@ -3635,3 +3635,90 @@ XNU 走这一步是为了在建立最终页表期间强制走物理/identity 访
 
 `checkpoint=47`：命中说明 63/64 都过去了，故障在 `kva_active`..`pmap_bootstrap`；
 不命中说明故障就在 63/64 附近，再测 64 二分。
+## 2026-11-21 01:06 — 47 命中：窗口只剩 `pmap_bootstrap()`
+
+```
+kernel returned: reason 2, log 0 bytes
+slot magic 545352444C554E58  stub 00000000D131C000
+checkpoint 47 delta 00000010C900000
+```
+
+`checkpoint=47`（`kva_active = TRUE` 之后）命中。结合上一轮：**47 通、49 不通**。
+
+于是 63 / 64（`set_mmu_ttb_alternate`、`set_mmu_ttb(invalid_ttep)`）都**过了** —— 那个
+"撤掉当前 VA 映射"的嫌疑被排除掉一半，至少它自己没当场崩。故障落在
+`kva_active = TRUE` 之后、`pmap_bootstrap()` 返回之前这一小段。
+
+### 下一轮：48
+
+`48` 是 `pmap_bootstrap()` 调用之前那句：
+
+| 结果 | 含义 | 再下一步 |
+|---|---|---|
+| `reason 2` | 进得去 `pmap_bootstrap()`，崩在里面 | 读 `pmap_bootstrap` 源码，按它内部的点数继续埋（`pmap_allocate` / `pmap_init` / 页表切换） |
+| `reason 0` | 崩在 `kva_active` 与调用之间那几行 | 那几行的反汇编 + 逐条对照 |
+
+### 现在这条链已经很长了
+
+`45 → 58 → 61 → 62 → 47` 全通，`49` 卡住。相对 PAN 那堵墙之前的"全部静默"，
+现在每次启动都能往前挪一个真实的位置，说明探针+payload 这套迭代是有效的。
+## 2026-11-21 01:18 — 48 命中：崩在 `pmap_bootstrap()` 内部
+
+```
+kernel returned: reason 2, log 0 bytes
+checkpoint 48 delta 00000010C900000
+```
+
+`48`（`pmap_bootstrap(dynamic_memory_begin)` 之前那句）命中，`49`（之后）静默 ——
+窗口从"十几行"缩到"一个函数体"。payload 二分到此为止，剩下只能进内核埋点。
+
+### 窗口里有什么
+
+`arm_vm_init.c` 2151–2247（47 之后、48 之前）这段，除了赋值只有三样东西值得怀疑：
+
+```c
+arm_vm_kernelcache_phys_start = segLOWEST - gVirtBase + gPhysBase;   /* 纯算术 */
+arm_vm_kernelcache_phys_end   = end_kern  - gVirtBase + gPhysBase;
+if (arm_vm_auxkc_init()) { ... }                                      /* 没有 AuxKC，应返回 false */
+pmap_bootstrap(dynamic_memory_begin);
+```
+
+而 `pmap_bootstrap()` 内部（`osfmk/arm/pmap/pmap.c:2095`）：
+
+```c
+pmap_data_bootstrap();   /* pv_head_table / pp_attr_table，从 avail_start 分配 */
+uat_bootstrap();         /* 读设备树里的 UAT / IOMMU 节点 */
+sart_bootstrap();        /* 读设备树里的 SART 节点 */
+avail_start = PMAP_ALIGN(avail_start, __alignof(bitmap_t));
+...                      /* 之后是一大段 L3 页表初始化 */
+```
+
+`uat_bootstrap()` / `sart_bootstrap()` 依赖 ADT 里真有对应节点。这份
+`meizu15-8plus.adt` 是从真机 dump 出来的，但节点形状是否满足 XNU 的期望，
+此前从没验证过。
+
+### 新探针 90–95（`apply_nonapple_guards.py`）
+
+在 `osfmk/arm/pmap/pmap.c` 三处 bootstrap 两侧各插一枚：
+
+| 探针 | 位置 |
+|---|---|
+| 90 / 91 | `pmap_data_bootstrap()` 前 / 后 |
+| 92 / 93 | `uat_bootstrap()` 前 / 后 |
+| 94 / 95 | `sart_bootstrap()` 前 / 后 |
+
+脚本里新增 `PMAP_PROBES` / `PMAP_EXPECTED` / `add_pmap_probes()`，`main()` 里加了
+`find(root, "osfmk/arm/pmap/pmap.c")` 与验证段。**本地用真 `pmap.c` 跑过**：
+三对探针都落在正确位置（2183/2185、2190/2192、2198/2200），第二遍运行零改动。
+
+### 判读
+
+| 命中 | 结论 |
+|---|---|
+| 90 命中、91 静默 | `pmap_data_bootstrap()` 自己崩 —— `avail_start` 算术 / `pv_head_table` 大小 |
+| 92 命中、93 静默 | `uat_bootstrap()` —— UAT 节点缺失或形状不对 |
+| 94 命中、95 静默 | `sart_bootstrap()` —— SART 节点同上 |
+| 91/93/95 全通 | 崩在 `pmap_bootstrap()` 后半段（L3 页表那段 `while (va_l1 < va_l1_end)`） |
+
+launcher 同步改成 `checkpoint=90`；内核需要重建（这是自 PAN 修复以来第一次动内核），
+所以这一轮要走 `build-meizu15-xnu-hakios-v2` → 替换 `inputs/kernel.macho` → payload。
