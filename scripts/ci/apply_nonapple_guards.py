@@ -849,6 +849,49 @@ def add_machine_startup_probes(path):
     return changed
 
 
+# osfmk/kern/startup.c, kernel_bootstrap(): probe 74 is the line before the call, so
+# everything from here on is the kernel's own bring-up. The order is
+#
+#     printf(version) -> scale_setup -> vm_mem_bootstrap -> startup hooks (OSLOG)
+#     -> console_init -> stackshot_init -> sched_init -> ... -> first kernel thread
+#
+# 75/76 bracket vm_mem_bootstrap, then 77/78 bracket the startup-hook batch and the
+# scheduler init, which is the last thing before threads can exist.
+KERNEL_BOOTSTRAP_PROBES = [
+    ('\tprintf("%s\\n", version); /* log kernel version */\n', 75),
+    ("\tvm_mem_bootstrap();\n", 76),
+    ("\tconsole_init();\n", 77),
+    ("\tsched_init();\n", 78),
+]
+KERNEL_BOOTSTRAP_EXPECTED = (75, 76, 77, 78)
+
+
+def add_kernel_bootstrap_probes(path):
+    """Probes 75-78 inside kernel_bootstrap()."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    if "extern void loader_checkpoint" not in text:
+        anchor = "#include <kern/startup.h>\n"
+        if anchor not in text:
+            raise SystemExit("%s: include anchor not found" % path)
+        text = text.replace(anchor, anchor + "\nextern void loader_checkpoint(uint64_t n);\n", 1)
+        print("  added extern loader_checkpoint() to startup.c")
+        changed = True
+    for needle, number in KERNEL_BOOTSTRAP_PROBES:
+        if needle + "\tloader_checkpoint(%d);\n" % number in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip()[:45], text.count(needle)))
+        text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
+        print("  added loader_checkpoint(%d) after %s" % (number, needle.strip()[:45]))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -864,6 +907,7 @@ def main(argv):
     lret = find(root, "osfmk/arm64/loader_return.c")
     cpu = find(root, "osfmk/arm64/cpu.c")
     mr = find(root, "osfmk/arm64/machine_routines.c")
+    kstartup = find(root, "osfmk/kern/startup.c")
 
     changed = 0
     changed += raise_kernel_stack(vmp)
@@ -880,6 +924,7 @@ def main(argv):
     changed += skip_pe_init_cpu(init)
     changed += add_cpu_timebase_probes(cpu)
     changed += add_machine_startup_probes(mr)
+    changed += add_kernel_bootstrap_probes(kstartup)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
