@@ -946,18 +946,25 @@ def add_kernel_bootstrap_late_probes(path):
 # leaves pointing at an invalid table, so it heads the suspect list.
 MACHINE_CONTEXT_DUMP = """\t{
 \t\t/*
-\t\t * machine_load_context() starts with set_thread_registers, which does
+\t\t * machine_load_context() begins with set_thread_registers:
 \t\t *
-\t\t *     ldr  $1, [thread, ACT_CPUDATAP]
-\t\t *     ldrsh $2, [$1, CPU_NUMBER_GS]
+\t\t *     msr   TPIDR_EL1, x0
+\t\t *     ldr   x1, [x0, ACT_CPUDATAP]
+\t\t *     str   x0, [x1, CPU_ACTIVE_THREAD]
+\t\t *     ldrsh w2, [x1, CPU_NUMBER_GS]
 \t\t *
-\t\t * so a NULL act_cpudatap aborts in the first instruction of the switch.
-\t\t * Probe 113 fires and the switch does not happen -- print the three fields
-\t\t * it depends on instead of guessing which one is bad.
+\t\t * A NULL ACT_CPUDATAP makes that ldrsh read address 0, which aborts with no
+\t\t * output -- exactly what the panel shows. The member is not called
+\t\t * act_cpudatap in this tree and pc does not exist either, so dump raw
+\t\t * 8-byte words instead: x[29] + fp/lr/sp/cpsr occupy 0..271, so words
+\t\t * 30..37 are the candidates for cpudatap and kstackptr.
 \t\t */
+\t\tuint64_t *mt = (uint64_t *)&thread->machine;
 \t\tloader_log_number("kstack ", (uint64_t)thread->machine.kstackptr);
-\t\tloader_log_number("pc     ", (uint64_t)thread->machine.pc);
-\t\tloader_log_number("cdata  ", (uint64_t)(uintptr_t)thread->machine.act_cpudatap);
+\t\tloader_log_number("m34 ", mt[34]);
+\t\tloader_log_number("m35 ", mt[35]);
+\t\tloader_log_number("m36 ", mt[36]);
+\t\tloader_log_number("m37 ", mt[37]);
 \t}
 """
 
@@ -975,9 +982,23 @@ LOAD_CONTEXT_EXPECTED = (108, 109, 110, 111, 112, 113)
 
 
 def add_load_context_probes(path):
-    """Probes 108-113 inside load_context(), up to machine_load_context()."""
+    """Probes 108-113 inside load_context(), plus a raw machine_thread dump."""
     text = path.read_text(encoding="utf-8")
     changed = False
+
+    if "extern void loader_log_number" not in text:
+        if "extern void loader_checkpoint(uint64_t n);\n" not in text:
+            anchor = "#include <kern/startup.h>\n"
+            if anchor not in text:
+                raise SystemExit("%s: include anchor not found" % path)
+            text = text.replace(anchor, anchor + "\nextern void loader_checkpoint(uint64_t n);\n", 1)
+            print("  added extern loader_checkpoint() to startup.c")
+        text = text.replace("extern void loader_checkpoint(uint64_t n);\n",
+                            "extern void loader_checkpoint(uint64_t n);\n"
+                            "extern void loader_log_number(const char *prefix, uint64_t n);\n", 1)
+        print("  added extern loader_log_number() to startup.c")
+        changed = True
+
     for needle, number in LOAD_CONTEXT_PROBES:
         if needle + "\tloader_checkpoint(%d);\n" % number in text:
             print("  already present: checkpoint %d" % number)
@@ -988,6 +1009,7 @@ def add_load_context_probes(path):
         text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
         print("  added loader_checkpoint(%d) after %s" % (number, needle.strip()[:46]))
         changed = True
+
     for needle, number in LOAD_CONTEXT_BEFORE:
         if "\tloader_checkpoint(%d);\n" % number + needle in text:
             print("  already present: checkpoint %d" % number)
@@ -998,13 +1020,15 @@ def add_load_context_probes(path):
         text = text.replace(needle, "\tloader_checkpoint(%d);\n" % number + needle, 1)
         print("  added loader_checkpoint(%d) before %s" % (number, needle.strip()[:46]))
         changed = True
+
     if MACHINE_CONTEXT_DUMP not in text:
         anchor = "\tloader_checkpoint(113);\n"
         if anchor not in text:
             raise SystemExit("%s: probe 113 not found" % path)
         text = text.replace(anchor, MACHINE_CONTEXT_DUMP + anchor, 1)
-        print("  added machine-context dump (kstack/pc/cpudatap) before 113")
+        print("  added raw machine_thread dump before 113")
         changed = True
+
     if changed:
         path.write_text(text, encoding="utf-8")
     return changed
