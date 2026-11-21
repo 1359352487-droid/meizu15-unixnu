@@ -149,24 +149,34 @@ PMAP_DEFAULTS_ASSERT = (
     '\terr = SecureDTLookupEntry(NULL, "/defaults", &entry);\n'
     '\tassert(err == kSuccess);\n')
 PMAP_DEFAULTS_PATCH = (
-    '\t/*\n'
-    '\t * Do not ask SecureDT anything here.\n'
-    '\t *\n'
-    '\t * The device tree is handed over as a physical address (see DarwinBoot.c:\n'
-    '\t * Args->DeviceTree = TreeAddress) and PE_slide_devicetree() is what rebases\n'
-    '\t * it once the physmap exists. By this point kva_active is TRUE, so if that\n'
-    '\t * slide did not take, the very first lookup walks a physical address as if it\n'
-    '\t * were virtual -- a data abort with no kprintf yet to say so, which is exactly\n'
-    '\t * what the panel shows (reason 0, last cp 97).\n'
-    '\t *\n'
-    '\t * MAX_ASIDS is the value the code below returns when pmap-max-asids is absent,\n'
-    '\t * and this ADT has no such property, so nothing is lost.\n'
-    '\t */\n'
-    '\terr = 1;    /* anything but kSuccess: see above */\n'
-    '\t(void)entry;\n'
+    '\terr = SecureDTLookupEntry(NULL, "/defaults", &entry);\n'
     '\tif (err != kSuccess) {\n'
+    '\t\t/* No root /defaults in this ADT; MAX_ASIDS is the documented default. */\n'
     '\t\treturn MAX_ASIDS;\n'
     '\t}\n')
+
+# The device tree reaches the kernel as a physical address (DarwinBoot.c:
+# Args->DeviceTree = TreeAddress), and PE_slide_devicetree() -- which is not in
+# the open source tree, only its prototype is -- is what rebases it. Whatever it
+# does, SecureDTInit() does not validate anything: it stores base and size and
+# trusts them. So the kernel can simply point SecureDT at the physmap alias of
+# the same blob, the mapping arm_vm_physmap_slide(end_kern, ...) on the line
+# above has just created. Without this, the first SecureDT user after
+# kva_active = TRUE (pmap_compute_max_asids, then pmap_compute_pv_targets, then
+# pmap_compute_io_rgns) walks a physical address as if it were virtual: a data
+# abort with no kprintf yet to report it.
+SECUREDT_ANCHOR = """\tif (!SecureDTIsLockedDown()) {
+\t\tPE_slide_devicetree(temp_ptov_table[ptov_index - 1].va - end_kern);
+\t}
+"""
+SECUREDT_PATCH = SECUREDT_ANCHOR + """\t/*
+\t * Point SecureDT at the physmap alias of the blob rather than trusting the
+\t * closed-source rebase above. args->deviceTreeP is the physical address the
+\t * loader handed over; gVirtBase - gPhysBase is the physmap offset.
+\t */
+\tSecureDTInit((void const *)((uintptr_t)args->deviceTreeP + (gVirtBase - gPhysBase)),
+\t    (size_t)args->deviceTreeLength);
+"""
 
 # loader_checkpoint() only ever compared its number with the requested one, so a
 # probe that fired and a probe that was never reached looked exactly the same on
@@ -596,6 +606,20 @@ def add_sp_measure(path):
     return True
 
 
+def add_secure_dt_reinit(path):
+    """Point SecureDT at the physmap alias once the physmap exists."""
+    text = path.read_text(encoding="utf-8")
+    if "Point SecureDT at the physmap alias" in text:
+        print("  SecureDT reinit already present")
+        return False
+    if text.count(SECUREDT_ANCHOR) != 1:
+        raise SystemExit("%s: expected one PE_slide_devicetree block, found %d"
+                         % (path, text.count(SECUREDT_ANCHOR)))
+    path.write_text(text.replace(SECUREDT_ANCHOR, SECUREDT_PATCH, 1), encoding="utf-8")
+    print("  SecureDTInit() after PE_slide_devicetree()")
+    return True
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -621,6 +645,7 @@ def main(argv):
     changed += add_vm_probes(vm)
     changed += add_arm_init_probe(init)
     changed += add_sp_measure(vm)
+    changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
     changed += add_pmap_probes(pmap)
     changed += patch_loader_checkpoint(lret)

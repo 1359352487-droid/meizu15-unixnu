@@ -262,9 +262,11 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- 90 hits once SecureDT is out of the way, so 98 and 90 both run: the stop really
+  // checkpoint=0 -- last cp 90, and pmap_data_bootstrap()'s first two calls (pmap_compute_pv_targets,
   //
-  // was the tree lookup. Now run free and let the log say where it lands next.
+  // pmap_compute_io_rgns) scan the tree again -- so this is a class of bug, not one call.
+  // SecureDTInit validates nothing, so point it at the physmap alias of the blob right
+  // after PE_slide_devicetree, and put the /defaults lookup back to prove it works.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.
