@@ -218,6 +218,9 @@ LOADER_HELPER_ANCHOR = ("/* Patched by the loader: { magic, PA of its return stu
                         "checkpoint to stop at, PA - VA }. See start.s. */\n")
 LOADER_HELPER = """/* The number of the probe just reached, and of the last one reached at all. */
 static uint64_t loader_last_checkpoint;
+/* Values a probe wants printed even though the tail keeps only the last
+ * lines: loader_return() writes them after truncating, so they cannot scroll away. */
+uint64_t loader_probe_values[6];
 
 /*
  * How much of the log the stub is asked to print. The console scrolls and the
@@ -276,6 +279,16 @@ LOADER_TAIL_NEW = """\t/*
 \t\tloader_log_number("last cp ", loader_last_checkpoint);
 \t}
 \t/* Hand the stub only the tail: that is the part above its barcodes. */
+\t/*
+\t * Probe values come after everything else: the trim below keeps only the
+\t * final LOADER_RETURN_TAIL bytes, and a value printed at its own probe can
+\t * be pushed out of that window by the kernel console output that follows.
+\t */
+\tfor (int pv = 0; pv < 6; pv++) {
+\t\tif (loader_probe_values[pv] != 0) {
+\t\t\tloader_log_number("v ", loader_probe_values[pv]);
+\t\t}
+\t}
 \tif (loader_log_len > LOADER_RETURN_TAIL) {
 \t\t__builtin_memmove(loader_log, loader_log + loader_log_len - LOADER_RETURN_TAIL,
 \t\t    LOADER_RETURN_TAIL);
@@ -953,18 +966,22 @@ MACHINE_CONTEXT_DUMP = """\t{
 \t\t *     str   x0, [x1, CPU_ACTIVE_THREAD]
 \t\t *     ldrsh w2, [x1, CPU_NUMBER_GS]
 \t\t *
-\t\t * A NULL ACT_CPUDATAP makes that ldrsh read address 0, which aborts with no
-\t\t * output -- exactly what the panel shows. The member is not called
-\t\t * act_cpudatap in this tree and pc does not exist either, so dump raw
-\t\t * 8-byte words instead: x[29] + fp/lr/sp/cpsr occupy 0..271, so words
-\t\t * 30..37 are the candidates for cpudatap and kstackptr.
+\t\t * A NULL ACT_CPUDATAP makes that ldrsh read address 0, and the switch then
+\t\t * dies with no output -- which is what the panel shows (113 reached, no
+\t\t * panic text). The member is not called act_cpudatap in this tree and there
+\t\t * is no pc member either, so take raw words: x[29]+fp/lr/sp/cpsr fill
+\t\t * 0..271, hence words 34..37 cover 272..303 where cpudatap/kstackptr live.
+\t\t *
+\t\t * The numbers go to loader_probe_values, printed by loader_return() after it
+\t\t * trims the tail -- printed here they are lost to later console output.
 \t\t */
 \t\tuint64_t *mt = (uint64_t *)&thread->machine;
-\t\tloader_log_number("kstack ", (uint64_t)thread->machine.kstackptr);
-\t\tloader_log_number("m34 ", mt[34]);
-\t\tloader_log_number("m35 ", mt[35]);
-\t\tloader_log_number("m36 ", mt[36]);
-\t\tloader_log_number("m37 ", mt[37]);
+\t\tloader_probe_values[0] = (uint64_t)thread->machine.kstackptr;
+\t\tloader_probe_values[1] = mt[34];
+\t\tloader_probe_values[2] = mt[35];
+\t\tloader_probe_values[3] = mt[36];
+\t\tloader_probe_values[4] = mt[37];
+\t\tloader_probe_values[5] = 22222;
 \t}
 """
 
@@ -995,7 +1012,8 @@ def add_load_context_probes(path):
             print("  added extern loader_checkpoint() to startup.c")
         text = text.replace("extern void loader_checkpoint(uint64_t n);\n",
                             "extern void loader_checkpoint(uint64_t n);\n"
-                            "extern void loader_log_number(const char *prefix, uint64_t n);\n", 1)
+                            "extern void loader_log_number(const char *prefix, uint64_t n);\n"
+                            "extern uint64_t loader_probe_values[6];\n", 1)
         print("  added extern loader_log_number() to startup.c")
         changed = True
 
