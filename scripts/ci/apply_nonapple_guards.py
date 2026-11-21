@@ -939,6 +939,53 @@ def add_kernel_bootstrap_late_probes(path):
     return changed
 
 
+# osfmk/kern/startup.c, load_context(): 107 fires and the switch itself does not
+# happen. The function walks machine_set_current_thread -> PMAP_ACTIVATE_KERNEL ->
+# stack check -> scheduler bookkeeping -> PMAP_ACTIVATE_USER -> machine_load_context.
+# PMAP_ACTIVATE_USER is the one that touches TTBR0, which this port deliberately
+# leaves pointing at an invalid table, so it heads the suspect list.
+LOAD_CONTEXT_PROBES = [
+    ("\tmachine_set_current_thread(thread);\n", 108),
+    ("\tPMAP_ACTIVATE_KERNEL(processor->cpu_id);\n", 109),
+    ("\tprocessor->active_thread = thread;\n", 110),
+    ("\tprocessor_up(processor);\n", 111),
+    ("\tPMAP_ACTIVATE_USER(thread, processor->cpu_id);\n", 112),
+]
+LOAD_CONTEXT_BEFORE = [
+    ("\tmachine_load_context(thread);\n", 113),
+]
+LOAD_CONTEXT_EXPECTED = (108, 109, 110, 111, 112, 113)
+
+
+def add_load_context_probes(path):
+    """Probes 108-113 inside load_context(), up to machine_load_context()."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for needle, number in LOAD_CONTEXT_PROBES:
+        if needle + "\tloader_checkpoint(%d);\n" % number in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip()[:46], text.count(needle)))
+        text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
+        print("  added loader_checkpoint(%d) after %s" % (number, needle.strip()[:46]))
+        changed = True
+    for needle, number in LOAD_CONTEXT_BEFORE:
+        if "\tloader_checkpoint(%d);\n" % number + needle in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip()[:46], text.count(needle)))
+        text = text.replace(needle, "\tloader_checkpoint(%d);\n" % number + needle, 1)
+        print("  added loader_checkpoint(%d) before %s" % (number, needle.strip()[:46]))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -973,6 +1020,7 @@ def main(argv):
     changed += add_machine_startup_probes(mr)
     changed += add_kernel_bootstrap_probes(kstartup)
     changed += add_kernel_bootstrap_late_probes(kstartup)
+    changed += add_load_context_probes(kstartup)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
