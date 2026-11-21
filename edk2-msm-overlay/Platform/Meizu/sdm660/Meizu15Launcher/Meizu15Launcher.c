@@ -262,12 +262,12 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=98 -- 98 is the last of the pmap_bootstrap head probes: hitting it proves 96 and 97
+  // checkpoint=0 -- 98 misses and the trail still ends at 48, so 96 never runs even though it is
   //
-  // also ran, so 48 -> 96 is not where the kernel dies. Missing it means the
-  // prologue of pmap_bootstrap never completes, since 96 is its first statement.
-  // The trail is still on, so either way the log says which probe was last.
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=98";
+  // pmap_bootstrap's first statement and the prologue is only sub sp,#0x240 plus five stp.
+  // That leaves the stack it is handed: log SP right before the call, and raise the
+  // interrupt/exceptions stacks to 256 KiB instead of 64.
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.
   //

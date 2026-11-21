@@ -203,7 +203,7 @@ static uint64_t loader_last_checkpoint;
 #define LOADER_RETURN_TAIL 448
 
 /* "cp 62\\n" -- digits only, so no printf and no locale; safe this early. */
-static void
+void
 loader_log_number(const char *prefix, uint64_t n)
 {
 \tchar line[32];
@@ -228,6 +228,15 @@ loader_log_number(const char *prefix, uint64_t n)
 \tline[p + d] = '\\n';
 \tline[p + d + 1] = 0;
 \tloader_log_line(line);
+\t/*
+\t * A fault leaves through the early exception vector, not through
+\t * loader_jump(), so nothing writes the log back before the stub reads it and
+\t * the last line can still be dirty in the cache. Write the touched lines
+\t * through here, where every probe passes.
+\t */
+\t__asm__ volatile ("dc cvac, %0" : : "r" ((uintptr_t)loader_log & ~63UL));
+\t__asm__ volatile ("dc cvac, %0" : : "r" (((uintptr_t)loader_log + loader_log_len) & ~63UL));
+\t__asm__ volatile ("dsb sy");
 }
 
 """ + LOADER_HELPER_ANCHOR
@@ -276,15 +285,15 @@ def raise_int_stacks(path):
     text = path.read_text(encoding="utf-8")
     changed = False
     for name in ("INTSTACK_SIZE", "EXCEPSTACK_SIZE"):
-        pattern = re.compile(r"^#define\s+%s\s+\(4\*4096\)" % name, re.M)
-        replacement = "#define %-23s (16*4096)" % name
+        pattern = re.compile(r"^#define\s+%s\s+\((?:4|16)\*4096\)" % name, re.M)
+        replacement = "#define %-23s (64*4096)" % name
         if re.search(re.escape(replacement), text):
-            print("  %s already 64 KiB" % name)
+            print("  %s already 256 KiB" % name)
             continue
         if not pattern.search(text):
-            raise SystemExit("%s: no '#define %s (4*4096)'" % (path, name))
+            raise SystemExit("%s: no '#define %s (4*4096)' or '(16*4096)'" % (path, name))
         text = pattern.sub(replacement, text, count=1)
-        print("  %s -> 64 KiB" % name)
+        print("  %s -> 256 KiB" % name)
         changed = True
     if changed:
         path.write_text(text, encoding="utf-8")
@@ -541,6 +550,38 @@ def patch_loader_checkpoint(path):
     return changed
 
 
+def add_sp_measure(path):
+    """Log the stack pointer just before pmap_bootstrap() is called.
+
+    96 never runs even though it is the first statement of pmap_bootstrap and
+    its prologue is only sub sp,#0x240 plus five stp, so the stack it is handed
+    is the thing to measure: either it is exhausted or it does not point where
+    the kernel thinks.
+    """
+    text = path.read_text(encoding="utf-8")
+    if 'loader_log_number("sp "' in text:
+        print("  SP measurement already present")
+        return False
+    anchor = "\tpmap_bootstrap(dynamic_memory_begin);\n"
+    if text.count(anchor) != 1:
+        raise SystemExit("%s: expected one pmap_bootstrap call, found %d"
+                         % (path, text.count(anchor)))
+    code = ("\t{\n"
+            "\t\tuint64_t sp_now;\n"
+            "\t\t__asm__ volatile (\"mov %0, sp\" : \"=r\" (sp_now));\n"
+            "\t\tloader_log_number(\"sp \", sp_now);\n"
+            "\t}\n")
+    text = text.replace(anchor, code + anchor, 1)
+    if "extern void loader_log_number" not in text:
+        text = text.replace("\nextern void loader_checkpoint(uint64_t n);\n",
+                            "\nextern void loader_checkpoint(uint64_t n);\n"
+                            "extern void loader_log_number(const char *prefix, uint64_t n);\n",
+                            1)
+    path.write_text(text, encoding="utf-8")
+    print("  added SP measurement before pmap_bootstrap()")
+    return True
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -565,6 +606,7 @@ def main(argv):
     changed += relax_orig_va_assert(vm)
     changed += add_vm_probes(vm)
     changed += add_arm_init_probe(init)
+    changed += add_sp_measure(vm)
     changed += patch_pmap_defaults_assert(pmap)
     changed += add_pmap_probes(pmap)
     changed += patch_loader_checkpoint(lret)
