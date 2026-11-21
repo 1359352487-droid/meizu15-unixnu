@@ -767,6 +767,37 @@ def add_cpu_timebase_probes(path):
     return changed
 
 
+
+PE_INIT_CPU_OLD = """\tloader_checkpoint(38);
+\tPE_init_cpu();
+\tloader_checkpoint(39);
+"""
+PE_INIT_CPU_NEW = """\tloader_checkpoint(38);
+\t/*
+\t * PE_init_cpu() does not exist in the open source tree (pexpert/pexpert/arm64
+\t * carries headers only, and the symbol is stripped from the linked kernel),
+\t * and it is the one call between probes 38 and 39: the run stops there with
+\t * no panic text. Whatever it does on Apple silicon has no SDM660 equivalent,
+\t * so skip it and see how far the rest of arm_init() gets.
+\t */
+\tloader_checkpoint(39);
+"""
+
+
+def skip_pe_init_cpu(path):
+    """Drop the PE_init_cpu() call that aborts between probes 38 and 39."""
+    text = path.read_text(encoding="utf-8")
+    if PE_INIT_CPU_NEW in text:
+        print("  PE_init_cpu already skipped")
+        return False
+    if text.count(PE_INIT_CPU_OLD) != 1:
+        raise SystemExit("%s: expected one 38/PE_init_cpu/39 block, found %d"
+                         % (path, text.count(PE_INIT_CPU_OLD)))
+    path.write_text(text.replace(PE_INIT_CPU_OLD, PE_INIT_CPU_NEW, 1), encoding="utf-8")
+    print("  skipped PE_init_cpu() between 38 and 39")
+    return True
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -794,6 +825,7 @@ def main(argv):
     changed += add_arm_init_probe(init)
     changed += add_arm_late_probes(init)
     changed += add_arm_late2_probes(init)
+    changed += skip_pe_init_cpu(init)
     changed += add_cpu_timebase_probes(cpu)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
