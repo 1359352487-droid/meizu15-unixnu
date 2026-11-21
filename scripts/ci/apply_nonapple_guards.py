@@ -1150,6 +1150,40 @@ def add_thread_late_probes(path):
         path.write_text(text, encoding="utf-8")
     return changed
 
+# osfmk/kern/startup.c, kernel_bootstrap_thread() after device_service_create()
+# (probe 123). clock_service_create and device_service_create both passed, so the
+# Mach timebase and the device tree work at the IOKit level; what follows is
+# carveout accounting, KDP, the SYSCTL hooks, the address-permutation randoms and
+# PE_init_iokit (Apple platform code, likely to need skipping like PE_init_cpu).
+THREAD_TAIL_PROBES = [
+    ("\tphys_carveout_init();\n", 124),
+    ("\tkdp_init();\n", 125),
+    ("\tkernel_startup_initialize_upto(STARTUP_SUB_SYSCTL);\n", 126),
+    ("\tvm_kernel_addrhash_salt_ext = early_random();\n", 127),
+    ("\tPE_init_iokit();\n", 128),
+    ("\tkernel_startup_initialize_upto(STARTUP_SUB_EARLY_BOOT);\n", 129),
+]
+THREAD_TAIL_EXPECTED = (124, 125, 126, 127, 128, 129)
+
+
+def add_thread_tail_probes(path):
+    """Probes 124-129, the rest of kernel_bootstrap_thread()."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for needle, number in THREAD_TAIL_PROBES:
+        if needle + "\tloader_checkpoint(%d);\n" % number in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip()[:46], text.count(needle)))
+        text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
+        print("  added loader_checkpoint(%d) after %s" % (number, needle.strip()[:46]))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
 
 def main(argv):
     if len(argv) < 2:
@@ -1189,6 +1223,7 @@ def main(argv):
     changed += fix_boot_cpu_data(kstartup)
     changed += add_kernel_bootstrap_thread_probes(kstartup)
     changed += add_thread_late_probes(kstartup)
+    changed += add_thread_tail_probes(kstartup)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
