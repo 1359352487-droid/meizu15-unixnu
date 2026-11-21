@@ -640,6 +640,20 @@ ARM_LATE_BEFORE = [
 ARM_LATE_EXPECTED = (22, 23, 24, 25, 26, 27, 28)
 
 
+# osfmk/arm64/cpu.c, cpu_timebase_init(). Between probe 25 (ml_map_cpu_pio) and 26
+# (cpu_timebase_init returns) there is nothing else -- APPLE_ARM64_ARCH_FAMILY is
+# not defined for BCM2837, so configure_late_apple_regs() is compiled out. The
+# function itself is short: getCpuDatap(), a block of rtclock_timebase_func
+# pointers, then ml_set_reset_time(ml_get_hwclock()). 29 proves cdp was obtained
+# and prints it; 31 proves the hwclock path returned.
+CPU_TB_AFTER_CDP = "\tcpu_data_t *cdp = getCpuDatap();\n"
+CPU_TB_BEFORE_DECREMENTER = "\tcdp->cpu_decrementer = 0x7FFFFFFFUL;\n"
+CPU_TB_PROBE_CODE = """\t{
+\t\tuint64_t cdp_now = (uint64_t)(uintptr_t)cdp;
+\t\tloader_log_number("cdp ", cdp_now);
+\t}
+\tloader_checkpoint(29);
+"""
 def add_arm_late_probes(path):
     """Probes 22-28 between PE_create_console() and machine_startup()."""
     text = path.read_text(encoding="utf-8")
@@ -670,6 +684,30 @@ def add_arm_late_probes(path):
     if changed:
         path.write_text(text, encoding="utf-8")
     return changed
+def add_cpu_timebase_probes(path):
+    """Probes 29/31 inside cpu_timebase_init(), and print the cpu_data pointer."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    if "loader_checkpoint(29);" not in text:
+        if text.count(CPU_TB_AFTER_CDP) != 1:
+            raise SystemExit("%s: expected one getCpuDatap() line, found %d"
+                             % (path, text.count(CPU_TB_AFTER_CDP)))
+        text = text.replace(CPU_TB_AFTER_CDP, CPU_TB_AFTER_CDP + CPU_TB_PROBE_CODE, 1)
+        print("  added loader_checkpoint(29) + cdp value in cpu_timebase_init()")
+        changed = True
+    if "loader_checkpoint(31);" not in text:
+        if text.count(CPU_TB_BEFORE_DECREMENTER) != 1:
+            raise SystemExit("%s: expected one cpu_decrementer line, found %d"
+                             % (path, text.count(CPU_TB_BEFORE_DECREMENTER)))
+        text = text.replace(CPU_TB_BEFORE_DECREMENTER,
+                            "\tloader_checkpoint(31);\n" + CPU_TB_BEFORE_DECREMENTER, 1)
+        print("  added loader_checkpoint(31) after the hwclock calls")
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -683,6 +721,7 @@ def main(argv):
     vmp = find(root, "osfmk/mach/arm/vm_param.h")
     pmap = find(root, "osfmk/arm/pmap/pmap.c")
     lret = find(root, "osfmk/arm64/loader_return.c")
+    cpu = find(root, "osfmk/arm64/cpu.c")
 
     changed = 0
     changed += raise_kernel_stack(vmp)
@@ -695,6 +734,7 @@ def main(argv):
     changed += add_vm_probes(vm)
     changed += add_arm_init_probe(init)
     changed += add_arm_late_probes(init)
+    changed += add_cpu_timebase_probes(cpu)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)

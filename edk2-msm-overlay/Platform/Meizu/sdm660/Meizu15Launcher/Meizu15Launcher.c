@@ -262,11 +262,11 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- kprintf is alive: the panel now carries the kernel's own lines, and last cp 20 means
+  // checkpoint=0 -- last cp 25: PE_init_platform(TRUE) and ml_map_cpu_pio are behind us. Between 25 and 26
   //
-  // PE_create_console() is behind us (21 is machine_startup). Probe 22-28 split the stretch
-  // in between: PE_init_printf, idle init, the second PE_init_platform, ml_map_cpu_pio,
-  // cpu_timebase_init, the /chosen dram lookup, and machine_startup itself.
+  // there is only cpu_timebase_init (APPLE_ARM64_ARCH_FAMILY is not defined here, so
+  // configure_late_apple_regs is compiled out). Probe it: 29 after getCpuDatap() plus the
+  // pointer value, 31 after the hwclock calls.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.
