@@ -798,6 +798,57 @@ def skip_pe_init_cpu(path):
     return True
 
 
+# osfmk/arm64/machine_routines.c, machine_startup(): probe 28 is the line before the
+# call, and the whole function is
+#
+#     machine_startup(boot_args *args) { machine_conf(); kernel_bootstrap(); }
+#
+# so 72 is the entry, 73 is after machine_conf(), 74 sits in front of
+# kernel_bootstrap() -- the scheduler bring-up, and the last thing between this
+# port and a first kernel thread.
+MACHINE_STARTUP_EXTERN_ANCHOR = "#include <kern/startup.h>\n"
+MACHINE_STARTUP_EXTERN = ("\nextern void loader_checkpoint(uint64_t n);\n")
+MACHINE_STARTUP_ENTRY = "machine_startup(__unused boot_args * args)\n{\n"
+MACHINE_STARTUP_PROBES = [
+    (MACHINE_STARTUP_ENTRY, 72, "after"),
+    ("\tmachine_conf();\n", 73, "after"),
+    ("\tkernel_bootstrap();\n", 74, "before"),
+]
+MACHINE_STARTUP_EXPECTED = (72, 73, 74)
+
+
+def add_machine_startup_probes(path):
+    """Probes 72/73/74 inside machine_startup()."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    if "extern void loader_checkpoint" not in text:
+        if MACHINE_STARTUP_EXTERN_ANCHOR not in text:
+            raise SystemExit("%s: include anchor not found" % path)
+        text = text.replace(MACHINE_STARTUP_EXTERN_ANCHOR,
+                            MACHINE_STARTUP_EXTERN_ANCHOR + MACHINE_STARTUP_EXTERN, 1)
+        print("  added extern loader_checkpoint() to machine_routines.c")
+        changed = True
+    for needle, number, position in MACHINE_STARTUP_PROBES:
+        if position == "after" and needle + "\tloader_checkpoint(%d);\n" % number in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if position == "before" and "\tloader_checkpoint(%d);\n" % number + needle in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip()[:40], text.count(needle)))
+        if position == "after":
+            text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
+        else:
+            text = text.replace(needle, "\tloader_checkpoint(%d);\n" % number + needle, 1)
+        print("  added loader_checkpoint(%d) %s %s" % (number, position, needle.strip()[:40]))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -812,6 +863,7 @@ def main(argv):
     pmap = find(root, "osfmk/arm/pmap/pmap.c")
     lret = find(root, "osfmk/arm64/loader_return.c")
     cpu = find(root, "osfmk/arm64/cpu.c")
+    mr = find(root, "osfmk/arm64/machine_routines.c")
 
     changed = 0
     changed += raise_kernel_stack(vmp)
@@ -827,6 +879,7 @@ def main(argv):
     changed += add_arm_late2_probes(init)
     changed += skip_pe_init_cpu(init)
     changed += add_cpu_timebase_probes(cpu)
+    changed += add_machine_startup_probes(mr)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)

@@ -262,10 +262,11 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- 38 fires and 39 does not, so the stop is PE_init_cpu(). It has no source in the
+  // checkpoint=0 -- 28 fires: arm_init reached its last line. Skipping PE_init_cpu was right -- 39/36/37
   //
-  // open tree and no symbol in the linked kernel, so it cannot be probed from inside:
-  // skip the call and see whether the rest of arm_init still works.
+  // and the /chosen dram lookups all pass, and the kernel now prints KDP and iBoot lines.
+  // What is left is machine_startup(): machine_conf() then kernel_bootstrap(). 72 entry,
+  // 73 after machine_conf, 74 before kernel_bootstrap.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.
