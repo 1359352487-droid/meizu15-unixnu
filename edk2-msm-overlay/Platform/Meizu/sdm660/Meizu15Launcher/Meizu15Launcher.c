@@ -262,12 +262,12 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=90 -- 90 went silent, so the stop is above it: the head of pmap_bootstrap().
+  // checkpoint=0 -- checkpoint=0: do not stop, let it run and let the log carry the trail.
   //
-  // pmap_compute_max_asids() asserts a root /defaults node and this ADT only has
-  // /smc/defaults, so that assert was the panic; it now returns MAX_ASIDS instead.
-  // 96/97/98 walk that head so the next panel is decisive even if 90 fires.
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=90";
+  // Every probe now writes 'cp N'; loader_return repeats the last one it saw,
+  // so the panel's final line names the probe the kernel actually died at.
+  // loader_return_after=60 still hands the log back if it simply hangs.
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.
   //

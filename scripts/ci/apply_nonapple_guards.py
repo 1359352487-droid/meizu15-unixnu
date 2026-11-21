@@ -155,6 +155,86 @@ PMAP_DEFAULTS_PATCH = (
     '\t\treturn MAX_ASIDS;\n'
     '\t}\n')
 
+# loader_checkpoint() only ever compared its number with the requested one, so a
+# probe that fired and a probe that was never reached looked exactly the same on
+# the panel: four lines naming the *requested* number. Probing 96/97/98 at once
+# therefore settled nothing.
+#
+# loader_return() already hands loader_log to the stub, and loader_log_line()
+# takes a whole line under the log's lock, so every probe can simply say its own
+# name and the next boot prints the whole trail -- 45, 58, 61, ... up to the last
+# one reached. One boot instead of one per probe.
+LOADER_CHECKPOINT_OLD = """void
+loader_checkpoint(uint64_t n)
+{
+\tif (loader_stub_slot[2] == n) {
+\t\tloader_jump(2, n);
+\t}
+}
+"""
+LOADER_CHECKPOINT_NEW = """void
+loader_checkpoint(uint64_t n)
+{
+\t/*
+\t * Say which probe this is, not only whether it is the one to stop at. The
+\t * log this writes is what the stub prints, so the trail survives a panic and
+\t * tells which probe was reached last.
+\t */
+\tloader_last_checkpoint = n;
+\tloader_log_number("cp ", n);
+
+\tif (loader_stub_slot[2] == n) {
+\t\tloader_jump(2, n);
+\t}
+}
+"""
+
+LOADER_HELPER_ANCHOR = ("/* Patched by the loader: { magic, PA of its return stub, "
+                        "checkpoint to stop at, PA - VA }. See start.s. */\n")
+LOADER_HELPER = """/* The number of the probe just reached, and of the last one reached at all. */
+static uint64_t loader_last_checkpoint;
+
+/* "cp 62\\n" -- digits only, so no printf and no locale; safe this early. */
+static void
+loader_log_number(const char *prefix, uint64_t n)
+{
+\tchar line[32];
+\tsize_t p = 0;
+\tuint32_t d = 0;
+\tuint64_t v = n;
+
+\twhile (prefix[p] != 0 && p < 20) {
+\t\tline[p] = prefix[p];
+\t\tp++;
+\t}
+\tdo {
+\t\tline[p + d] = (char)('0' + (v % 10));
+\t\tv /= 10;
+\t\td++;
+\t} while (v != 0 && d < 20);
+\tfor (uint32_t i = 0; i < d / 2; i++) {
+\t\tchar t = line[p + i];
+\t\tline[p + i] = line[p + d - 1 - i];
+\t\tline[p + d - 1 - i] = t;
+\t}
+\tline[p + d] = '\\n';
+\tline[p + d + 1] = 0;
+\tloader_log_line(line);
+}
+
+""" + LOADER_HELPER_ANCHOR
+
+LOADER_TAIL_OLD = "\tloader_jump(0, 0);\n"
+LOADER_TAIL_NEW = """\t/*
+\t * The trail scrolls off the console; this line does not. Whatever the panel
+\t * shows last, it ends with the last probe the kernel reached.
+\t */
+\tif (loader_last_checkpoint != 0) {
+\t\tloader_log_number("last cp ", loader_last_checkpoint);
+\t}
+\tloader_jump(0, 0);
+"""
+
 
 def find(root, suffix):
     matches = [p for p in Path(root).rglob(suffix) if ".dSYM" not in str(p)]
@@ -417,6 +497,36 @@ def add_pmap_probes(path):
     return changed
 
 
+def patch_loader_checkpoint(path):
+    """Every probe reports itself, and the last one reached is repeated at the end."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    if LOADER_HELPER not in text:
+        if text.count(LOADER_HELPER_ANCHOR) != 1:
+            raise SystemExit("%s: expected one slot comment, found %d"
+                             % (path, text.count(LOADER_HELPER_ANCHOR)))
+        text = text.replace(LOADER_HELPER_ANCHOR, LOADER_HELPER, 1)
+        print("  added loader_log_number() / loader_last_checkpoint")
+        changed = True
+    if LOADER_CHECKPOINT_NEW not in text:
+        if text.count(LOADER_CHECKPOINT_OLD) != 1:
+            raise SystemExit("%s: expected the stock loader_checkpoint(), found %d"
+                             % (path, text.count(LOADER_CHECKPOINT_OLD)))
+        text = text.replace(LOADER_CHECKPOINT_OLD, LOADER_CHECKPOINT_NEW, 1)
+        print("  loader_checkpoint -> logs every probe it passes")
+        changed = True
+    if LOADER_TAIL_NEW not in text:
+        if text.count(LOADER_TAIL_OLD) != 1:
+            raise SystemExit("%s: expected one loader_jump(0, 0), found %d"
+                             % (path, text.count(LOADER_TAIL_OLD)))
+        text = text.replace(LOADER_TAIL_OLD, LOADER_TAIL_NEW, 1)
+        print("  loader_return -> logs the last probe reached")
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -429,6 +539,7 @@ def main(argv):
     init = find(root, "osfmk/arm/arm_init.c")
     vmp = find(root, "osfmk/mach/arm/vm_param.h")
     pmap = find(root, "osfmk/arm/pmap/pmap.c")
+    lret = find(root, "osfmk/arm64/loader_return.c")
 
     changed = 0
     changed += raise_kernel_stack(vmp)
@@ -442,6 +553,7 @@ def main(argv):
     changed += add_arm_init_probe(init)
     changed += patch_pmap_defaults_assert(pmap)
     changed += add_pmap_probes(pmap)
+    changed += patch_loader_checkpoint(lret)
 
     vm_text = vm.read_text(encoding="utf-8")
     missing = [n for n in EXPECTED if "loader_checkpoint(%d)" % n not in vm_text]
@@ -465,6 +577,8 @@ def main(argv):
         raise SystemExit("verification failed in pmap.c: probes missing %s" % pmap_missing)
     if PMAP_DEFAULTS_ASSERT in pmap_text:
         raise SystemExit("verification failed in pmap.c: /defaults assert still present")
+    if LOADER_CHECKPOINT_NEW not in lret.read_text(encoding="utf-8"):
+        raise SystemExit("verification failed in loader_return.c")
     if "KERNEL_STACK_MULTIPLIER (%d)" % STACK_MULTIPLIER not in vmp.read_text(encoding="utf-8"):
         raise SystemExit("verification failed in vm_param.h")
 
