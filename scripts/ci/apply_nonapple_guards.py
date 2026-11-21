@@ -156,23 +156,25 @@ PMAP_DEFAULTS_PATCH = (
     '\t}\n')
 
 # The device tree reaches the kernel as a physical address (DarwinBoot.c:
-# Args->DeviceTree = TreeAddress), and PE_slide_devicetree() -- which is not in
-# the open source tree, only its prototype is -- is what rebases it. Whatever it
-# does, SecureDTInit() does not validate anything: it stores base and size and
-# trusts them. So the kernel can simply point SecureDT at the physmap alias of
-# the same blob, the mapping arm_vm_physmap_slide(end_kern, ...) on the line
-# above has just created. Without this, the first SecureDT user after
+# Args->DeviceTree = TreeAddress). In the XNU_MONITOR build, arm_vm_physmap_init()
+# calls PE_slide_devicetree() to rebase it -- but BCM2837 does not define
+# XNU_MONITOR, so this port takes the #else arm of that function, which has no
+# such call at all: SecureDT keeps the physical address and the first user after
 # kva_active = TRUE (pmap_compute_max_asids, then pmap_compute_pv_targets, then
-# pmap_compute_io_rgns) walks a physical address as if it were virtual: a data
-# abort with no kprintf yet to report it.
-SECUREDT_ANCHOR = """\tif (!SecureDTIsLockedDown()) {
-\t\tPE_slide_devicetree(temp_ptov_table[ptov_index - 1].va - end_kern);
-\t}
+# pmap_compute_io_rgns) walks it as if it were virtual. That is a data abort with
+# no kprintf yet to report it.
+#
+# SecureDTInit() validates nothing (pexpert/gen/device_tree.c: it stores base and
+# size and trusts them), so the kernel can point it at the physmap alias of the
+# same blob right after the slide that maps end_kern..topOfKernelData.
+SECUREDT_ANCHOR = """\tarm_vm_physmap_slide(temp_ptov_table, (args->topOfKernelData - gPhysBase + gVirtBase),
+\t    real_avail_end - args->topOfKernelData, AP_RWNA, ARM64_GRANULE_ALLOW_BLOCK | ARM64_GRANULE_ALLOW_HINT); // rest of physmem
 """
 SECUREDT_PATCH = SECUREDT_ANCHOR + """\t/*
-\t * Point SecureDT at the physmap alias of the blob rather than trusting the
-\t * closed-source rebase above. args->deviceTreeP is the physical address the
-\t * loader handed over; gVirtBase - gPhysBase is the physmap offset.
+\t * No PE_slide_devicetree() in this (non-XNU_MONITOR) arm, so nothing rebased the
+\t * blob the loader handed over as a physical address. Point SecureDT at the
+\t * physmap alias: args->deviceTreeP is that physical address, and
+\t * gVirtBase - gPhysBase is the offset phystokv() uses.
 \t */
 \tSecureDTInit((void const *)((uintptr_t)args->deviceTreeP + (gVirtBase - gPhysBase)),
 \t    (size_t)args->deviceTreeLength);
@@ -609,7 +611,7 @@ def add_sp_measure(path):
 def add_secure_dt_reinit(path):
     """Point SecureDT at the physmap alias once the physmap exists."""
     text = path.read_text(encoding="utf-8")
-    if "Point SecureDT at the physmap alias" in text:
+    if "SecureDTInit((void const *)((uintptr_t)args->deviceTreeP" in text:
         print("  SecureDT reinit already present")
         return False
     if text.count(SECUREDT_ANCHOR) != 1:

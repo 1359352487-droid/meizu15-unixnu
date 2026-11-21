@@ -262,11 +262,11 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- last cp 90, and pmap_data_bootstrap()'s first two calls (pmap_compute_pv_targets,
+  // checkpoint=0 -- The SecureDT fix went into the #if XNU_MONITOR arm of arm_vm_physmap_init, and BCM2837
   //
-  // pmap_compute_io_rgns) scan the tree again -- so this is a class of bug, not one call.
-  // SecureDTInit validates nothing, so point it at the physmap alias of the blob right
-  // after PE_slide_devicetree, and put the /defaults lookup back to prove it works.
+  // does not define XNU_MONITOR -- so the build took the #else arm, which has no
+  // PE_slide_devicetree at all and never rebased the blob. Put SecureDTInit in the arm
+  // that actually compiles; the ADT itself walks EXACT 13996/13996 with XNU's own skipTree.
   Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
   //
   // DeviceTree must stay NULL here.
