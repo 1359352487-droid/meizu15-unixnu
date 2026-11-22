@@ -1338,6 +1338,33 @@ def add_prot_finalize_probes(path):
         path.write_text(text, encoding="utf-8")
     return changed
 
+# kernel_bootstrap_thread(): 136 fires (machine_lockdown returned, so arm_vm_prot_finalize
+# and the boot-stack replacement both worked) and 137 does not. PE_lockdown_iokit() is
+# Apple platform code again -- same family as PE_init_cpu and PE_init_iokit.
+PE_LOCKDOWN_OLD = "\tPE_lockdown_iokit();\n\tloader_checkpoint(137);\n"
+PE_LOCKDOWN_NEW = """\t/*
+\t * PE_lockdown_iokit() is Apple platform code (like PE_init_cpu and PE_init_iokit):
+\t * pexpert headers only, no platform expert for this SoC. Probe 136 fires and 137 does
+\t * not, so it is the one call in between. Skip it; vm_set_restrictions() follows and
+\t * only needs machine_info.max_cpus.
+\t */
+\tloader_checkpoint(137);
+"""
+
+
+def skip_pe_lockdown_iokit(path):
+    """Drop PE_lockdown_iokit(), the stop between probes 136 and 137."""
+    text = path.read_text(encoding="utf-8")
+    if PE_LOCKDOWN_NEW in text:
+        print("  PE_lockdown_iokit already skipped")
+        return False
+    if text.count(PE_LOCKDOWN_OLD) != 1:
+        raise SystemExit("%s: expected one PE_lockdown/137 block, found %d"
+                         % (path, text.count(PE_LOCKDOWN_OLD)))
+    path.write_text(text.replace(PE_LOCKDOWN_OLD, PE_LOCKDOWN_NEW, 1), encoding="utf-8")
+    print("  skipped PE_lockdown_iokit() between 136 and 137")
+    return True
+
 
 def main(argv):
     if len(argv) < 2:
@@ -1383,6 +1410,7 @@ def main(argv):
     changed += add_early_boot_probes(kstartup)
     changed += skip_oskext_remove(kstartup)
     changed += add_prot_finalize_probes(avm)
+    changed += skip_pe_lockdown_iokit(kstartup)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
