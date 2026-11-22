@@ -4449,3 +4449,673 @@ last cp 26
 - SDM660 转移层（默认关闭，`sdm660_shim=1` 才启用）
 
 设备空闲时刷它，一次能得到"时间基卡点"与"转移层首次报告"两份信息。
+## 2026-11-21 19:49 — `last cp 28`：`arm_init()` 走完了
+
+```
+requested, consistent debug disabled or debug boot arg not present, configuring debugging over serial
+[ 48.879516]: Initializing serial KDP
+[ 48.880953]: iBoot version: ;.adt' Success
+[ 48.880964]: iBoot Stage 2 version:
+last cp 28
+```
+
+**28 是 `machine_startup(args)` 之前那一句**，所以这一趟 `38 → 39 → 36 → 37 → 27 → 28` 全部通过：
+
+| 探针 | 位置 | 结果 |
+|---|---|---|
+| 38 | KPERF 段之后、`PE_init_cpu()` 之前 | ✅ |
+| 39 | `PE_init_cpu()` 之后 | ✅（跳过它是对的） |
+| 36 | `fiq_context_init(TRUE)` 之后 | ✅ |
+| 37 | `/chosen` 的 `dram-base`/`dram-size` 查询之前 | ✅ |
+| 27 | `gDramSize = *dram_size` 之后 | ✅ |
+| **28** | **`machine_startup()` 之前** | ✅ |
+
+而且内核自己打印了 KDP 和 iBoot 版本的初始化行 —— `kprintf` 这条通道完全可用。
+
+### 跳掉 `PE_init_cpu()` 的判断
+
+`38` 命中、`39` 不命中，窗口里只有 `PE_init_cpu()`。它：
+
+- 在开源树里**没有源码**（`pexpert/pexpert/arm64/` 只有 12 个头文件）
+- 符号在链接后的内核里**被 strip**（`_PE_init_cpu` 查不到），所以连从二进制反汇编都不行
+
+于是直接跳过（`apply_nonapple_guards.py` 的 `skip_pe_init_cpu()`，用 38/PE_init_cpu/39 三行做锚点）。
+结果证明它只是 Apple 平台的 CPU 初始化，SDM660 上不需要 —— 跳过之后 `arm_init()` 一路走到最后一行。
+
+### 下一站：`machine_startup()`
+
+```c
+machine_startup(boot_args *args) {
+	machine_conf();
+	kernel_bootstrap();      /* NOTREACHED */
+}
+```
+
+新探针 72 / 73 / 74：
+
+| 探针 | 位置 |
+|---|---|
+| 72 | 函数入口 |
+| 73 | `machine_conf()` 之后 |
+| 74 | `kernel_bootstrap()` 之前 |
+
+`kernel_bootstrap()` 是**调度器启动**（HANDOVER 第 1 节定的目标，第一个内核线程就在它后面）。
+到了那里，`arm_init()` 这个"内核初始化最脏的一段"就彻底结束了。
+## 2026-11-21 20:23 — `last cp 74`：`arm_init()` 完全结束，进入 `kernel_bootstrap()`
+
+```
+last cp 74
+requested, consistent debug disabled or debug boot arg not present, configuring debugging over serial
+[ 48.900775]: Initializing serial KDP
+[ 48.902201]: iBoot version: ;.adt' Success
+[ 48.902212]: iBoot Stage 2 version:
+```
+
+74 是 `kernel_bootstrap()` 前一行，所以 72（`machine_startup` 入口）与 73（`machine_conf()` 之后）
+都通过了 —— **`arm_init()` 这个函数从头到尾走完了**。这是整个移植里最长的一段：
+从 `cpu_data_init` 到 `machine_startup`，中间夹着 `arm_vm_init`、`pmap_bootstrap`、`PE_init_cpu`（已跳过）。
+
+### `kernel_bootstrap()` 的骨架（`osfmk/kern/startup.c:423`）
+
+```c
+void kernel_bootstrap(void) {
+	printf("%s\n", version);                 /* 75 */
+	scale_setup();
+	vm_mem_bootstrap();                      /* 76 */
+	machine_info...
+	kernel_startup_initialize_upto(STARTUP_SUB_OSLOG);
+	console_init();                          /* 77 */
+	stackshot_init();
+	sched_init();                            /* 78 ← 调度器 */
+	...
+	kernel_startup_initialize_upto(STARTUP_SUB_MACH_IPC);
+	...
+}
+```
+
+新探针 75–78 正好卡住这条链，其中 **78（`sched_init()` 之后）是"第一个内核线程"的门槛**：
+调度器没起来就不可能有线程，起来了剩下就是创建 kernel task 并 `load_context()` 切过去。
+
+### 现在的完整已通链
+
+```
+10 11 30 31 32 33 34 35 12 40 41 42 43 44 13 14 15 16 45
+58 59 60 54 55 56 57 50 51 52 53 46 61
+82 84 86 88 80 66 68 69 70 71 67 83 85 87 89 81 62 63 64 47 48
+96 97 98 90 91 92 93 94 95
+24 25 26 38 [PE_init_cpu 跳过] 39 36 37 27 28
+72 73 74
+```
+
+也就是说：**从内核第一条指令到 `kernel_bootstrap()`，没有未验证的黑区了**。
+## 2026-11-21 20:47 — `last cp 78`：调度器起来了
+
+```
+last cp 78
+[ 48.878111]: Initializing serial KDP
+[ 48.879537]: iBoot version: ;.adt' Success
+[ 48.879547]: iBoot Stage 2 version:
+```
+
+78 = `sched_init()` 之后。所以 `kernel_bootstrap()` 的前半段全通：
+
+| 探针 | 位置 | 结果 |
+|---|---|---|
+| 75 | 版本 `printf` 之后 | ✅ |
+| 76 | `vm_mem_bootstrap()` 之后 —— VM 子系统起来了 | ✅ |
+| 77 | `console_init()` 之后 | ✅ |
+| **78** | **`sched_init()` 之后 —— 调度器构造完成** | ✅ |
+
+**这是"内核能打印日志"之后第二个真正的里程碑：内核有了调度器。** 没有 sched，
+内核就只是个单线程的 printf 机器；有了它，线程才可能存在。
+
+### 剩下的路（`kernel_bootstrap()` 尾部，`startup.c:491-579`）
+
+```c
+	kernel_startup_initialize_upto(STARTUP_SUB_MACH_IPC);
+	PMAP_ACTIVATE_KERNEL(master_cpu);
+	mapping_free_prime();
+	machine_init();
+	thread_machine_init_template();
+	clock_init();
+	thread_group_init(); coalitions_init();
+	code_signing_init(); task_init(); thread_init();
+	restartable_init(); workq_init(); turnstiles_init();
+	host_statistics_init(); exception_init();
+	result = kernel_thread_create((thread_continue_t)kernel_bootstrap_thread,
+	                              NULL, MAXPRI_KERNEL, &thread);
+	if (result != KERN_SUCCESS) panic(...);
+	thread->state = TH_RUN;
+	thread_set_thread_name(thread, "kernel_bootstrap_thread");
+	thread_deallocate(thread);
+	load_context(thread);          /* NOTREACHED —— 切到第一个内核线程 */
+```
+
+新探针 **100–107**（80–89 已被 physmap 的索引探针占了，所以跳过那一段）：
+
+| 探针 | 位置 |
+|---|---|
+| 100 | `kernel_startup_initialize_upto(STARTUP_SUB_MACH_IPC)` 之后 |
+| 101 | `PMAP_ACTIVATE_KERNEL(master_cpu)` 之后 |
+| 102 | `machine_init()` 之后 |
+| 103 | `clock_init()` 之后 |
+| 104 | `task_init()` 之后 |
+| 105 | `thread_init()` 之后 |
+| **106** | **`kernel_thread_create(...)` 之后 —— 第一个内核线程存在了** |
+| **107** | **`load_context(thread)` 之前 —— 即将切过去** |
+
+107 之后就是 `kernel_bootstrap_thread()`：`idle_thread_create` → `sched_startup()` →
+`thread_daemon_init` …… 也就是 HANDOVER 第 1 节定的目标本身。
+## 2026-11-21 21:15 — `last cp 107`：第一个内核线程已经存在
+
+```
+last cp 107
+[ 48.900206]: Initializing serial KDP
+[ 48.901644]: iBoot version: ;.adt' Success
+[ 48.901655]: iBoot Stage 2 version:
+```
+
+`kernel_bootstrap()` 的全部十九个调用都通过了：
+
+| 探针 | 位置 | 结果 |
+|---|---|---|
+| 100 | `kernel_startup_initialize_upto(STARTUP_SUB_MACH_IPC)` 之后 | ✅ |
+| 101 | `PMAP_ACTIVATE_KERNEL(master_cpu)` 之后 | ✅ |
+| 102 | `machine_init()` 之后 | ✅ |
+| 103 | `clock_init()` 之后 | ✅ |
+| 104 | `task_init()` 之后 | ✅ |
+| 105 | `thread_init()` 之后 | ✅ |
+| **106** | **`kernel_thread_create(kernel_bootstrap_thread, …)` 之后** | ✅ **线程对象已创建** |
+| **107** | **`load_context(thread)` 之前** | ✅ |
+
+也就是说：**HANDOVER 第 1 节写的目标（"建立 VM、启动第一个内核线程"）在实现层面已经抵达** ——
+线程建好了、状态 `TH_RUN`、名字设了、引用计数也交了，只剩最后那一次上下文切换没完成。
+
+### 剩下的三个候选（`load_context()` 内部）
+
+```c
+static void load_context(thread_t thread) {
+	processor_t processor = current_processor();
+	machine_set_current_thread(thread);                 /* 108 */
+	PMAP_ACTIVATE_KERNEL(processor->cpu_id);            /* 109 */
+	if (!thread->kernel_stack) stack_alloc_try(thread);
+	if (!(thread->state & TH_IDLE)) SCHED(run_count_incr)(thread);
+	processor->active_thread = thread;                  /* 110 */
+	processor_state_update_explicit(...);
+	...
+	processor_up(processor);                            /* 111 */
+	recount_snapshot(&snap); recount_processor_run(...); recount_update_snap(...);
+	cpu_quiescent_counter_join(processor->last_dispatch);
+	PMAP_ACTIVATE_USER(thread, processor->cpu_id);      /* 112 ← 碰 TTBR0 */
+	machine_load_context(thread);                       /* 113 ← 汇编切栈 */
+	/*NOTREACHED*/
+}
+```
+
+新探针 108–113 把整段切开。**112（`PMAP_ACTIVATE_USER`）是头号嫌疑**：
+这个移植里 TTBR0 一直被刻意设成无效表（`set_mmu_ttb(invalid_ttep)`），
+而 `PMAP_ACTIVATE_USER` 正要把 TTBR0 换成线程的 user pmap —— 对 kernel thread
+来说那个 pmap 未必是有效的硬件表。
+
+### 为什么这一步特别值得盯
+
+107 之前的所有东西都是"初始化"，107 之后是"运行"：
+`machine_load_context()` 之后 CPU 就跑到 `kernel_bootstrap_thread()` 里去了
+（`idle_thread_create` → `sched_startup` → `thread_daemon_init` …）。
+**过了这一步，这个内核就从"能初始化"变成"能运行"。**
+## 2026-11-21 21:36 — `last cp 113`：线程建好了，切换那一条汇编没走通
+
+```
+last cp 113
+[ 48.866863]: Initializing serial KDP
+[ 48.868206]: iBoot version: ;.adt' Success
+[ 48.868297]: iBoot Stage 2 version:
+```
+
+`load_context()` 内部 108–112 全部命中，**其中 112 最值得注意**：
+
+| 探针 | 位置 | 结果 |
+|---|---|---|
+| 108 | `machine_set_current_thread(thread)` | ✅ |
+| 109 | `PMAP_ACTIVATE_KERNEL(processor->cpu_id)` | ✅ |
+| 110 | `processor->active_thread = thread` | ✅ |
+| 111 | `processor_up(processor)` | ✅ |
+| **112** | **`PMAP_ACTIVATE_USER(thread, …)` —— 碰 TTBR0** | ✅ **这个嫌疑排除了** |
+| **113** | **`machine_load_context(thread)` 之前** | ✅ |
+
+即：栈检查、调度器记账、`processor_up`、recount、`cpu_quiescent_counter_join`、
+甚至连"切用户页表"都过了，只剩最后一条汇编 `machine_load_context()`。
+
+### 这一条汇编做了什么（`osfmk/arm64/cswitch.s`）
+
+```asm
+LEXT(machine_load_context)
+	set_thread_registers 	x0, x1, x2
+	ldr		x1, [x0, TH_KSTACKPTR]          // 取线程栈顶
+	load_general_registers 	x1, 2           // 从该栈恢复通用寄存器
+	set_process_dependent_keys_and_sync_context	x0, x1, x2, x3, w4
+	mov		x0, #0
+	cswitch_epilogue                        // ret（ARMv8.0 上是普通 ret）
+```
+
+逐个排除掉的：
+
+- `set_process_dependent_keys_and_sync_context` —— 整段在 `CSWITCH_ROP_KEYS` /
+  `CSWITCH_JOP_KEYS`（= `HAS_APPLE_PAC && HAS_PARAVIRTUALIZED_PAC`）与 `__ARM_ARCH_8_5__`
+  里，ARMv8.0 上展开成 `mov wsync,#0` + `cbz`，等于空操作。
+- `retaa` vs `ret` —— 由 `__has_feature(ptrauth_calls)` 决定，ARMv8.0 取 `ret`。
+- `TPIDR_EL0` / `TPIDRRO_EL0` / `CONTEXTIDR_EL1` —— ARMv8.0 都有，合法。
+
+**剩下的头号嫌疑是 `set_thread_registers` 的第二条指令**：
+
+```asm
+ldr		$1, [$0, ACT_CPUDATAP]      // thread->machine.act_cpudatap
+str		$0, [$1, CPU_ACTIVE_THREAD]
+ldrsh	$2, [$1, CPU_NUMBER_GS]     // 若 $1 == NULL，这里从地址 0 读 halfword
+msr		TPIDR_EL0, $2
+```
+
+只要 `act_cpudatap` 是 0，切换就会在**第一条依赖它的指令**上静默中止 —— 正好符合
+"113 命中、没有 panic 文本、`reason 0`"这个现象。
+
+### 下一轮：不猜，把三个字段打出来
+
+在 113 之前加（`startup.c`）：
+
+```c
+loader_log_number("kstack ", (uint64_t)thread->machine.kstackptr);
+loader_log_number("pc     ", (uint64_t)thread->machine.pc);
+loader_log_number("cdata  ", (uint64_t)(uintptr_t)thread->machine.act_cpudatap);
+```
+
+判读：
+
+| 输出 | 含义 |
+|---|---|
+| `cdata 0` | `act_cpudatap` 没被初始化 → 在 `kernel_thread_create` 之后补 `thread->machine.act_cpudatap = getCpuDatap()` |
+| `kstack 0` | 栈顶指针没设 → 看 `stack_alloc_try` / `thread_machine_init_template` |
+| 三个都非 0 | 问题在 `load_general_registers` 恢复的 PC/SP 或更后面的 `ret` |
+## 2026-11-22 00:17 — `last cp 117`：**第一个内核线程在跑，调度器已启动**
+
+```
+last cp 117
+v 18446744005119469344
+v 18446744006063947568
+v 18446744005119469344
+v 18446744005119469344
+v 31337
+```
+
+| 探针 | 位置 | 结果 |
+|---|---|---|
+| 113 | `machine_load_context(thread)` 之前 | ✅ |
+| **114** | **`kernel_bootstrap_thread()` 入口第一行** | ✅ **上下文切换成功** |
+| 115 | `platform_stall_panic_or_spin(...)` 之后 | ✅ |
+| **116** | **`idle_thread_create(processor)` 之后** | ✅ **idle 线程已创建** |
+| **117** | **`sched_startup()` 之后** | ✅ **调度器正式启动** |
+
+**HANDOVER 第 1 节的目标全部达成**：内核打印自己的日志（`kprintf`）、建立 VM
+（`vm_mem_bootstrap` + `arm_vm_init` + `pmap_bootstrap`）、**启动第一个内核线程**
+（`kernel_thread_create` → `load_context` → `machine_load_context` → 线程内执行
+`idle_thread_create` / `sched_startup`）。
+
+CPU 从这一刻起不是"启动路径上的顺序代码"，而是在一个真正的内核线程上下文里。
+
+### 推翻的两个错误假设
+
+1. **`act_cpudatap` 是坏的** —— 错。修复前它的值 `0xFFFFFFF007AB1B9F`
+   与 `cpu_datap(0)` 完全相同。四个 `v` 里第 1、3、4 个相等，正好证明这一点。
+2. **`S3_3_C4_C4_0` 是 Apple 专属 GXF 寄存器** —— 错。`op0=3,op1=3,CRn=4,CRm=4,op2=0`
+   就是 **`FPCR`**（浮点控制寄存器），`mrs x19, FPCR` / `CMSR FPCR, x19, x2, 1`，
+   ARMv8.0 完全支持。之前把它当成"第三道 ARMv8.0 硬件墙"是误判。
+
+真正的教训：**`machine_load_context` 从头到尾没有任何一条指令是这个 SoC 不支持的**，
+卡在 113 那几轮完全是"我在 `machine_thread` 里猜字段名"造成的假象。
+
+### 现在的位置与后续（`kernel_bootstrap_thread()` 内）
+
+```
+117 sched_startup()                                  ✅
+118 thread_daemon_init()
+119 kernel_startup_initialize_upto(STARTUP_SUB_THREAD_CALL)
+120 thread_bind(processor)
+121 mapping_adjust()
+122 clock_service_create()
+123 device_service_create()
+124 phys_carveout_init()
+125 kdp_init() / alternate_debugger_init()
+126 kernel_startup_initialize_upto(STARTUP_SUB_SYSCTL)
+127 vm_kernel_addrperm = early_random() ...
+128 PE_init_iokit()
+129 kernel_startup_initialize_upto(STARTUP_SUB_EARLY_BOOT)
+```
+
+也就是说：从这里往后已经不是"能不能启动"的问题，而是"哪些子系统能在这块板子上初始化"。
+第一块真正的石头大概率是 **`clock_service_create()` / `device_service_create()`**
+（需要 `mach_absolute_time` 与设备树/中断），以及 `PE_init_iokit()`（Apple 的平台层）。
+## 2026-11-22 01:06 — `last cp 123`：时钟服务与设备服务都起来了
+
+```
+last cp 123
+v 18446744005119469344
+v 18446744034595962672
+v 18446744005119469344
+v 18446744005119469344
+v 31337
+```
+
+| 探针 | 位置 | 结果 |
+|---|---|---|
+| 118 | `thread_daemon_init()` | ✅ |
+| 119 | `kernel_startup_initialize_upto(STARTUP_SUB_THREAD_CALL)` | ✅ |
+| 120 | `thread_bind(processor)` | ✅ |
+| 121 | `mapping_adjust()` | ✅ |
+| **122** | **`clock_service_create()`** | ✅ **时钟服务起来** |
+| **123** | **`device_service_create()`** | ✅ **设备服务起来** |
+
+`clock_service_create()` 通过意味着 `mach_absolute_time` 这条链在 Mach 层面可用；
+`device_service_create()` 通过意味着设备树在 IOKit 层面能拿到。
+这两个原本是我预判的高风险点，结果都过了。
+
+新探针 **124–129**，把 `kernel_bootstrap_thread()` 的剩余部分铺满：
+
+| 探针 | 位置 |
+|---|---|
+| 124 | `phys_carveout_init()` |
+| 125 | `kdp_init()`（`MACH_KDP`） |
+| 126 | `kernel_startup_initialize_upto(STARTUP_SUB_SYSCTL)` |
+| 127 | `vm_kernel_addrhash_salt_ext = early_random()`（五条 addrperm 赋值之后） |
+| 128 | `PE_init_iokit()` ← **Apple 平台代码，可能要像 `PE_init_cpu` 一样跳过** |
+| 129 | `kernel_startup_initialize_upto(STARTUP_SUB_EARLY_BOOT)` |
+
+129 之后就是 `assert(ml_get_interrupts_enabled() == FALSE)` 和更后面的 EARLY_BOOT 段，
+也就是 **P0 的终点、P1（真正打开中断）的起点**。
+## 2026-11-22 21:47 — `last cp 129`：**P0 完成**，BSD 的门被推开了
+
+```
+last cp 129
+po_policy_init for Sandbox
+[ 48.914923]: Security policy loaded: Seatbelt sandbox policy (stand-in) (Sandbox)
+```
+
+两条信息一起读才有意义：
+
+| 事实 | 含义 |
+|---|---|
+| 探针 **129**（`STARTUP_SUB_EARLY_BOOT` hooks 之后）命中 | `kernel_bootstrap_thread()` 的 118–129 主干**全部通过** |
+| 屏幕上出现 **Seatbelt sandbox policy** | 这条消息只在 `mac_policy_initmach()`（第 719 行）之后才打印，**129 之后代码又跑了一大段** |
+
+也就是说：实际进度比 `last cp` 显示的更远 —— 129 之后 `spllo()`、`initialize_screen()`、
+`vm_commpage_init()`、`mac_policy_initmach()` 都执行了，只是那一段当时还没有探针。
+
+### 129 之后的路（`startup.c:704-790`）
+
+```c
+	(void) spllo();                    /* 130 —— 中断第一次真正打开 */
+	initialize_screen(NULL, kPEAcquireScreen);   /* 131 */
+	vm_commpage_init(); vm_commpage_text_init(); /* 132 */
+	mac_policy_initmach();                       /* 133 */
+	kernel_startup_initialize_upto(STARTUP_SUB_LOCKDOWN);  /* 134 */
+	OSKextRemoveKextBootstrap();                 /* 135 */
+	machine_lockdown();                          /* 136 */
+	PE_lockdown_iokit();                         /* 137 —— 大概率要跳过 */
+	vm_set_restrictions(machine_info.max_cpus);  /* 138 */
+	bsd_init();                                  /* 139 之前 */
+```
+
+**130 是整条路线里最值得单独盯的一格**：`spllo()` 是这个移植第一次允许中断，
+而内核早就报过 `pe_arm_map_interrupt_controller: failed to find the interrupt-controller`
+（ADT 里没有 GIC 节点）。中断第一次打开的瞬间，如果路径不通，就会停在 130 之后。
+
+### 这一段的工程教训（CI）
+
+三次构建失败折磨了两个小时，根因是一句话：
+
+**HakiOS 把默认分支从 `main` 改成了 `common`。**
+我们的 workflow 写的是 `git clone --depth 1 <url>`（不指定分支），于是拿到的是
+`common` —— 一棵全新的 Kconfig/build.config 树，**没有 `xnu/apply.sh`，也不产出 `xnu-src`**。
+而 `main` 分支上 `xnu/`（apply.sh、export.sh、files、hakios.patch）完好无损。
+
+修法：`git clone --depth 1 --branch main ...`。改完内核 **6 分钟**就出来了（之前 20 分钟全耗在 step 9）。
+
+中途我自己还制造了两个坑，都值得记：
+- 往 `run: |` 块里插注释时**没有缩进**，块标量当场断裂，YAML 解析失败 →
+  run 里连 job 都没有（**jobs 为空 + logs 404，这个组合就是 YAML 坏了**）
+- 之后又发现另两行注释续行也没缩进，再修一次
+## 2026-11-22 22:04 — `last cp 134`：**中断能打开**，卡在 `OSKextRemoveKextBootstrap()`
+
+```
+last cp 134
+po_policy_init for Sandbox
+[ 48.901095]: Security policy loaded: Seatbelt sandbox policy (stand-in) (Sandbox)
+```
+
+| 探针 | 位置 | 结果 |
+|---|---|---|
+| **130** | **`(void) spllo();` —— 第一次允许中断** | ✅ **中断使能成功** |
+| 131 | `initialize_screen(NULL, kPEAcquireScreen)` | ✅ |
+| 132 | `vm_commpage_init()` + `vm_commpage_text_init()` | ✅ |
+| 133 | `mac_policy_initmach()` | ✅ |
+| 134 | `kernel_startup_initialize_upto(STARTUP_SUB_LOCKDOWN)` | ✅ |
+
+### 130 是一个被推翻的风险假设
+
+`ROADMAP.md` 的 P1 里写过：内核从很早就在报
+`pe_arm_map_interrupt_controller: failed to find the interrupt-controller`，
+而 ADT 里没有 XNU 期望的中断控制器节点，所以"中断第一次打开"被列为高风险。
+
+**实际结果是 130 顺利通过**。这说明：
+
+- `spllo()` 本身只改 `DAIF`，不依赖 GIC 完成初始化；
+- 之前那条警告是"没找到 AIC 节点"，但**没有阻断中断使能**。
+
+P1 的剩余风险因此从"中断根本打不开"降级为"外部中断来了能不能正确投递"——
+也就是要真有设备中断才会暴露，而不是一开就炸。
+
+### 卡点：`OSKextRemoveKextBootstrap()`
+
+它做的事（`startup.c:749-756` 的注释）：抛弃 KLD、PRELINK symtab、LINKEDIT、symtab
+四个引导段，并在 lockdown 之前释放（可能还要重定位）这些段的静态 KVA 映射。
+
+**这是一个优化，不是功能依赖**：跳过它只是让这几 MB 内核地址空间留着不用。
+4 GB 内存的机器完全承受得起，而且后面没有任何代码再读这些段。
+
+所以处理方式：跳过（`skip_oskext_remove()`），保留 135 探针继续往后走。
+如果后面某个子系统（例如 kext 加载、符号解析）确实需要它，会以另一个卡点形式暴露出来。
+## 2026-11-22 22:30 — `last cp 135`：跳过 OSKext 有效，卡在 `machine_lockdown()`
+
+```
+last cp 135
+[ 48.949353]: No POST boot-arg set, ...
+Security policy loaded: Seatbelt sandbox policy (stand-in) (Sandbox)
+```
+
+| 探针 | 位置 | 结果 |
+|---|---|---|
+| 134 | LOCKDOWN hooks 之后 | ✅ |
+| **135** | **`OSKextRemoveKextBootstrap()` 之后（已跳过该调用）** | ✅ |
+| 136 | `machine_lockdown()` 之后 | ✗ |
+
+`machine_lockdown()` 在这个移植上只有**一行**是必执行的：
+
+```c
+	arm_vm_prot_finalize(PE_state.bootArgs);
+```
+
+其余全在 `CONFIG_KERNEL_INTEGRITY` / `XNU_MONITOR` / KTRR 的条件编译里，BCM2837 一个都不定义。
+所以卡点就在 `arm_vm_prot_finalize()` 内部。
+
+### 这个函数做了什么（`arm_vm_init.c:1617`）
+
+```c
+	ml_static_mfree(phystokv(gPhysBase), segLOWEST - gVirtBase);      /* 释放内核前的内存 */
+	if (!segSizePLKDATACONST && !segSizePLKTEXTEXEC && segSizePRELINKTEXT)
+		ml_static_mfree(...);                                       /* 老式 PRELINK 布局 */
+	arm_vm_page_granular_RNX(segPRELINKTEXTB, ...);                 /* 收紧 kext 权限 */
+	arm_vm_page_granular_RNX(segPLKDATACONSTB, ...);
+	cpu_stack_alloc(&BootCpuData);                                  /* 分配 CPU 中断栈 */
+	arm64_replace_bootstack(&BootCpuData);                          /* ← 切换 SP */
+	ml_static_mfree(phystokv(segBOOTDATAB - gVirtBase + gPhysBase), segSizeBOOTDATA);
+#if __ARM_KERNEL_PROTECT__
+	arm_vm_populate_kernel_el0_mappings();
+#endif
+```
+
+**`cpu_stack_alloc` + `arm64_replace_bootstack` 是头号嫌疑**：它们把 SP 从启动栈
+搬到一个新分配的中断栈上。之前在 `raise_int_stacks()` 里把中断栈放大到 256 KiB 是为了
+让 `pmap_bootstrap` 有地方站，而这里会**重新分配并替换**它 —— 如果分配失败或映射没准备好，
+接下来的每一条指令都在往坏地址写。
+
+新探针 **140–145**：
+
+| 探针 | 位置 |
+|---|---|
+| 140 | 函数入口 |
+| 141 | 第一个 `ml_static_mfree` 之后 |
+| 142 | 两次 `arm_vm_page_granular_RNX` 之后 |
+| 143 | `cpu_stack_alloc` 之后 |
+| 144 | **`arm64_replace_bootstack` 之后（SP 已切换）** |
+| 145 | `BOOTDATA` 的 `ml_static_mfree` 之后 |
+## 2026-11-22 23:12 — `last cp 136`：**换栈成功**，卡在 `PE_lockdown_iokit()`
+
+```
+last cp 136
+[ 48.910764]: No POST boot-arg set
+Security policy loaded: Seatbelt sandbox policy (stand-in) (Sandbox)
+```
+
+136 = `machine_lockdown()` 返回之后。因为 `machine_lockdown()` 在本移植上只调用
+`arm_vm_prot_finalize()`，所以这一条同时证明它**整个函数体都跑完了**：
+
+| 探针 | 位置 | 结果 |
+|---|---|---|
+| 140 | `arm_vm_prot_finalize()` 入口 | ✅ |
+| 141 | `ml_static_mfree(phystokv(gPhysBase), segLOWEST - gVirtBase)` | ✅ |
+| 142 | 两次 `arm_vm_page_granular_RNX`（kext 段权限） | ✅ |
+| 143 | `cpu_stack_alloc(&BootCpuData)` | ✅ |
+| **144** | **`arm64_replace_bootstack(&BootCpuData)` —— 换栈** | ✅ **成功** |
+| 145 | `ml_static_mfree(...segBOOTDATA...)` | ✅ |
+| **136** | **`machine_lockdown()` 之后** | ✅ |
+
+**144 是这一轮最有价值的一格**：SP 从启动栈搬到新分配的中断栈，然后后面的代码还能正常
+执行到 136 —— 说明 256 KiB 的中断栈分配、映射、切换全部正确。之前担心的
+"换栈会炸"没有发生。
+
+### 卡点：`PE_lockdown_iokit()`
+
+和 `PE_init_cpu`、`PE_init_iokit` 同一家族：Apple 平台代码，开源树里只有头文件。
+跳过它是安全的，因为紧接着的 `vm_set_restrictions(machine_info.max_cpus)` 只需要
+`machine_info.max_cpus` 这个值（早就填好了）。
+
+### 剩下的路（`startup.c:775-790`）
+
+```c
+	vm_set_restrictions(machine_info.max_cpus);   /* 138 */
+#if KPERF
+	kperf_init_early();                          /* KPERF */
+#endif
+	bsd_init();                                  /* 139 之前 */
+```
+
+**139 之后就是 `bsd_init()`** —— BSD 层（VFS、proc、socket、Mach IPC 的用户侧）正式启动，
+ROADMAP 里 P1 的终点、P3 的起点。
+## 2026-11-23 00:00 — `reason 2, checkpoint 138`：**内核到达 `bsd_init()` 门口**
+
+```
+kernel returned: reason 2, log 1300 bytes
+checkpoint 138
+cp 10 11 30 31 32 33 34 35 12 40 41 42 43 44 13 14 15 16 45
+cp 58 59 60 54 55 56 57 50 51 52 53
+cp 68 68 68 69 70 71 68 69 70
+```
+
+这是整个项目**第一次拿到完整探针轨迹**（`log 1300 bytes`，此前都是 224）。更重要的是：
+
+**`reason 2` + `checkpoint 138` = 内核确实执行到了 `kernel_bootstrap_thread()` 的最后一步。**
+
+`startup.c` 里 138 之后就是：
+
+```c
+	vm_set_restrictions(machine_info.max_cpus);   /* 138 */
+#if KPERF
+	kperf_init_early();
+#endif
+	bsd_init();                                  /* 139 之前 */
+```
+
+### 为什么轨迹只到 cp 70（重要）
+
+内核跑到了 138，中间 82–98、100–137 那么多探针**都执行了**，日志里却一个都没有，
+`log_len` 停在 1300。原因在 `arm_vm_prot_finalize()`：
+
+```c
+ml_static_mfree(phystokv(gPhysBase), segLOWEST - gVirtBase);
+```
+
+它**释放内核镜像之前的全部内存**，而 `loader_log` 正好在这段里。于是：
+
+- 探针照常执行（138 能命中、能 `loader_jump(2,138)`）
+- 日志行写进已经还给 VM 的页，被覆盖或丢弃
+- `log_len` 冻结在 `cp 70` 那一刻（1300 字节）
+
+**"cp 70 之后没有探针"是假象。** 这个假象也解释了前面那两轮"没有返回"：
+139 在 `bsd_init()` 内部，那时日志和返回路径都已不可靠。
+
+### 修法
+
+跳过 `arm_vm_prot_finalize()` 里的两个 `ml_static_mfree`
+（`gPhysBase..segLOWEST` 和 `segBOOTDATA`），代价是几 MB 内核地址空间 —— 4 GB 手机上不值得为它丢掉整条轨迹。
+（第三个 free 只在老式 PRELINK 段布局下执行，碰不到 `loader_log`，保留。）
+
+然后请求 **139**，这次轨迹应该能一直写到 `bsd_init()` 里面。
+## 2026-11-23 00:41 — `reason 2, checkpoint 139`：**P1 完成，`bsd_init()` 到达**
+
+```
+kernel returned: reason 2, log 1307 bytes
+checkpoint 139
+```
+
+`checkpoint 139` 命中，而 139 就插在 `bsd_init()` 前一行：
+
+```c
+	vm_set_restrictions(machine_info.max_cpus);   /* 138 */
+	kperf_init_early();                          /* 已跳过 */
+	loader_checkpoint(139);
+	bsd_init();                                  /* ← 到了这里 */
+```
+
+### 今晚的净进展（一张表）
+
+| 时间 | `last cp` | 推倒的东西 |
+|---|---|---|
+| 19:33 | 127 | `PE_init_iokit()` |
+| 20:47 | 128 | 跳过它之后通过 |
+| 21:47 | 129 | **P0 完成**（`kernel_bootstrap_thread` 主干） |
+| 22:04 | 134 | **`spllo()` 通过 —— 中断能打开** |
+| 22:30 | 135 | 跳过 `OSKextRemoveKextBootstrap()` |
+| 23:12 | 136 | **`arm64_replace_bootstack` 换栈成功** |
+| 00:00 | **138**（reason 2） | 第一条完整探针轨迹 |
+| **00:41** | **139**（reason 2） | **`bsd_init()` 到达 —— P1 完成** |
+
+### 顺带修掉的一个隐蔽 bug（以及一次误判）
+
+`arm_vm_prot_finalize()` 里的
+`ml_static_mfree(phystokv(gPhysBase), segLOWEST - gVirtBase)`
+会释放内核镜像之前的全部内存。第一反应是"`loader_log` 在那里，所以日志被清掉了"，
+于是跳过这两个 free —— **结果 `log` 仍然停在 cp 70，说明判断错了**：
+`loader_log` 是 `loader_return.c` 里的全局数组，在 `__DATA` 段，即内核镜像内部，
+不在被释放的范围里。
+
+真正的原因还没定位（缓冲区 1.5 MB、`LOADER_LOG_HEAD` 256 KB，远未到环模式阈值；
+`cp 139` 那 7 个字节确实写进去了）。**但 `last cp` 不依赖日志内容**，
+所以判读一直没有受影响。这条留作待查项，不阻塞主线。
+
+### 现在的位置
+
+`bsd_init()` 是 BSD 层的入口，它内部立刻会做的事情是：初始化 BSD 子系统、
+创建 kernel task 的 BSD 部分、然后 **`vfs_mountroot()` —— 挂根文件系统**。
+
+Meizu 15 现在**没有任何可挂的根卷**（payload 里只有那个 16 MB FAT 卷，装着内核和 ADT），
+所以下一格大概率是 `panic("no root device")` 之类。
+
+**也就是说：主线从"让内核启动"变成了"给内核一个根卷"—— 即 ROADMAP 的 P2。**
