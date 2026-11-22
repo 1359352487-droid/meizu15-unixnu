@@ -262,12 +262,12 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=0 -- 28 fires: arm_init reached its last line. Skipping PE_init_cpu was right -- 39/36/37
+  // checkpoint=139 -- probe 139: did bsd_init() get reached? The last image never returned to the stub -- no
   //
-  // and the /chosen dram lookups all pass, and the kernel now prints KDP and iBoot lines.
-  // What is left is machine_startup(): machine_conf() then kernel_bootstrap(). 72 entry,
-  // 73 after machine_conf, 74 before kernel_bootstrap.
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=0";
+  // banner, no last cp, just DarwinBoot's handoff output -- so either the kernel now lives past
+  // the 48.9 s mark and hangs inside bsd_init, or it died before kprintf. Ask for checkpoint 139
+  // and the answer separates the two.
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=139";
   //
   // DeviceTree must stay NULL here.
   //
