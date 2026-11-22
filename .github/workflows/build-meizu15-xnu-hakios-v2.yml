@@ -96,11 +96,9 @@ jobs:
       - name: Clone HakiOS and check its tree
         run: |
           set -eux
-          # HakiOS rewrote its tree on 2026-11-22 (62e09f85: Kconfig, build.config.*, no
-          # xnu/apply.sh) and this workflow is written against the tree before that. Pin it,
-          # because `--depth 1` now fetches a layout this workflow cannot drive.
-          git clone https://github.com/oosexgang/hakios-xnu-kernel.git hakios
-          git -C hakios checkout a6d538c1fb0c7671cd38db623ff63d56bca37266
+          # HakiOS's default branch is `common`, a Kconfig/build.config tree without
+          # xnu/apply.sh. The branch this workflow drives is `main`, so name it.
+          git clone --depth 1 --branch main https://github.com/oosexgang/hakios-xnu-kernel.git hakios
           ls hakios | head -30
           head -30 hakios/Makefile
 
