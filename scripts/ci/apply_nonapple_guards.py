@@ -1355,7 +1355,7 @@ def main(argv):
     cpu = find(root, "osfmk/arm64/cpu.c")
     mr = find(root, "osfmk/arm64/machine_routines.c")
     kstartup = find(root, "osfmk/kern/startup.c")
-    avm = find(root, "osfmk/arm/arm_vm_init.c")
+    avm = find(root, "osfmk/arm64/arm_vm_init.c")
 
     changed = 0
     changed += raise_kernel_stack(vmp)
