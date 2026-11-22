@@ -1184,6 +1184,33 @@ def add_thread_tail_probes(path):
         path.write_text(text, encoding="utf-8")
     return changed
 
+# kernel_bootstrap_thread(): probe 127 fires (the early_random block) and 128 does not,
+# so PE_init_iokit() is the stop -- the same kind of Apple platform code as PE_init_cpu:
+# headers only in the open tree, no SDM660 equivalent. Skip it.
+PE_IOKIT_OLD = "\tPE_init_iokit();\n\tloader_checkpoint(128);\n"
+PE_IOKIT_NEW = """\t/*
+\t * PE_init_iokit() belongs to Apple's closed platform layer (like PE_init_cpu): the
+\t * open tree carries pexpert headers only, and nothing on this SoC provides the
+\t * IOKit platform expert it expects. Probe 127 fires and 128 does not, so it is the
+\t * one call in between. Skip it and let the EARLY_BOOT hooks run.
+\t */
+\tloader_checkpoint(128);
+"""
+
+
+def skip_pe_init_iokit(path):
+    """Drop the PE_init_iokit() call that aborts between probes 127 and 128."""
+    text = path.read_text(encoding="utf-8")
+    if PE_IOKIT_NEW in text:
+        print("  PE_init_iokit already skipped")
+        return False
+    if text.count(PE_IOKIT_OLD) != 1:
+        raise SystemExit("%s: expected one PE_init_iokit/128 block, found %d"
+                         % (path, text.count(PE_IOKIT_OLD)))
+    path.write_text(text.replace(PE_IOKIT_OLD, PE_IOKIT_NEW, 1), encoding="utf-8")
+    print("  skipped PE_init_iokit() between 127 and 128")
+    return True
+
 
 def main(argv):
     if len(argv) < 2:
@@ -1224,6 +1251,7 @@ def main(argv):
     changed += add_kernel_bootstrap_thread_probes(kstartup)
     changed += add_thread_late_probes(kstartup)
     changed += add_thread_tail_probes(kstartup)
+    changed += skip_pe_init_iokit(kstartup)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
