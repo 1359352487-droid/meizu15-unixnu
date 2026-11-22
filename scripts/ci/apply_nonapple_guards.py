@@ -1211,6 +1211,56 @@ def skip_pe_init_iokit(path):
     print("  skipped PE_init_iokit() between 127 and 128")
     return True
 
+# osfmk/kern/startup.c, kernel_bootstrap_thread() after the EARLY_BOOT hooks (129).
+# The panel showed "Security policy loaded: Seatbelt sandbox policy" while last cp
+# said 129, so execution got at least to mac_policy_initmach() (line ~719) with no
+# probe to say where it stopped. 130 is the important one: spllo() is the first time
+# interrupts are allowed, and this board's ADT has no interrupt-controller node.
+EARLY_BOOT_PROBES = [
+    ("\t(void) spllo();         /* Allow interruptions */\n", 130),
+    ("\tinitialize_screen(NULL, kPEAcquireScreen);\n", 131),
+    ("\tvm_commpage_text_init();\n", 132),
+    ("\tmac_policy_initmach();\n", 133),
+    ("\tkernel_startup_initialize_upto(STARTUP_SUB_LOCKDOWN);\n", 134),
+    ("\tOSKextRemoveKextBootstrap();\n", 135),
+    ("\tmachine_lockdown();\n", 136),
+    ("\tPE_lockdown_iokit();\n", 137),
+    ("\tvm_set_restrictions(machine_info.max_cpus);\n", 138),
+]
+EARLY_BOOT_BEFORE = [
+    ("\tbsd_init();\n", 139),
+]
+EARLY_BOOT_EXPECTED = (130, 131, 132, 133, 134, 135, 136, 137, 138, 139)
+
+
+def add_early_boot_probes(path):
+    """Probes 130-139 from spllo() to bsd_init()."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for needle, number in EARLY_BOOT_PROBES:
+        if needle + "\tloader_checkpoint(%d);\n" % number in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip()[:46], text.count(needle)))
+        text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
+        print("  added loader_checkpoint(%d) after %s" % (number, needle.strip()[:46]))
+        changed = True
+    for needle, number in EARLY_BOOT_BEFORE:
+        if "\tloader_checkpoint(%d);\n" % number + needle in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip()[:46], text.count(needle)))
+        text = text.replace(needle, "\tloader_checkpoint(%d);\n" % number + needle, 1)
+        print("  added loader_checkpoint(%d) before %s" % (number, needle.strip()[:46]))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
 
 def main(argv):
     if len(argv) < 2:
@@ -1252,6 +1302,7 @@ def main(argv):
     changed += add_thread_late_probes(kstartup)
     changed += add_thread_tail_probes(kstartup)
     changed += skip_pe_init_iokit(kstartup)
+    changed += add_early_boot_probes(kstartup)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
