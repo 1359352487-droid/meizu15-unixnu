@@ -1365,6 +1365,47 @@ def skip_pe_lockdown_iokit(path):
     print("  skipped PE_lockdown_iokit() between 136 and 137")
     return True
 
+# arm_vm_prot_finalize() frees the memory below the kernel image:
+#
+#     ml_static_mfree(phystokv(gPhysBase), segLOWEST - gVirtBase);
+#
+# loader_log lives in that range, so from that call on every probe still runs but its
+# log line lands on pages the VM has taken back -- which is exactly what the 138 run
+# showed: reason 2 with checkpoint 138, yet the trail stops at cp 70 and log_len stays
+# 1300. On a 4 GB phone the few MB are not worth losing the trail for, so the frees are
+# turned into comments. Probes 141 and 145 mark them.
+FREE_BELOW_KERNEL_OLD = "\tml_static_mfree(phystokv(gPhysBase), segLOWEST - gVirtBase);\n\tloader_checkpoint(141);\n"
+FREE_BELOW_KERNEL_NEW = """\t/*
+\t * Freed below: ml_static_mfree(phystokv(gPhysBase), segLOWEST - gVirtBase);
+\t * loader_log sits in that range, and freeing it silently kills the probe trail from
+\t * here on (probe 138 still fires, the log just stops). Keep the pages.
+\t */
+\tloader_checkpoint(141);
+"""
+FREE_BOOTDATA_OLD = "\tml_static_mfree(phystokv(segBOOTDATAB - gVirtBase + gPhysBase), segSizeBOOTDATA);\n\tloader_checkpoint(145);\n"
+FREE_BOOTDATA_NEW = """\t/* Freed below as well: the BOOTDATA segment overlaps the same low range. */
+\tloader_checkpoint(145);
+"""
+
+
+def keep_loader_log_memory(path):
+    """Do not free the low memory that loader_log lives in."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for old, new, label in ((FREE_BELOW_KERNEL_OLD, FREE_BELOW_KERNEL_NEW, "below-kernel free"),
+                            (FREE_BOOTDATA_OLD, FREE_BOOTDATA_NEW, "BOOTDATA free")):
+        if new in text:
+            print("  %s already skipped" % label)
+            continue
+        if text.count(old) != 1:
+            raise SystemExit("%s: expected one %s, found %d" % (path, label, text.count(old)))
+        text = text.replace(old, new, 1)
+        print("  skipped the %s so loader_log survives" % label)
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
 
 def main(argv):
     if len(argv) < 2:
@@ -1411,6 +1452,7 @@ def main(argv):
     changed += skip_oskext_remove(kstartup)
     changed += add_prot_finalize_probes(avm)
     changed += skip_pe_lockdown_iokit(kstartup)
+    changed += keep_loader_log_memory(avm)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
