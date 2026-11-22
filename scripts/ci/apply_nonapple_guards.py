@@ -1291,6 +1291,53 @@ def skip_oskext_remove(path):
     print("  skipped OSKextRemoveKextBootstrap() between 134 and 135")
     return True
 
+# osfmk/arm/arm_vm_init.c, arm_vm_prot_finalize(): probes 135 fires and 136 does not,
+# so machine_lockdown() stops in its one unconditional call, and this function is all
+# that call does (everything else under CONFIG_KERNEL_INTEGRITY is compiled out here).
+# The risky pair is cpu_stack_alloc() + arm64_replace_bootstack(), which moves SP onto
+# a freshly allocated interrupt stack.
+PROT_FINALIZE_PROBES = [
+    ("\tml_static_mfree(phystokv(gPhysBase), segLOWEST - gVirtBase);\n", 141),
+    ("\tarm_vm_page_granular_RNX(segPLKDATACONSTB, segSizePLKDATACONST, ARM64_GRANULE_ALLOW_BLOCK);\n", 142),
+    ("\tcpu_stack_alloc(&BootCpuData);\n", 143),
+    ("\tarm64_replace_bootstack(&BootCpuData);\n", 144),
+    ("\tml_static_mfree(phystokv(segBOOTDATAB - gVirtBase + gPhysBase), segSizeBOOTDATA);\n", 145),
+]
+PROT_FINALIZE_ENTRY = "arm_vm_prot_finalize(boot_args * args __unused)\n{\n"
+PROT_FINALIZE_EXPECTED = (140, 141, 142, 143, 144, 145, 146)
+
+
+def add_prot_finalize_probes(path):
+    """Probes 140-145 inside arm_vm_prot_finalize()."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    if "extern void loader_checkpoint" not in text:
+        anchor = "#include <arm/cpu_data_internal.h>\n"
+        if anchor not in text:
+            raise SystemExit("%s: include anchor not found" % path)
+        text = text.replace(anchor, anchor + "\nextern void loader_checkpoint(uint64_t n);\n", 1)
+        print("  added extern loader_checkpoint() to arm_vm_init.c")
+        changed = True
+    if PROT_FINALIZE_ENTRY not in text:
+        raise SystemExit("%s: arm_vm_prot_finalize entry not found" % path)
+    if PROT_FINALIZE_ENTRY + "\tloader_checkpoint(140);\n" not in text:
+        text = text.replace(PROT_FINALIZE_ENTRY, PROT_FINALIZE_ENTRY + "\tloader_checkpoint(140);\n", 1)
+        print("  added loader_checkpoint(140) at arm_vm_prot_finalize entry")
+        changed = True
+    for needle, number in PROT_FINALIZE_PROBES:
+        if needle + "\tloader_checkpoint(%d);\n" % number in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(needle) != 1:
+            raise SystemExit("%s: expected one '%s', found %d"
+                             % (path, needle.strip()[:46], text.count(needle)))
+        text = text.replace(needle, needle + "\tloader_checkpoint(%d);\n" % number, 1)
+        print("  added loader_checkpoint(%d) after %s" % (number, needle.strip()[:46]))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
 
 def main(argv):
     if len(argv) < 2:
@@ -1308,6 +1355,7 @@ def main(argv):
     cpu = find(root, "osfmk/arm64/cpu.c")
     mr = find(root, "osfmk/arm64/machine_routines.c")
     kstartup = find(root, "osfmk/kern/startup.c")
+    avm = find(root, "osfmk/arm/arm_vm_init.c")
 
     changed = 0
     changed += raise_kernel_stack(vmp)
@@ -1334,6 +1382,7 @@ def main(argv):
     changed += skip_pe_init_iokit(kstartup)
     changed += add_early_boot_probes(kstartup)
     changed += skip_oskext_remove(kstartup)
+    changed += add_prot_finalize_probes(avm)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
