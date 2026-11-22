@@ -1261,6 +1261,36 @@ def add_early_boot_probes(path):
         path.write_text(text, encoding="utf-8")
     return changed
 
+# kernel_bootstrap_thread(): probe 134 fires (the LOCKDOWN hooks) and 135 does not, so
+# OSKextRemoveKextBootstrap() is the stop. It jettisons the bootstrap kext segments and
+# frees the static KVA mappings that carried them -- an optimisation. Skipping it costs
+# a few megabytes of kernel address space on a 4 GB phone, and nothing downstream reads
+# those segments again.
+OSKEXT_REMOVE_OLD = "\tOSKextRemoveKextBootstrap();\n\tloader_checkpoint(135);\n"
+OSKEXT_REMOVE_NEW = """\t/*
+\t * OSKextRemoveKextBootstrap() throws away the KLD/PRELINK/LINKEDIT/symtab segments
+\t * used to bootstrap kext loading and frees the static KVA mappings behind them.
+\t * Probe 134 fires and 135 does not, so it is the stop. Nothing downstream reads
+\t * those segments; keeping them costs a few MB of kernel address space, which this
+\t * 4 GB board can afford. Skip it.
+\t */
+\tloader_checkpoint(135);
+"""
+
+
+def skip_oskext_remove(path):
+    """Drop OSKextRemoveKextBootstrap(), the stop between probes 134 and 135."""
+    text = path.read_text(encoding="utf-8")
+    if OSKEXT_REMOVE_NEW in text:
+        print("  OSKextRemoveKextBootstrap already skipped")
+        return False
+    if text.count(OSKEXT_REMOVE_OLD) != 1:
+        raise SystemExit("%s: expected one OSKext/135 block, found %d"
+                         % (path, text.count(OSKEXT_REMOVE_OLD)))
+    path.write_text(text.replace(OSKEXT_REMOVE_OLD, OSKEXT_REMOVE_NEW, 1), encoding="utf-8")
+    print("  skipped OSKextRemoveKextBootstrap() between 134 and 135")
+    return True
+
 
 def main(argv):
     if len(argv) < 2:
@@ -1303,6 +1333,7 @@ def main(argv):
     changed += add_thread_tail_probes(kstartup)
     changed += skip_pe_init_iokit(kstartup)
     changed += add_early_boot_probes(kstartup)
+    changed += skip_oskext_remove(kstartup)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
