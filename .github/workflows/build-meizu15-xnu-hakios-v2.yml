@@ -97,8 +97,8 @@ jobs:
         run: |
           set -eux
           # HakiOS rewrote its tree on 2026-11-22 (62e09f85: Kconfig, build.config.*, no
-# xnu/apply.sh) and this workflow is written against the tree before that. Pin it,
-# because `--depth 1` now fetches a layout this workflow cannot drive.
+          # xnu/apply.sh) and this workflow is written against the tree before that. Pin it,
+          # because `--depth 1` now fetches a layout this workflow cannot drive.
           git clone https://github.com/oosexgang/hakios-xnu-kernel.git hakios
           git -C hakios checkout a6d538c1fb0c7671cd38db623ff63d56bca37266
           ls hakios | head -30
