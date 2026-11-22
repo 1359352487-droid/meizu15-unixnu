@@ -1406,6 +1406,32 @@ def keep_loader_log_memory(path):
         path.write_text(text, encoding="utf-8")
     return changed
 
+# kernel_bootstrap_thread(): 138 fires and 139 does not, and the run does not come back
+# at all. Between them is one call under #if KPERF: kperf_init_early(), which programs the
+# performance monitors. KPERF is not needed to boot, and PMU registers are exactly the kind
+# of Apple-adjacent hardware this SoC does not provide.
+KPERF_EARLY_OLD = "\tkperf_init_early();\n"
+KPERF_EARLY_NEW = """\t/*
+\t * kperf_init_early() skipped: probe 138 fires and 139 does not, and the boot does not
+\t * return, so it is the one call in between (under #if KPERF). Programming the PMU is
+\t * not needed to bring the kernel up.
+\t */
+"""
+
+
+def skip_kperf_init_early(path):
+    """Drop kperf_init_early(), the stop between probes 138 and 139."""
+    text = path.read_text(encoding="utf-8")
+    if KPERF_EARLY_NEW in text:
+        print("  kperf_init_early already skipped")
+        return False
+    if text.count(KPERF_EARLY_OLD) != 1:
+        raise SystemExit("%s: expected one kperf_init_early(), found %d"
+                         % (path, text.count(KPERF_EARLY_OLD)))
+    path.write_text(text.replace(KPERF_EARLY_OLD, KPERF_EARLY_NEW, 1), encoding="utf-8")
+    print("  skipped kperf_init_early() between 138 and 139")
+    return True
+
 
 def main(argv):
     if len(argv) < 2:
@@ -1453,6 +1479,7 @@ def main(argv):
     changed += add_prot_finalize_probes(avm)
     changed += skip_pe_lockdown_iokit(kstartup)
     changed += keep_loader_log_memory(avm)
+    changed += skip_kperf_init_early(kstartup)
     changed += add_sp_measure(vm)
     changed += add_secure_dt_reinit(vm)
     changed += patch_pmap_defaults_assert(pmap)
