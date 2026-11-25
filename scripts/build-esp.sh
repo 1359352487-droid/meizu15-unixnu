@@ -30,12 +30,18 @@ done
 [ -f "$ADT" ]    || { echo "build-esp: no ADT at $ADT" >&2; exit 1; }
 
 # A real Mach-O kernel is 64-bit little-endian: magic cffaedfe at offset 0.
+# A kernel packed by scripts/local/lzma-pack.py starts with the LZMA properties
+# byte 0x5D followed by four header bytes; DarwinBoot detects that and unpacks it
+# (MdePkg's LZMA library, prototype in DarwinBoot.c). Both are accepted here --
+# the packed form is what lets a 17.5 MB 25-driver kernel fit a 16 MiB volume.
 # Anything else (a KPI symbol list, a truncated download) would boot to nothing.
 magic=$(od -An -tx1 -N4 "$KERNEL" | tr -d ' \n')
-if [ "$magic" != "cffaedfe" ]; then
-  echo "build-esp: $KERNEL is not a 64-bit Mach-O (magic $magic, expected cffaedfe)" >&2
-  exit 1
-fi
+case "$magic" in
+  cffaedfe) ;;
+  5d000000) echo "build-esp: $KERNEL is an EFI LZMA pack; DarwinBoot will unpack it" ;;
+  *) echo "build-esp: $KERNEL is neither a 64-bit Mach-O (cffaedfe) nor EFI LZMA (5d000000); magic $magic" >&2
+     exit 1 ;;
+esac
 
 kernel_bytes=$(wc -c < "$KERNEL" | tr -d ' ')
 adt_bytes=$(wc -c < "$ADT" | tr -d ' ')
