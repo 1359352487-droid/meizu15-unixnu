@@ -2,7 +2,8 @@
 
 > **版本**：2026-11-26 01:10（第六版交接文档，合并了 macOS 本地链的真机结果）
 > **上一段会话的终点**：CI 链探针 **139 命中**（`bsd_init()` 门口）；本地链**已经起内核**，
-> 停在 `Data abort: Translation fault, third level`，`FAR 0x1000BF0`，PC 在 DarwinBoot 的段拷贝。
+> 停在 `Data abort: Translation fault, third level`，`FAR 0x10B00F0`（= 内核解压后大小），
+> PC 在 DxeCore 里、调用方是 DarwinBoot 的 LZMA 分支（根因已定案并修复，见 §4.0.2）。
 > **读完这份文档，你应该能直接开始干活。** 不确定的地方先读
 > `PROJECT.md`（项目全景与探针地图）、`ROADMAP.md`（分阶段路线）、
 > `../TESTLOG.md`（逐轮实测记录，20 万字符，读最后 20 节就够）。
@@ -16,8 +17,8 @@
 |---|---|
 | 在做什么 | 把 Apple 开源的 XNU（`xnu-8796.121.2` = iOS 16.5 内核；目标镜像为 iOS 16.7.16 / `xnu-8796.141.3`，见 `profiles/os/ios-16.7.16-20H392`）跑在魅族 15 上 |
 | 硬件 | SDM660 / Kryo 260（4×A73 + 4×A53，**全核 ARMv8.0**）/ 4 GB / 1080×1920 AMOLED / eMMC |
-| 做到哪了 | **两条链都已起内核**：CI 链到 `bsd_init()` 门口（cp 139）；本地链到 DarwinBoot 往内核窗口写段，卡在窗口地址落在 DRAM 之外（§4.0） |
-| 卡在哪 | 本地链：`AllocateWindow()` 选中了 `0x1000BF0` 这类**未映射低位**，写 `__BOOTDATA` 时三级翻译失败。CI 链：`vfs_mountroot()` 没有根卷 |
+| 做到哪了 | **两条链都已起内核**：CI 链到 `bsd_init()` 门口（cp 139）；本地链已跑到 DarwinBoot 解压内核，崩因已定案并修复（§4.0.2） |
+| 卡在哪 | 本地链：`DarwinBoot.c` 的 LZMA 原型多写了一个参数，库把「解压后大小」`0x10B00F0` 当 Scratch 指针写，崩在解压第一步（§4.0.2，已修）。CI 链：`vfs_mountroot()` 没有根卷 |
 | 下一步 | ① 编入 §4.0 的 `AllocateWindowInDram()` 修复，让内核真正跑进 `bsd_init()`；② 挂根卷（`rd=md0` + mockfs + initrd 已就位） |
 | 一轮迭代 | **本地链**：`scripts/local/build-round.sh <name>` ≈ 13 min → `fastboot boot` → 拍屏。**CI 链**：API 提交 → 内核 6–8 min → payload 6–10 min → 刷机 |
 | 仓库 | `github.com/1359352487-droid/meizu15-unixnu` |
@@ -153,56 +154,76 @@ boot hdr (ANDROID!, 4 KiB page) → gzip → outer FV 32 MiB (_FVH@0x28)
         /EFI/UniXNU/LAUNCHER.EFI + /EFI/BOOT/BOOTAA64.EFI   32,768 B ×2
 ```
 
-### 4.0.2 卡点定案：窗口落在了 DRAM 之外
+### 4.0.2 卡点定案：LZMA 接口原型写错（2026-11-26 屏上证据）
 
 真机屏（`logical.img`）：
 
 ```
+PC 0x0000C91F0584 (0x0000C91EE000+0x0002584) [4] DxeCore.dll
+[0] …/DarwinBootPkg/Driver/DarwinBoot/DEBUG/DarwinBoot.dll
+[1] …/Meizu15Launcher/DEBUG/Meizu15Launcher.dll
+[2] …/Core/Dxe/DxeMain/DEBUG/DxeCore.dll
+[3] …/BdsDxe/DEBUG/BdsDxe.dll
+X1  0x0000000010B00F0    X8  0x0000000010B00F0    X25 0x0000000010B00F0
+FAR 0x0000000010B00F0    ESR EC 0x25  IL 0x1  ISS 0x47
 Data abort: Translation fault, third level
-PC 0x0000000C91F0584   (Meizu15Launcher.dll)
-FAR 0x000000001000BF0  ESR EC 0x25 (data abort, same EL, third level)
 ```
 
-把镜像里的内核解压后读段表（`Kernel.Base = 0xFFFFFFF007004000`）：
+（`SetupAPSCpuPerfLevels: Failed to get the maximum performance level for CPU 0` 是
+Qualcomm DXE 的固定噪声，与这次崩溃无关。）
 
-| 段 | delta (vmaddr−Base) | fileoff | filesize |
-|---|---|---|---|
-| `__TEXT` | 0 | 0 | 0x1A4000 |
-| `__DATA_CONST` | 0x1A4000 | 0x1A4000 | 0xEC000 |
-| `__TEXT_EXEC` | 0x290000 | 0x290000 | 0x8D4000 |
-| `__KLD` | 0xB64000 | | 0x4000 |
-| `__LASTDATA_CONST` | 0xB68000 | | 0x4000 |
-| `__KLDDATA` | 0xB6C000 | | 0x4000 |
-| `__DATA` | 0xB70000 | 0xB70000 | 0x58000 |
-| `__BOOTDATA` | **0xFB0000** | 0xBC8000 | 0xC4000 |
-| `__LINKINFO` | 0x1074000 | 0xC8C000 | 0x90000 |
-| `__LINKEDIT` | 0x1104000 | 0xD1C000 | 0x3940F0 |
+四条结论，按证据强度排：
 
-**窗口需求 = 0x14980F0 = 21.6 MB。**
+1. **`FAR = 0x10B00F0 = 17,498,352`，正好等于镜像里 `kernel.macho` 的 LZMA
+   「解压后大小」字段**（13 字节头：`5D 00 00 00 01 | F0 00 0B 01`）。三个寄存器同时持有它。
+2. **屏上没有任何 `WIN …` 行** → 崩溃发生在 `AllocateWindow()` **之前**，也就是 LZMA
+   解压阶段；不是"窗口落到 DRAM 之外"。
+3. 旧交接文档里的 `FAR 0x1000BF0` 是**抄写错误**（`0x10B00F0` 少看了一个 `B`）。
+   基于它推的"落在 `__BOOTDATA`、窗口 = 0x50BF0"这一段**作废**，不要再引用。
+4. 根因：`DarwinBoot.c` 自己声明的 LZMA 原型与 EDK2 真实签名不符。
 
-结论：
+EDK2 真实签名（`MdeModulePkg/Library/LzmaCustomDecompressLib/LzmaDecompressLibInternal.h`）：
 
-1. `0x1000BF0` 落在 `__BOOTDATA` 段体内（相对段首 0xBF0）。
-2. 反推窗口基址 = `0x1000BF0 − 0xFB0000 = 0x50BF0`——**不是 4 KB 对齐**，而
-   `AllocatePages()` 返回的地址必然页对齐，所以出问题的不是"段偏移"，而是窗口本身/
-   `PlaceImage()` 里的非对齐字段。
-3. 无论怎么算，**`0x1000BF0` < `0x80000000`，SDM660 上没有任何 DRAM**。这个值正好与
-   `AllocateWindow()` 注释里记录的历史现象同族（`0x08000000` / `0x00D00000` / `0x000D0000`）：
-   EDK2 的内存图把这些低地址描述为 `EfiConventionalMemory`，但 CPU 页表没有映射它。
-4. LZMA 与这无关：`ParseKernel(Image, ImageSize)` 是在解压**之后**调用的，段表来自解压后的镜像。
+```c
+RETURN_STATUS EFIAPI LzmaUefiDecompressGetInfo (CONST VOID *Source, UINT32 SourceSize,
+                                                UINT32 *DestinationSize, UINT32 *ScratchSize);
+RETURN_STATUS EFIAPI LzmaUefiDecompress (CONST VOID *Source, UINTN SourceSize,
+                                         VOID *Destination, VOID *Scratch);   /* 四个参数 */
+```
+
+原来写成：
+
+```c
+LzmaUefiDecompressGetInfo (..., UINT64 *DestinationSize, ...);  /* 类型错：应为 UINT32* */
+LzmaUefiDecompress (..., Plain, (UINTN)Expanded, Work);         /* 多传一个 size 参数 */
+```
+
+于是库把 `Expanded`（= 0x10B00F0）当成了 **Scratch 指针**，解压第一步就写它 → 三级翻译失败。
+`X1 / X8 / X25` 三个寄存器同时是 `0x10B00F0` 就是这条错位的直接证据。
 
 ### 4.0.3 已写入仓库的修复（未编、未上机）
 
-`edk2-msm-overlay/DarwinBootPkg/Driver/DarwinBoot.c`：
+1. **LZMA 原型与调用**（§4.0.2）—— 本次崩溃的直接原因：改回 `RETURN_STATUS`/`EFIAPI`/
+   四参数签名，`Expanded`、`Scratch` 都改成 `UINT32`；scratch 为 0 时兜底 64 KiB
+   （库里有 `ASSERT (Scratch != NULL)`）。
+2. **`AllocateWindowInDram()`**：让固件分配器给窗口，校验整体落在
+   `[0x80000000, 0x14C7E0000)`（= `board.toml` 的 dram span），不合格 `FreePages` 重试
+   最多 16 次，失败才回退旧的 `AllocateWindow()`。
+3. **失败可读化**：窗口低于 DRAM 画 `WINDOW <addr> BELOW DRAM`；段拷贝逐段校验，越界画
+   `SEG <n> -> <addr> OUTSIDE DRAM`；成功画 `LOAD <addr> USED <n> WANT <n>`。
+4. 这条防御仍然值得留：旧 `AllocateWindow()` 的注释记录了三个**真实发生过**的低位窗口
+   （`0x08000000`、`0x00D00000`、`0x000D0000`），说明这个板子的内存图确实会骗人。
 
-- 新增 `AllocateWindowInDram()`：让固件分配器自己给一块，**校验必须整体落在
-  `[0x80000000, 0x14C7E0000)`**（= `board.toml` 的 dram span），不合格就 `FreePages` 重试，
-  最多 16 次；失败才回退旧的 `AllocateWindow()`。
-- 窗口低于 DRAM → 屏上画 `WINDOW <addr> BELOW DRAM` 并 `goto Fail`（不再靠三级翻译异常）。
-- 段拷贝循环逐段校验首尾都在 DRAM 内，越界画 `SEG <n> -> <addr> OUTSIDE DRAM`。
-- 成功路径在屏上画 `LOAD <addr> USED <n> WANT <n>`，一屏就知道窗口落在哪。
+**验收（下一轮的判读顺序）**：
 
-**验收**：屏上出现 `LOAD 8…`（地址以 `8` 开头），然后 `last cp` 从 139 变成 150/151（见 §8）。
+```
+DARWINBOOT: kernel LZMA 4368146 -> 17498352 bytes    ← LZMA 通了
+LOAD 8…                                             ← 窗口在 DRAM 里
+kernel returned: reason 2, checkpoint 150           ← 进了 bsd_init()
+```
+
+若出现 `kernel LZMA unpack failed` → 压缩流或 scratch 的问题；若出现
+`WINDOW … BELOW DRAM` → 才轮到内存图。
 
 ### 4.0.4 两处必须记住的分叉
 
@@ -220,10 +241,10 @@ FAR 0x000000001000BF0  ESR EC 0x25 (data abort, same EL, third level)
 ### 4.1 主线：先让内核真正跑进 `bsd_init()`
 
 `bsd_init()` 里第一件大事是 `vfs_mountroot()`。现在没有可挂的卷 —— 但**更靠前的阻塞**是
-§4.0.2 的窗口地址问题：本地链现在根本到不了内核的第一条指令。顺序因此变成：
+§4.0.2 的 LZMA 崩溃：本地链现在到不了内核的第一条指令。顺序因此变成：
 
-1. **编入 §4.0.3 的窗口修复**，刷一次 `logical` 版，屏上应出现 `LOAD 8…`，且 `last cp` 走到
-   150/151/152。
+1. **刷带 §4.0.3 修复的镜像**，屏上应先出现 `kernel LZMA … -> 17498352 bytes`，再出现
+   `LOAD 8…`，且 `last cp` 走到 150/151/152。
 2. **确认根卷路径**：`rd=md0` 已在 `unixnu.toml` 与 launcher 两处；`mockfs` 已在
    `configs/meizu15_defconfig` 里打开（`CONFIG_XNU_SOURCE_MOCKFS=y`）；initrd 是
    `launchd.macho`（打印 M15OK 的静态替身）。三项都在物里，缺的是"内核跑起来"这一步。

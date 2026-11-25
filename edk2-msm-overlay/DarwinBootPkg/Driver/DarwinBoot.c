@@ -32,21 +32,39 @@
 // The declarations are module-private there, so a consumer that is not that library
 // declares them itself rather than including a private header.
 //
-EFI_STATUS
+// THESE PROTOTYPES WERE WRONG ONCE AND IT COST A FLASH CYCLE. The real ones
+// (tianocore/edk2, LzmaDecompressLibInternal.h) are:
+//
+//   LzmaUefiDecompressGetInfo (Source, SourceSize, UINT32 *DestinationSize,
+//                              UINT32 *ScratchSize);
+//   LzmaUefiDecompress        (Source, UINTN SourceSize, Destination, Scratch);
+//
+// Two details matter:
+//   - DestinationSize is a UINT32, not a UINT64: a UINT64* here leaves the top
+//     half of the caller's variable uninitialised.
+//   - LzmaUefiDecompress takes FOUR arguments. It has no size parameter; it trusts
+//     the "original size" field inside the stream. A fifth (DestinationSize)
+//     argument shifts everything right: the library receives the declared size as
+//     its Scratch pointer and writes into it. That is exactly what the phone
+//     reported on 2026-11-26 -- FAR 0x10B00F0 = 17,498,352 = the uncompressed
+//     size, "Translation fault, third level", before AllocateWindow() was reached.
+//
+RETURN_STATUS
+EFIAPI
 LzmaUefiDecompressGetInfo (
   IN  CONST VOID  *Source,
   IN  UINT32      SourceSize,
-  OUT UINT64      *DestinationSize,
+  OUT UINT32      *DestinationSize,
   OUT UINT32      *ScratchSize
   );
 
-EFI_STATUS
+RETURN_STATUS
+EFIAPI
 LzmaUefiDecompress (
-  IN  CONST VOID  *Source,
-  IN  UINT32      SourceSize,
-  OUT VOID        *Destination,
-  IN  UINTN       DestinationSize,
-  IN  VOID        *Scratch
+  IN CONST VOID  *Source,
+  IN UINTN       SourceSize,
+  IN OUT VOID    *Destination,
+  IN OUT VOID    *Scratch
   );
 #define MAX_SEGMENTS 64
 
@@ -1315,17 +1333,26 @@ Boot (
   // not start with the LZMA properties byte 0x5D is used exactly as before.
   //
   if (!EFI_ERROR (Status) && (ImageSize > 13) && (((UINT8 *)Image)[0] == 0x5D)) {
-    UINT64  Expanded = 0;
+    UINT32  Expanded = 0;
     UINT32  Scratch  = 0;
     VOID   *Plain    = NULL;
     VOID   *Work     = NULL;
     if (!EFI_ERROR (LzmaUefiDecompressGetInfo (Image, (UINT32)ImageSize, &Expanded, &Scratch)) &&
         (Expanded > 0) && (Expanded <= KERNEL_LIMIT)) {
+      //
+      // The scratch buffer is not optional: LzmaUefiDecompress() ASSERTs it is not
+      // NULL. GetInfo() normally returns a non-zero size, but fall back to 64 KiB
+      // rather than hand the library a NULL it will trip over.
+      //
+      if (Scratch == 0) {
+        Scratch = SIZE_64KB;
+      }
       Plain = AllocatePool ((UINTN)Expanded);
-      Work  = (Scratch != 0) ? AllocatePool (Scratch) : NULL;
-      if ((Plain != NULL) && ((Scratch == 0) || (Work != NULL)) &&
-          !EFI_ERROR (LzmaUefiDecompress (Image, (UINT32)ImageSize, Plain, (UINTN)Expanded, Work))) {
-        Print (L"DARWINBOOT: kernel LZMA %lu -> %lu bytes\n", (UINT64)ImageSize, Expanded);
+      Work  = AllocatePool ((UINTN)Scratch);
+      if ((Plain != NULL) && (Work != NULL) &&
+          !EFI_ERROR (LzmaUefiDecompress (Image, (UINTN)ImageSize, Plain, Work))) {
+        Print (L"DARWINBOOT: kernel LZMA %lu -> %lu bytes\n",
+               (UINT64)ImageSize, (UINT64)Expanded);
         FreePool (Image);
         Image     = Plain;
         ImageSize = (UINTN)Expanded;
