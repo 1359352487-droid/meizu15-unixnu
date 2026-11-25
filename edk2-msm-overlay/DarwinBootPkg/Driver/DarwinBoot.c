@@ -26,6 +26,28 @@
 // The largest kernel file read: the default window. A macOS kernel collection is about 137 MiB; the window check
 // below still bounds the kernel with everything placed after it.
 #define KERNEL_LIMIT SIZE_256MB
+
+//
+// From MdeModulePkg/Library/LzmaCustomDecompressLib/LzmaDecompressLibInternal.h.
+// The declarations are module-private there, so a consumer that is not that library
+// declares them itself rather than including a private header.
+//
+EFI_STATUS
+LzmaUefiDecompressGetInfo (
+  IN  CONST VOID  *Source,
+  IN  UINT32      SourceSize,
+  OUT UINT64      *DestinationSize,
+  OUT UINT32      *ScratchSize
+  );
+
+EFI_STATUS
+LzmaUefiDecompress (
+  IN  CONST VOID  *Source,
+  IN  UINT32      SourceSize,
+  OUT VOID        *Destination,
+  IN  UINTN       DestinationSize,
+  IN  VOID        *Scratch
+  );
 #define MAX_SEGMENTS 64
 
 typedef struct {
@@ -837,6 +859,55 @@ DarwinShowKernelLog (
   DiagDrawRaw (Video, Log, Length, 6);
 }
 
+//
+// meizu15: the only memory this board has is DRAM, and it begins at 0x80000000
+// (board.toml: bank0 0x80000000+0x80000000, bank1 0x100000000+0x4c7e0000, so the
+// usable span ends at 0x14c7e0000). Everything below that is a hole even when the
+// firmware memory map calls it EfiConventionalMemory, and a window taken from one
+// of those holes faults on the first store -- which is what the phone reported:
+//
+//     Data abort: Translation fault, third level
+//     FAR 0x000000001000BF0   ESR EC 0x25
+//
+// 0x1000BF0 has no mapping at all, so the window is allocated by the firmware's
+// own allocator and then checked against the real DRAM span before the kernel is
+// written into it.
+//
+#define MZ_DRAM_BASE 0x80000000ULL
+#define MZ_DRAM_END  0x14C7E0000ULL
+
+STATIC
+EFI_STATUS
+AllocateWindowInDram (UINT64 WindowSize, EFI_PHYSICAL_ADDRESS *Address)
+{
+  UINTN   Pages;
+  UINTN   Try;
+  UINT64  Bytes;
+
+  Pages = EFI_SIZE_TO_PAGES (WindowSize);
+  Bytes = EFI_PAGES_TO_SIZE (Pages);
+  for (Try = 0; Try < 16; Try++) {
+    EFI_PHYSICAL_ADDRESS  Candidate;
+    EFI_STATUS            Status;
+
+    Candidate = 0;
+    Status    = gBS->AllocatePages (AllocateAnyPages, EfiLoaderData, Pages, &Candidate);
+    if (EFI_ERROR (Status)) {
+      return Status;
+    }
+    if (((UINT64)Candidate >= MZ_DRAM_BASE) && (((UINT64)Candidate + Bytes) <= MZ_DRAM_END)) {
+      *Address = Candidate;
+      return EFI_SUCCESS;
+    }
+    //
+    // Described but not backed: give it straight back and let the allocator pick
+    // the next one instead of writing the kernel into a hole.
+    //
+    gBS->FreePages (Candidate, Pages);
+  }
+  return EFI_OUT_OF_RESOURCES;
+}
+
 STATIC
 EFI_STATUS
 AllocateWindow (KERNEL *Kernel, UINT64 WindowSize, EFI_PHYSICAL_ADDRESS *Address)
@@ -1238,6 +1309,34 @@ Boot (
   Status = Fs->OpenVolume (Fs, &Root);
   if (EFI_ERROR (Status)) { return Status; }
   Status = ReadFile (Root, Request->KernelPath, KERNEL_LIMIT, &Image, &ImageSize);
+  //
+  // meizu15: the kernel may be stored LZMA-packed (5 props bytes + 8 size bytes + stream),
+  // which is what lets a 17.5 MB kernel live in a <16 MiB payload volume. Anything that does
+  // not start with the LZMA properties byte 0x5D is used exactly as before.
+  //
+  if (!EFI_ERROR (Status) && (ImageSize > 13) && (((UINT8 *)Image)[0] == 0x5D)) {
+    UINT64  Expanded = 0;
+    UINT32  Scratch  = 0;
+    VOID   *Plain    = NULL;
+    VOID   *Work     = NULL;
+    if (!EFI_ERROR (LzmaUefiDecompressGetInfo (Image, (UINT32)ImageSize, &Expanded, &Scratch)) &&
+        (Expanded > 0) && (Expanded <= KERNEL_LIMIT)) {
+      Plain = AllocatePool ((UINTN)Expanded);
+      Work  = (Scratch != 0) ? AllocatePool (Scratch) : NULL;
+      if ((Plain != NULL) && ((Scratch == 0) || (Work != NULL)) &&
+          !EFI_ERROR (LzmaUefiDecompress (Image, (UINT32)ImageSize, Plain, (UINTN)Expanded, Work))) {
+        Print (L"DARWINBOOT: kernel LZMA %lu -> %lu bytes\n", (UINT64)ImageSize, Expanded);
+        FreePool (Image);
+        Image     = Plain;
+        ImageSize = (UINTN)Expanded;
+      } else {
+        if (Plain != NULL) { FreePool (Plain); }
+        Print (L"DARWINBOOT: kernel LZMA unpack failed\n");
+        Status = EFI_COMPROMISED_DATA;
+      }
+      if (Work != NULL) { FreePool (Work); }
+    }
+  }
   if (EFI_ERROR (Status)) { goto Fail; }
   Status = ParseKernel (Image, ImageSize, &Kernel);
   if (EFI_ERROR (Status)) { goto Fail; }
@@ -1327,7 +1426,16 @@ Boot (
   if (EFI_ERROR (Status)) { goto Fail; }
   RamdiskBytes = ALIGN_VALUE (KeepPacked ? Request->RamdiskSize : RamdiskExpandedSize, EFI_PAGE_SIZE);
   if (ExcludedOffset == MAX_UINTN) {
-    Status = AllocateWindow (&Kernel, WindowSize, &Address);
+    //
+    // Ask the firmware allocator for a window inside DRAM first; the map-walking
+    // version below stays as the fallback for boards whose top of memory is not
+    // usable (see its comment). The probe run of 2026-11-25 showed the fallback
+    // handing out a hole at 0x1000BF0, so it is no longer the first choice.
+    //
+    Status = AllocateWindowInDram (WindowSize, &Address);
+    if (EFI_ERROR (Status)) {
+      Status = AllocateWindow (&Kernel, WindowSize, &Address);
+    }
     Allocated = WindowSize;
   } else {
     PlaceImage (BLOCK_SIZE + (Kernel.Base & (BLOCK_SIZE - 1)), &Kernel, TreeSize, RamdiskBytes, TrustCacheSize, AddonSize, PolicySize, &Layout);
@@ -1336,6 +1444,18 @@ Boot (
     Allocated = HeadSize;
   }
   if (EFI_ERROR (Status)) { goto Fail; }
+  //
+  // Never write into a window outside DRAM: the fault is a third-level
+  // translation abort with nothing on screen, which costs a full flash cycle to
+  // diagnose. One comparison turns it into a readable line.
+  //
+  if ((UINT64)Address < MZ_DRAM_BASE) {
+    CHAR16 Line[96];
+    UnicodeSPrint (Line, sizeof (Line), L"WINDOW %lx BELOW DRAM", (UINT64)Address);
+    DiagDraw (Line, 0);
+    Status = EFI_LOAD_ERROR;
+    goto Fail;
+  }
   PlaceImage (Address, &Kernel, TreeSize, RamdiskBytes, TrustCacheSize, AddonSize, PolicySize, &Layout);
   ArgsAddress = Layout.Args;
   TreeAddress = Layout.Tree;
@@ -1350,8 +1470,31 @@ Boot (
     goto Fail;
   }
   ZeroMem ((VOID *)(UINTN)Address, (UINTN)Used);
+  //
+  // One line on the panel with the address every segment below is written
+  // relative to. The "WIN ..." line AllocateWindow() draws is only reached on the
+  // fallback path, so without this the successful run is silent about it.
+  //
+  {
+    CHAR16 Line[96];
+    UnicodeSPrint (Line, sizeof (Line), L"LOAD %lx USED %lx WANT %lx",
+                   (UINT64)Address, (UINT64)Used, (UINT64)WindowSize);
+    DiagDraw (Line, 1);
+  }
   for (Index = 0; Index < Kernel.Count; Index++) {
-    CopyMem ((VOID *)(UINTN)(Address + Kernel.Segments[Index].Address - Kernel.Base),
+    UINT64 Target;
+
+    Target = Address + Kernel.Segments[Index].Address - Kernel.Base;
+    if ((Target < MZ_DRAM_BASE) ||
+        (((UINT64)Kernel.Segments[Index].FileSize != 0) &&
+         ((Target + (UINT64)Kernel.Segments[Index].FileSize) > MZ_DRAM_END))) {
+      CHAR16 Line[96];
+      UnicodeSPrint (Line, sizeof (Line), L"SEG %d -> %lx OUTSIDE DRAM", (UINT64)Index, Target);
+      DiagDraw (Line, 2);
+      Status = EFI_LOAD_ERROR;
+      goto Fail;
+    }
+    CopyMem ((VOID *)(UINTN)Target,
              (UINT8 *)Image + Kernel.Segments[Index].FileOffset, (UINTN)Kernel.Segments[Index].FileSize);
   }
 

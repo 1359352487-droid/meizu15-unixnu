@@ -17,7 +17,20 @@ CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
 CONFIG_XNU_NATIVE_AES=n
 CONFIG_XNU_TRUST_CACHE_RUNTIME=y
-CONFIG_XNU_SOURCE_MOCKFS=n
+# ---------------------------------------------------------------------------
+# [meizu15] mockfs: the ONLY root volume available until an eMMC driver exists.
+#
+# P1 reached bsd_init() on 2026-11-23, and bsd_init()'s first act is
+# vfs_mountroot(). This board has no mountable volume: eMMC has no driver
+# (NativeEmmc does not exist upstream), so the two options are APFS on a volume
+# that cannot be read yet, or an in-memory filesystem that proves the mount path.
+# The local macOS chain of 2026-11-25/26 built with mockfs on and found
+# _mockfs_mountroot in the linked kernel, plus rd=md0 + a launchd stdout stub as
+# initrd. CI should build the same kernel, not a different one.
+#
+# Turn this back to n only when the eMMC path lands and APFS is the real root.
+# ---------------------------------------------------------------------------
+CONFIG_XNU_SOURCE_MOCKFS=y
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
 CONFIG_XNU_VERIFIED_ROOT_PROBE=n
 CONFIG_XNU_OWNER_ROOT_AUDIT=n

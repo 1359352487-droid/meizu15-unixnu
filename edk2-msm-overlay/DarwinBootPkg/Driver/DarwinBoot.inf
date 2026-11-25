@@ -30,6 +30,7 @@
   UefiBootServicesTableLib
   UefiDriverEntryPoint
   UefiLib
+  LzmaCustomDecompressLib
 
 [Protocols]
   gUniXNULoaderProtocolGuid ## PRODUCES

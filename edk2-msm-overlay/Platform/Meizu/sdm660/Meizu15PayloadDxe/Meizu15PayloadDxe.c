@@ -68,6 +68,7 @@
 #include <Library/DevicePathLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiLib.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/DevicePath.h>
 #include <Protocol/FirmwareVolume2.h>
@@ -419,7 +420,12 @@ Meizu15PayloadDxeEntry (
     // drivers and BDS prints hundreds of lines afterwards, so without this the
     // text scrolls away before SimpleInit draws. 20 s is enough to photograph.
     //
-    gBS->Stall (20000000);
+    // Make the failure impossible to miss: hold the panel forever with the message
+    // on screen instead of a 20 s window that SimpleInit then paints over.
+    for (;;) {
+      gBS->Stall (1000000);
+      SayA ("NO PAYLOAD IN ANY FV");
+    }
     return EFI_NOT_FOUND;
   }
 
@@ -452,7 +458,13 @@ Publish:
   // A bogus child device was created from that, and SimpleInit then walked it.
   // The volume is already a filesystem, not a partitioned disk, so say so.
   //
-  mPayload->Media.LogicalPartition = TRUE;
+  //
+  // meizu15: FALSE, because FatDxe's Supported() requires the DiskIo protocol that
+  // DiskIoDxe installs on this very handle, and DiskIoDxe only starts on handles
+  // whose Media is a whole disk. With TRUE the volume was published but never
+  // mounted: no SimpleFileSystem, so BDS fell through to the shell.
+  //
+  mPayload->Media.LogicalPartition = FALSE;
   mPayload->Media.ReadOnly         = TRUE;
   mPayload->Media.WriteCaching     = FALSE;
   mPayload->Media.BlockSize        = PAYLOAD_BLOCK_SIZE;
@@ -465,6 +477,33 @@ Publish:
   mPayload->BlockIo.ReadBlocks  = PayloadReadBlocks;
   mPayload->BlockIo.WriteBlocks = PayloadWriteBlocks;
   mPayload->BlockIo.FlushBlocks = PayloadFlushBlocks;
+
+  //
+  // Self-check: read block 0 back through the very BlockIo the FAT driver will use.
+  // Print() needs a console protocol that is not up this early, so this goes through
+  // DEBUG like the ReadBlocks trace does. A wrong OEM/type here means this driver is
+  // serving garbage; a right one means the failure is downstream (FatDxe / BDS).
+  //
+  {
+    UINT8       Probe[512];
+    EFI_STATUS  ProbeStatus;
+    ZeroMem (Probe, sizeof (Probe));
+    ProbeStatus = PayloadReadBlocks (&mPayload->BlockIo, mPayload->Media.MediaId, 0,
+                                     sizeof (Probe), Probe);
+    if (EFI_ERROR (ProbeStatus)) {
+      DEBUG ((DEBUG_ERROR, "MZ15>> block0 read failed: %r\r\n", ProbeStatus));
+    } else {
+      DEBUG ((
+        DEBUG_ERROR,
+        "MZ15>> block0 oem=[%c%c%c%c%c%c%c%c] type=[%c%c%c%c%c%c%c%c] sig=%02x%02x\r\n",
+        Probe[3], Probe[4], Probe[5], Probe[6], Probe[7], Probe[8], Probe[9], Probe[10],
+        Probe[54], Probe[55], Probe[56], Probe[57], Probe[58], Probe[59], Probe[60], Probe[61],
+        Probe[510], Probe[511]
+        ));
+    }
+    // Give the panel time to show the line above before SimpleInit paints over it.
+    gBS->Stall (3000000);
+  }
 
   mPayload->DevicePath = MakeDevicePath (PayloadSize);
 

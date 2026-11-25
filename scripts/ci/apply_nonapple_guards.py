@@ -1338,6 +1338,61 @@ def add_prot_finalize_probes(path):
         path.write_text(text, encoding="utf-8")
     return changed
 
+# bsd/kern/bsd_init.c: the P2 probes (root volume), numbered 150+.
+#
+# 140-146 belong to arm_vm_prot_finalize() (PROT_FINALIZE_PROBES above). The local
+# handover of 2026-11-26 used 140-143 *inside bsd_init()* as well, so "last cp 141"
+# had two meanings in two different trees. 150+ is the free range (CONTINUE-HERE 8).
+#
+# Anchors are optional on purpose: this script also runs against HakiOS trees whose
+# bsd_init.c was rearranged by a patch, and a hard SystemExit would fail a whole
+# build for a diagnostic probe. A missing or ambiguous anchor prints a line and is
+# skipped -- run the script once on the real tree and read the output.
+BSD_INIT_ANCHORS = [
+    # (anchor, checkpoint, where, label); the probe copies the anchor's indentation.
+    ("bsd_init(void)\n{\n", 150, "after", "bsd_init() entry"),
+    ("\t\tif (0 == (err = vfs_mountroot())) {\n", 151, "before", "before vfs_mountroot()"),
+    ("\tload_init_program(p);\n", 152, "before", "before load_init_program()"),
+]
+
+
+def add_bsd_init_probes(path):
+    """Probes 150-152 in bsd_init(): entered, mounting, exec init."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    if "extern void loader_checkpoint" not in text:
+        lines = text.splitlines(keepends=True)
+        includes = [i for i, line in enumerate(lines) if line.startswith("#include")]
+        if not includes:
+            print("  bsd_init.c: no include block, skipping P2 probes")
+            return False
+        lines.insert(includes[-1] + 1, "\nextern void loader_checkpoint(uint64_t n);\n")
+        text = "".join(lines)
+        print("  added extern loader_checkpoint() to bsd_init.c")
+        changed = True
+    for anchor, number, where, label in BSD_INIT_ANCHORS:
+        indent = anchor[:len(anchor) - len(anchor.lstrip("\t "))]
+        if where == "after":
+            indent = "\t"
+        probe = "%sloader_checkpoint(%d);\n" % (indent, number)
+        if probe in text:
+            print("  already present: %s" % label)
+            continue
+        count = text.count(anchor)
+        if count != 1:
+            print("  skipped %s (anchor found %d time(s))" % (label, count))
+            continue
+        if where == "after":
+            text = text.replace(anchor, anchor + probe, 1)
+        else:
+            text = text.replace(anchor, probe + anchor, 1)
+        print("  added checkpoint %d %s" % (number, label))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 # kernel_bootstrap_thread(): 136 fires (machine_lockdown returned, so arm_vm_prot_finalize
 # and the boot-stack replacement both worked) and 137 does not. PE_lockdown_iokit() is
 # Apple platform code again -- same family as PE_init_cpu and PE_init_iokit.
@@ -1477,6 +1532,13 @@ def main(argv):
     changed += add_early_boot_probes(kstartup)
     changed += skip_oskext_remove(kstartup)
     changed += add_prot_finalize_probes(avm)
+    try:
+        bsd = find(root, "bsd/kern/bsd_init.c")
+    except SystemExit:
+        bsd = None
+        print("  bsd_init.c not found, skipping P2 probes")
+    if bsd is not None:
+        changed += add_bsd_init_probes(bsd)
     changed += skip_pe_lockdown_iokit(kstartup)
     changed += keep_loader_log_memory(avm)
     changed += skip_kperf_init_early(kstartup)

@@ -40,3 +40,18 @@ INF Platform/Meizu/sdm660/Meizu15PayloadDxe/Meizu15PayloadDxe.inf
 // UniXNU's Darwin loader lives in the firmware so that UniXNU.efi only has to
 // carry the menu; the kernel and its ADT stay on the payload volume.
 INF DarwinBootPkg/Driver/DarwinBoot.inf
+
+// The launcher is the only image that reads unixnu.toml and calls the
+// UniXNULoader protocol DarwinBoot installs. [Components] compiles it either way;
+// this line is what puts it in the volume, and on the 2026-11-25 run its absence
+// was half of why the phone sat at SimpleInit's shell.
+INF Platform/Meizu/sdm660/Meizu15Launcher/Meizu15Launcher.inf
+
+// ---------------------------------------------------------------------------
+// The baked-in UniXNU ESP (FILE FREEFORM = 3f1a9c22-...) is NOT here on purpose.
+// It points at Platform/Meizu/sdm660/payload/unixnu-esp.img, a file only the
+// local build produces, so keeping it in this include would break every CI run
+// that has no payload to bake. Local builds append it by including
+//   meizu15-local-payload.fdf.inc
+// from their own FDF (see scripts/local/build-round.sh).
+// ---------------------------------------------------------------------------

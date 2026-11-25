@@ -267,7 +267,7 @@ Meizu15LauncherEntry (
   // banner, no last cp, just DarwinBoot's handoff output -- so either the kernel now lives past
   // the 48.9 s mark and hangs inside bsd_init, or it died before kprintf. Ask for checkpoint 139
   // and the answer separates the two.
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=139";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=139 rd=md0";
   //
   // DeviceTree must stay NULL here.
   //

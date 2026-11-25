@@ -52,6 +52,10 @@
 # gUniXNULoaderProtocolGuid (0f0a492e-5a6a-49f6-a1bf-743c87ab1cfe). UniXNU.efi on
 # the payload volume calls it to hand kernel.macho + the ADT to the kernel.
 # Keeping it in the firmware means the ESP only has to carry data, not code.
+# meizu15: DarwinBoot unpacks an LZMA-packed kernel, so it needs this instance.
+[LibraryClasses]
+  LzmaCustomDecompressLib|MdeModulePkg/Library/LzmaCustomDecompressLib/LzmaCustomDecompressLib.inf
+
 [Components]
   DarwinBootPkg/Driver/DarwinBoot.inf
   # The launcher: finds the payload volume and calls the loader protocol. CI copies

@@ -1,0 +1,17 @@
+# Written by scripts/build-esp.sh for the Meizu 15 (M8810, SDM660).
+version = 1
+
+[boot]
+timeout = 5
+default = "xnu"
+
+[kits]
+autoload = false
+
+[[entry]]
+id = "xnu"
+title = "iOS 16.7.16 (Meizu 15)"
+type = "xnu"
+path = "Payloads/kernel.macho"
+args = "-v keepsyms=1 debug=0x8 rd=md0"
+initrd = "Payloads/launchd.macho"
