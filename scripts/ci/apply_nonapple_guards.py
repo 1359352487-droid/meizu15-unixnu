@@ -1,5 +1,12 @@
 """Changes the UniXNU port made, plus the probes that finish the bisection.
 
+Touching this file also rebuilds the kernel (it is in the workflow paths), which
+is why the mockfs control run of 2026-11-27 is recorded here: the kernel built
+from 3a596879 stopped returning at checkpoint 139 while the older one in inputs/
+did return, and the only non-probe difference was CONFIG_XNU_SOURCE_MOCKFS=y.
+CONFIG_XNU_SOURCE_MOCKFS is now n again, so this build answers whether mockfs is
+the regression or the probes are.
+
 Probe map (osfmk/arm64/arm_vm_init.c unless noted):
 
     45  arm_init.c, between processor_bootstrap() and arm_vm_init()   -- FIRES
