@@ -799,6 +799,20 @@ DarwinShowKernelLog (
     );
   DiagDrawRaw (Video, (CONST UINT8 *)Status, sizeof (Status), 0);
 
+  //
+  // The same two numbers on a row of their own. Row 0 is where every late
+  // message lands, so a "no return" verdict has twice been read off a line that
+  // had simply been painted over by the next one.
+  //
+  {
+    CHAR16  Line[96];
+    UnicodeSPrint (Line, sizeof (Line), L"RTN %lx RSN %lx LOGLEN %lx",
+                   (UINT64)DarwinSavedContext.Returned,
+                   (UINT64)DarwinSavedContext.Reason,
+                   (UINT64)DarwinSavedContext.LogLength);
+    DiagDraw (Line, 3);
+  }
+
   if (DarwinSavedContext.Returned == 0) {
     return;
   }
@@ -1729,6 +1743,20 @@ Boot (
         //
         Slot[2] = Checkpoint;
         Slot[3] = Address - Kernel.Base;
+
+        //
+        // Show what the kernel will actually compare against, on a row nothing
+        // else paints. Asking for 147 produced no return at all while 139 did,
+        // and the kernel binary shows the two calls are adjacent and target the
+        // same function -- so the remaining variable is this word: either the
+        // launcher's value never reached it, or the kernel does not honour it.
+        //
+        {
+          CHAR16  Line[96];
+          UnicodeSPrint (Line, sizeof (Line), L"CP req %lx slot2 %lx slot1 %lx",
+                         (UINT64)Checkpoint, (UINT64)Slot[2], (UINT64)Slot[1]);
+          DiagDraw (Line, 2);
+        }
 
         //
         // Extend the kernel data region over the stub: the kernel allocates
