@@ -1745,17 +1745,20 @@ Boot (
         Slot[3] = Address - Kernel.Base;
 
         //
-        // Show what the kernel will actually compare against, on a row nothing
-        // else paints. Asking for 147 produced no return at all while 139 did,
-        // and the kernel binary shows the two calls are adjacent and target the
-        // same function -- so the remaining variable is this word: either the
-        // launcher's value never reached it, or the kernel does not honour it.
+        // Show what the kernel will actually compare against, on the two rows
+        // that survive: row 2 sits under LOAD's block glyphs, and everything
+        // below that is console scrollback. Nothing writes rows 0/1 after this
+        // point, so these two lines are still readable when the kernel never
+        // comes back.
         //
         {
           CHAR16  Line[96];
-          UnicodeSPrint (Line, sizeof (Line), L"CP req %lx slot2 %lx slot1 %lx",
-                         (UINT64)Checkpoint, (UINT64)Slot[2], (UINT64)Slot[1]);
-          DiagDraw (Line, 2);
+          UnicodeSPrint (Line, sizeof (Line), L"CP req %lx slot2 %lx",
+                         (UINT64)Checkpoint, (UINT64)Slot[2]);
+          DiagDraw (Line, 0);
+          UnicodeSPrint (Line, sizeof (Line), L"slot1 %lx slot3 %lx",
+                         (UINT64)Slot[1], (UINT64)Slot[3]);
+          DiagDraw (Line, 1);
         }
 
         //
