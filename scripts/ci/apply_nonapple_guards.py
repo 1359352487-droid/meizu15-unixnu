@@ -1362,11 +1362,27 @@ def add_bsd_init_probes(path):
     changed = False
     if "extern void loader_checkpoint" not in text:
         lines = text.splitlines(keepends=True)
-        includes = [i for i, line in enumerate(lines) if line.startswith("#include")]
-        if not includes:
+        first = next((i for i, line in enumerate(lines) if line.startswith("#include")), None)
+        if first is None:
             print("  bsd_init.c: no include block, skipping P2 probes")
             return False
-        lines.insert(includes[-1] + 1, "\nextern void loader_checkpoint(uint64_t n);\n")
+        #
+        # Insert after the TOP include block, never after the last #include in the
+        # file. bsd_init.c has an #include far down (around line 1125 of
+        # xnu-8796.121.2) next to a conditional block; putting the declaration
+        # there left the calls at lines 487 and 1097 with an implicit declaration:
+        #
+        #   bsd_init.c:487:2: error: call to undeclared function 'loader_checkpoint'
+        #   bsd_init.c:1125:13: error: conflicting types for 'loader_checkpoint'
+        #
+        # and the kernel never linked. The CI run still looked green because the
+        # packaging step is continue-on-error and the upload step only warns.
+        #
+        last = first
+        while last + 1 < len(lines) and (lines[last + 1].startswith("#include")
+                                         or not lines[last + 1].strip()):
+            last += 1
+        lines.insert(last + 1, "\nextern void loader_checkpoint(uint64_t n);\n\n")
         text = "".join(lines)
         print("  added extern loader_checkpoint() to bsd_init.c")
         changed = True

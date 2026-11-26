@@ -235,7 +235,6 @@ jobs:
           gzip -9 -c /tmp/kernel.macho    > /tmp/kernel.macho.gz
           echo "=== compressed sizes ==="
           ls -la /tmp/unixnu-esp.img.gz /tmp/kernel.macho.gz
-        continue-on-error: true
 
       - name: Collect
         if: always()

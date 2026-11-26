@@ -898,16 +898,33 @@ STATIC
 EFI_STATUS
 AllocateWindowInDram (UINT64 WindowSize, EFI_PHYSICAL_ADDRESS *Address)
 {
-  UINTN   Pages;
-  UINTN   Try;
-  UINT64  Bytes;
+  UINTN                 Pages;
+  UINTN                 Try;
+  UINT64                Bytes;
+  EFI_PHYSICAL_ADDRESS  Candidate;
+  EFI_STATUS            Status;
 
   Pages = EFI_SIZE_TO_PAGES (WindowSize);
   Bytes = EFI_PAGES_TO_SIZE (Pages);
+  //
+  // Highest first. AllocateAnyPages walks the map from the bottom, and on this
+  // board the bottom is the region the firmware *describes* while the CPU has no
+  // translation for it -- the 2026-11-26 panel showed the plain map walk handing
+  // out 0x08000000 / 0x00D00000 / 0x000D0000. Asking for "at most DRAM_END - size"
+  // makes the allocator come down from the top of real memory instead, which is
+  // where the free runs are (that same panel printed RUN 0xADFA0000 @ 0xD00...,
+  // a 2.9 GB run).
+  //
+  Candidate = MZ_DRAM_END - Bytes;
+  Status = gBS->AllocatePages (AllocateMaxAddress, EfiLoaderData, Pages, &Candidate);
+  if (!EFI_ERROR (Status)) {
+    if ((UINT64)Candidate >= MZ_DRAM_BASE) {
+      *Address = Candidate;
+      return EFI_SUCCESS;
+    }
+    gBS->FreePages (Candidate, Pages);
+  }
   for (Try = 0; Try < 16; Try++) {
-    EFI_PHYSICAL_ADDRESS  Candidate;
-    EFI_STATUS            Status;
-
     Candidate = 0;
     Status    = gBS->AllocatePages (AllocateAnyPages, EfiLoaderData, Pages, &Candidate);
     if (EFI_ERROR (Status)) {
