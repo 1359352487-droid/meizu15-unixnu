@@ -267,7 +267,17 @@ Meizu15LauncherEntry (
   // banner, no last cp, just DarwinBoot's handoff output -- so either the kernel now lives past
   // the 48.9 s mark and hangs inside bsd_init, or it died before kprintf. Ask for checkpoint 139
   // and the answer separates the two.
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=139 rd=md0";
+  //
+  // checkpoint tells the kernel's loader stub which probe to stop at; the stub
+  // then hands the log back to DarwinBoot and paints it. 139 was the last stop
+  // with a meaning of its own (bsd_init() entry), 150 is the first of the P2
+  // probes inside bsd_init(). Ask for 150: a "reason 2" means it arrived there,
+  // "reason 0" means the kernel died between 139 and 150.
+  //
+  // rd=md0 selects the mock filesystem (CONFIG_XNU_SOURCE_MOCKFS=y) as the root
+  // volume, which is the only mountable root until an eMMC driver exists.
+  //
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=150 rd=md0";
   //
   // DeviceTree must stay NULL here.
   //

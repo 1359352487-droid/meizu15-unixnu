@@ -50,7 +50,7 @@ echo "build-esp: kernel $kernel_bytes bytes, ADT $adt_bytes bytes, volume ${SIZE
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-cat > "$work/unixnu.toml" <<'TOML'
+cat > "$work/unixnu.toml" <<TOML
 # Written by scripts/build-esp.sh for the Meizu 15 (M8810, SDM660).
 version = 1
 
@@ -66,8 +66,14 @@ id = "xnu"
 title = "iOS 16.7.16 (Meizu 15)"
 type = "xnu"
 path = "Payloads/kernel.macho"
-args = "-v keepsyms=1 debug=0x8"
+args = "${BOOT_ARGS:--v keepsyms=1 debug=0x8}"
 TOML
+if [ -n "${INITRD:-}" ] && [ -f "${INITRD}" ]; then
+  # The loader passes this to the kernel as the initial ramdisk; bsd_init()'s
+  # load_init_program() then execs it. Used with rd=md0 in BOOT_ARGS while the
+  # root volume is the mock filesystem.
+  printf 'initrd = "Payloads/launchd.macho"\n' >> "$work/unixnu.toml"
+fi
 
 rm -f "$OUT"
 # mformat -T counts 512-byte sectors (mformat's own unit, not the 2048-byte
@@ -128,6 +134,10 @@ mmd -i "$OUT" ::/EFI/UniXNU/Payloads
 
 mcopy -i "$OUT" -D o "$work/unixnu.toml"        ::/EFI/UniXNU/unixnu.toml
 mcopy -i "$OUT" -D o "$KERNEL"                  ::/EFI/UniXNU/Payloads/kernel.macho
+if [ -n "${INITRD:-}" ] && [ -f "${INITRD}" ]; then
+  mcopy -i "$OUT" -D o "$INITRD" ::/EFI/UniXNU/Payloads/launchd.macho
+  echo "build-esp: initrd $(wc -c < "$INITRD") bytes as Payloads/launchd.macho"
+fi
 mcopy -i "$OUT" -D o "$ADT"                     ::/EFI/UniXNU/Payloads/kernel.macho.adt
 
 if [ -n "${TRUSTCACHE:-}" ]; then

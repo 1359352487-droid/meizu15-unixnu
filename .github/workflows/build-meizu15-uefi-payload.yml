@@ -413,6 +413,14 @@ jobs:
           set -eux
           cp "${KERNEL_SRC:-meizu15/inputs/kernel.macho}" /tmp/kernel.macho
           cp "${ADT_SRC:-meizu15/inputs/meizu15-8plus.adt}" /tmp/payload.adt
+          # rd=md0 selects the mock filesystem root, which is the only mountable
+          # root until an eMMC driver exists. The initrd is only carried when the
+          # repository has one; bsd_init()'s load_init_program() execs it.
+          export BOOT_ARGS="${BOOT_ARGS:--v keepsyms=1 debug=0x8 rd=md0}"
+          if [ -f meizu15/inputs/launchd.macho ]; then
+            export INITRD="$PWD/meizu15/inputs/launchd.macho"
+          fi
+          echo "BOOT_ARGS=$BOOT_ARGS INITRD=${INITRD:-none}"
           ls -l /tmp/kernel.macho /tmp/payload.adt
           bash meizu15/scripts/build-esp.sh /tmp/kernel.macho /tmp/payload.adt \
                edk2-msm/Platform/Meizu/sdm660/payload/unixnu-esp.img "${ESP_MB:-15.9}"
