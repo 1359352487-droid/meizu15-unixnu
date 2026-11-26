@@ -1276,6 +1276,22 @@ def add_early_boot_probes(path):
         text = text.replace(after_139, after_139 + "\tloader_checkpoint(147);\n", 1)
         print("  added loader_checkpoint(147) between 139 and bsd_init()")
         changed = True
+    #
+    # 148 goes between 138 and 139, i.e. entirely before bsd_init(). Asking for
+    # 147 (which is 8 bytes after 139) produced no return, while every probe up
+    # to 139 does return when it is the one asked for. That difference is not the
+    # location, it is the path: a hit goes straight to loader_jump(), a miss has
+    # to return from loader_checkpoint() and let the next probe run. 148 is the
+    # cheapest way to exercise the miss path without bsd_init() in the picture:
+    #   148 returns -> miss-and-continue works, the stop is at/after bsd_init()
+    #   148 does not -> the second loader_log_number() call is what dies, which
+    #                   also explains the log stopping at cp 70 (CONTINUE-HERE 5.1)
+    #
+    after_138 = "\tloader_checkpoint(138);\n"
+    if after_138 in text and "\tloader_checkpoint(148);\n" not in text:
+        text = text.replace(after_138, after_138 + "\tloader_checkpoint(148);\n", 1)
+        print("  added loader_checkpoint(148) between 138 and 139")
+        changed = True
     if changed:
         path.write_text(text, encoding="utf-8")
     return changed
