@@ -947,6 +947,20 @@ def add_kernel_bootstrap_late_probes(path):
         text = text.replace(needle, "\tloader_checkpoint(%d);\n" % number + needle, 1)
         print("  added loader_checkpoint(%d) before %s" % (number, needle.strip()[:46]))
         changed = True
+    #
+    # 147 sits between 139 and bsd_init(): after the point where the old trail used
+    # to end, and before the BSD layer is entered. On 2026-11-26 asking for 150
+    # produced no "kernel returned" line at all -- neither a hit nor the 60 s
+    # timeout -- so one probe here separates two very different faults:
+    #   reason 2 at 147 -> the kernel still runs and still returns past 139, and
+    #                      the stop is inside bsd_init() itself
+    #   no return at 147 -> the return path (or the log write) dies right after 139
+    #
+    after_139 = "\tloader_checkpoint(139);\n"
+    if after_139 in text and "\tloader_checkpoint(147);\n" not in text:
+        text = text.replace(after_139, after_139 + "\tloader_checkpoint(147);\n", 1)
+        print("  added loader_checkpoint(147) between 139 and bsd_init()")
+        changed = True
     if changed:
         path.write_text(text, encoding="utf-8")
     return changed
