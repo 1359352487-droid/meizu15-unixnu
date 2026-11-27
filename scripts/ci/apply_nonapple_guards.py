@@ -1390,6 +1390,51 @@ BSD_INIT_ANCHORS = [
 ]
 
 
+# bsd_init() is a long function and the panel cannot tell us where it stops: the
+# log's 2048-byte tail is filled by the kernel's own console output before any
+# probe line survives. So the body gets three more stops, chosen from the upstream
+# source of xnu-8796.121.2 (bsd/kern/bsd_init.c):
+#
+#   147  just after  vfsinit()         -> the filesystem layer that vfs_mountroot()
+#                                        depends on compiled and ran
+#   148  just before bsd_autoconf()    -> IOKitBSDInit(), the same Apple family as
+#                                        PE_init_iokit, which this port skips
+#   149  just before the mount loop    -> setconf()/vfs_mountroot() themselves
+#
+# A hit at 147 means everything before it (kauth_init, bsd_bufferinit,
+# IOKitInitializeTime, vfsinit's callers, mbinit, socketinit, memorystatus_init,
+# sysctl_mib_init) completed.
+BSD_INIT_STOPS = [
+    ("\tvfsinit();\n", 147, "after"),
+    ("\tbsd_autoconf();\n", 148, "before"),
+    ("\twhile (TRUE) {\n", 149, "before"),
+]
+
+
+def add_bsd_init_stops(path):
+    """Probes 147/148/149 through the body of bsd_init()."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    for anchor, number, where in BSD_INIT_STOPS:
+        probe = "\tloader_checkpoint(%d);\n" % number
+        if probe in text:
+            print("  already present: checkpoint %d" % number)
+            continue
+        if text.count(anchor) != 1:
+            print("  skipped checkpoint %d (anchor found %d time(s))"
+                  % (number, text.count(anchor)))
+            continue
+        if where == "before":
+            text = text.replace(anchor, probe + anchor, 1)
+        else:
+            text = text.replace(anchor, anchor + probe, 1)
+        print("  added checkpoint %d %s %s" % (number, where, anchor.strip()[:40]))
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 def skip_bsd_init_stall(path):
     """Drop the DEVELOPMENT-only platform stall at the top of bsd_init()."""
     text = path.read_text(encoding="utf-8")
@@ -1622,6 +1667,7 @@ def main(argv):
     if bsd is not None:
         changed += add_bsd_init_probes(bsd)
         changed += skip_bsd_init_stall(bsd)
+        changed += add_bsd_init_stops(bsd)
     changed += skip_pe_lockdown_iokit(kstartup)
     changed += keep_loader_log_memory(avm)
     changed += skip_kperf_init_early(kstartup)

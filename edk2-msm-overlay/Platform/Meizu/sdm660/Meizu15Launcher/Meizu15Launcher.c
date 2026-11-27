@@ -277,7 +277,7 @@ Meizu15LauncherEntry (
   // rd=md0 selects the mock filesystem (CONFIG_XNU_SOURCE_MOCKFS=y) as the root
   // volume, which is the only mountable root until an eMMC driver exists.
   //
-  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=151 rd=md0";
+  Request.BootArgs       = L"-v loader_return_after=60 checkpoint=147 rd=md0";
   //
   // DeviceTree must stay NULL here.
   //
