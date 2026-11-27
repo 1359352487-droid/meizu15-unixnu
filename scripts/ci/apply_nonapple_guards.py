@@ -1390,6 +1390,38 @@ BSD_INIT_ANCHORS = [
 ]
 
 
+def skip_bsd_init_stall(path):
+    """Drop the DEVELOPMENT-only platform stall at the top of bsd_init()."""
+    text = path.read_text(encoding="utf-8")
+    old = "\tplatform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_BSD_INIT);\n"
+    new = """\t/*
+\t * meizu15: skipped, same family as PE_init_cpu / PE_init_iokit.
+\t *
+\t * bsd_init() opens with
+\t *     platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_BSD_INIT);
+\t * inside #if (DEVELOPMENT || DEBUG), and this port builds mach.development.
+\t * The call is Apple platform code and reads platform-expert state that this
+\t * port never initialises, so it parks the kernel there.
+\t *
+\t * The panel agrees: probe 150 (the function's first line) fires, probe 151
+\t * (just before vfs_mountroot) never does, and the boot comes back after the
+\t * 60 s timeout as "ret 1 reason 0" -- an orderly return, not a fault, which
+\t * is what a parked kernel looks like from the loader side.
+\t */
+\t/* platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_BSD_INIT); */
+"""
+    if new in text:
+        print("  bsd_init platform stall already skipped")
+        return False
+    if text.count(old) != 1:
+        print("  bsd_init platform stall: anchor found %d time(s), left alone"
+              % text.count(old))
+        return False
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    print("  skipped platform_stall_panic_or_spin() at the top of bsd_init()")
+    return True
+
+
 def add_bsd_init_probes(path):
     """Probes 150-152 in bsd_init(): entered, mounting, exec init."""
     text = path.read_text(encoding="utf-8")
@@ -1589,6 +1621,7 @@ def main(argv):
         print("  bsd_init.c not found, skipping P2 probes")
     if bsd is not None:
         changed += add_bsd_init_probes(bsd)
+        changed += skip_bsd_init_stall(bsd)
     changed += skip_pe_lockdown_iokit(kstartup)
     changed += keep_loader_log_memory(avm)
     changed += skip_kperf_init_early(kstartup)
