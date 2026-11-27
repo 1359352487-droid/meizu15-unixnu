@@ -1485,14 +1485,28 @@ Boot (
   RamdiskBytes = ALIGN_VALUE (KeepPacked ? Request->RamdiskSize : RamdiskExpandedSize, EFI_PAGE_SIZE);
   if (ExcludedOffset == MAX_UINTN) {
     //
-    // Ask the firmware allocator for a window inside DRAM first; the map-walking
-    // version below stays as the fallback for boards whose top of memory is not
-    // usable (see its comment). The probe run of 2026-11-25 showed the fallback
-    // handing out a hole at 0x1000BF0, so it is no longer the first choice.
+    // Order matters, and it took a regression to see why.
     //
-    Status = AllocateWindowInDram (WindowSize, &Address);
+    // AllocateWindowInDram() was put first on 2026-11-26 because the map walker
+    // had handed out holes (0x08000000 / 0x00D00000 / 0x000D0000). It works: the
+    // panel says LOAD EC7E0000 and nothing faults. But on THAT address the kernel
+    // stops returning at any checkpoint, while the old window at 0xD0004000
+    // returned fine. The stub is copied to Address + Used, so moving the window
+    // moves the stub, and loader_jump() consults tcr_el1 before it branches:
+    //
+    //     mrs  x10, tcr_el1
+    //     and  x11, x10, #0x3f      ; t0sz
+    //     lsr  x11, x8, x11         ; stub address >> (64 - t0sz)
+    //     ccmp x11, #0, #0, hs
+    //     b.eq ...                  ; else: silent ret
+    //
+    // A silent ret looks exactly like "nothing happened", which is what every
+    // checkpoint above 139 has been showing. So the old order is back for this
+    // test: map walker first, DRAM-checked allocator as the fallback.
+    //
+    Status = AllocateWindow (&Kernel, WindowSize, &Address);
     if (EFI_ERROR (Status)) {
-      Status = AllocateWindow (&Kernel, WindowSize, &Address);
+      Status = AllocateWindowInDram (WindowSize, &Address);
     }
     Allocated = WindowSize;
   } else {
