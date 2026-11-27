@@ -1270,35 +1270,14 @@ def add_early_boot_probes(path):
         print("  added loader_checkpoint(%d) before %s" % (number, needle.strip()[:46]))
         changed = True
     #
-    # 147 sits between 139 and bsd_init(): after the point where the old trail used
-    # to end, and before the BSD layer is entered. On 2026-11-26 asking for 150
-    # produced no "kernel returned" line at all -- neither a hit nor the 60 s
-    # timeout -- so one probe here separates two very different faults:
-    #   reason 2 at 147 -> the kernel still runs and still returns past 139, and
-    #                      the stop is inside bsd_init() itself
-    #   no return at 147 -> the return path (or the log write) dies right after 139
+    # 147 (after 139) and 148 (between 138 and 139) are OFF for this build.
     #
-    after_139 = "\tloader_checkpoint(139);\n"
-    if after_139 in text and "\tloader_checkpoint(147);\n" not in text:
-        text = text.replace(after_139, after_139 + "\tloader_checkpoint(147);\n", 1)
-        print("  added loader_checkpoint(147) between 139 and bsd_init()")
-        changed = True
+    # With them in, asking for 139 -- a probe that returned fine on the older
+    # kernel -- stopped returning. Both are in the same basic block as 139, so
+    # this build removes them and keeps only the original 130-139 set, to see
+    # whether 139 returns again. If it does, one of those two inserts is the
+    # cause and they go back one at a time.
     #
-    # 148 goes between 138 and 139, i.e. entirely before bsd_init(). Asking for
-    # 147 (which is 8 bytes after 139) produced no return, while every probe up
-    # to 139 does return when it is the one asked for. That difference is not the
-    # location, it is the path: a hit goes straight to loader_jump(), a miss has
-    # to return from loader_checkpoint() and let the next probe run. 148 is the
-    # cheapest way to exercise the miss path without bsd_init() in the picture:
-    #   148 returns -> miss-and-continue works, the stop is at/after bsd_init()
-    #   148 does not -> the second loader_log_number() call is what dies, which
-    #                   also explains the log stopping at cp 70 (CONTINUE-HERE 5.1)
-    #
-    after_138 = "\tloader_checkpoint(138);\n"
-    if after_138 in text and "\tloader_checkpoint(148);\n" not in text:
-        text = text.replace(after_138, after_138 + "\tloader_checkpoint(148);\n", 1)
-        print("  added loader_checkpoint(148) between 138 and 139")
-        changed = True
     if changed:
         path.write_text(text, encoding="utf-8")
     return changed
