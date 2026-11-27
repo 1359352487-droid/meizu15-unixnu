@@ -235,8 +235,15 @@ uint64_t loader_probe_values[6];
  * lines covered by them -- and the final lines are the ones worth reading.
  * A probe line is six bytes ("cp 62\n") and one console line, and about forty
  * console lines fit above the barcodes, hence 224 rather than 448.
+ *
+ * 2026-11-28: 224 was too small to answer anything. The orderly path of
+ * loader_return() (reason 0) trims the log to this many bytes, and by then the
+ * kernel has printed far more than that -- the checkpoint trail of the run that
+ * hung inside bsd_init() was cut off entirely and the panel only carried console
+ * noise. 2048 keeps roughly 300 probe lines; the panel draws what fits and the
+ * rest is simply not reached.
  */
-#define LOADER_RETURN_TAIL 224
+#define LOADER_RETURN_TAIL 2048
 
 /* "cp 62\\n" -- digits only, so no printf and no locale; safe this early. */
 void
