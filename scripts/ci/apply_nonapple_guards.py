@@ -1270,6 +1270,12 @@ def add_early_boot_probes(path):
         print("  added loader_checkpoint(%d) before %s" % (number, needle.strip()[:46]))
         changed = True
     #
+    # 2026-11-28: the regression is solved -- the kernel window had been moved to
+    # 0xEC7E0000 by AllocateWindowInDram, which moved the stub to 0xEDB58000, and
+    # the return path only works at the old address: with the window back at
+    # 0xD0004000 the panel says "ret 1 reason 2". So the probes were never at
+    # fault, and this build turns mockfs back on to reach bsd_init() for real.
+    #
     # 147 (after 139) and 148 (between 138 and 139) are OFF for this build.
     #
     # With them in, asking for 139 -- a probe that returned fine on the older

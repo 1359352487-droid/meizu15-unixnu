@@ -30,7 +30,7 @@ CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 #
 # Turn this back to n only when the eMMC path lands and APFS is the real root.
 # ---------------------------------------------------------------------------
-CONFIG_XNU_SOURCE_MOCKFS=n
+CONFIG_XNU_SOURCE_MOCKFS=y
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
 CONFIG_XNU_VERIFIED_ROOT_PROBE=n
 CONFIG_XNU_OWNER_ROOT_AUDIT=n
