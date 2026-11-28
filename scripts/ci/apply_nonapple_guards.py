@@ -1444,11 +1444,18 @@ def add_vfsinit_probes(path):
         while last + 1 < len(lines) and (lines[last + 1].startswith("#include")
                                         or not lines[last + 1].strip()):
             last += 1
-        lines.insert(last + 1, "\nextern void loader_checkpoint(uint64_t n);\n\n")
+        lines.insert(last + 1,
+                     "\nextern void loader_checkpoint(uint64_t n);\n"
+                     "extern uint64_t loader_probe_values[6];\n\n")
         text = "".join(lines)
-        print("  added extern loader_checkpoint() to vfs_init.c")
+        print("  added extern loader_checkpoint()/loader_probe_values to vfs_init.c")
         changed = True
-    probe = "\t\tloader_checkpoint(160 + i);\n"
+    # Two channels on purpose. The checkpoint answers "did entry i return" one
+    # flash at a time; the value word records the last entry that did, so a single
+    # run that parks (and comes back as reason 0 after the 60 s timeout) names the
+    # offender without a flash per filesystem.
+    probe = ("\t\tloader_probe_values[5] = 160 + i;\n"
+             "\t\tloader_checkpoint(160 + i);\n")
     if probe in text:
         print("  vfsinit loop probe already present")
     elif text.count(VFSINIT_LOOP_ANCHOR) == 1:
