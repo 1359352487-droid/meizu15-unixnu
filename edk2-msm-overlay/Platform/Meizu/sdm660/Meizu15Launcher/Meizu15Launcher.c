@@ -262,7 +262,7 @@ Meizu15LauncherEntry (
   ZeroMem (&Request, sizeof (Request));
   Request.Volume         = Volume;
   Request.KernelPath     = KERNEL_PATH;
-  // checkpoint=161 -- probe 139: did bsd_init() get reached? The last image never returned to the stub -- no
+  // checkpoint=165 -- probe 139: did bsd_init() get reached? The last image never returned to the stub -- no
   //
   // banner, no last cp, just DarwinBoot's handoff output -- so either the kernel now lives past
   // the 48.9 s mark and hangs inside bsd_init, or it died before kprintf. Ask for checkpoint 139
