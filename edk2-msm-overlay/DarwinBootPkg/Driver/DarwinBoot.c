@@ -769,6 +769,8 @@ DarwinShowKernelLog (
 {
   CONST UINT8  *Log;
   UINTN        Length;
+  UINTN        Start;
+  UINTN        Tail;
   CHAR8        Status[128];
 
   //
@@ -885,10 +887,31 @@ DarwinShowKernelLog (
   }
 
   //
-  // The head of the log is the boot, which is what a stall this early needs.
-  // DiagDrawRaw stops as soon as the panel is full.
+  // Draw the TAIL of the log, not the head.
   //
-  DiagDrawRaw (Video, Log, Length, 6);
+  // This used to draw from Log[0] and DiagDrawRaw stops as soon as the panel is
+  // full -- about forty lines from row 6 down. The loader writes the interesting
+  // lines at the very end ("last cp", and one "v " per probe value, after the
+  // trim), so on a run that parked they were past the bottom of the screen every
+  // time. Three flashes were spent reading "no v line" off a panel where the
+  // value had in fact been written.
+  //
+  // 384 bytes is a dozen lines: enough for last cp plus all six value words, and
+  // short enough to sit above the barcodes.
+  //
+  Tail = 384;
+  if (Length > Tail) {
+    Start = Length - Tail;
+    while ((Start < Length) && (Log[Start] != '\n')) {
+      Start++;
+    }
+    if (Start < Length) {
+      Start++;
+    }
+    DiagDrawRaw (Video, Log + Start, Length - Start, 6);
+  } else {
+    DiagDrawRaw (Video, Log, Length, 6);
+  }
 }
 
 //
