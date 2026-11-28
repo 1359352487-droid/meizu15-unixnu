@@ -899,19 +899,16 @@ DarwinShowKernelLog (
   // 384 bytes is a dozen lines: enough for last cp plus all six value words, and
   // short enough to sit above the barcodes.
   //
-  Tail = 384;
-  if (Length > Tail) {
-    Start = Length - Tail;
-    while ((Start < Length) && (Log[Start] != '\n')) {
-      Start++;
-    }
-    if (Start < Length) {
-      Start++;
-    }
-    DiagDrawRaw (Video, Log + Start, Length - Start, 6);
-  } else {
-    DiagDrawRaw (Video, Log, Length, 6);
-  }
+  Tail  = 448;
+  Start = (Length > Tail) ? (Length - Tail) : 0;
+  //
+  // No line snapping. The first attempt walked forward to the next newline and
+  // on this log it walked all the way to Length -- the tail is not newline
+  // separated where it matters, so nothing was drawn and the panel kept showing
+  // whatever the kernel had painted there. Half a line at the top is readable;
+  // an empty draw is not.
+  //
+  DiagDrawRaw (Video, Log + Start, Length - Start, 6);
 }
 
 //
