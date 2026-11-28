@@ -308,6 +308,15 @@ LOADER_TAIL_NEW = """\t/*
 \t\t    LOADER_RETURN_TAIL);
 \t\tloader_log_len = LOADER_RETURN_TAIL;
 \t}
+\t/*
+\t * Publish the vfsconf index through the slot the loader already reads.
+\t *
+\t * The log channel cannot carry it: on every return so far the panel showed the
+\t * firmware's own text and no probe line, whatever the trim size. slot[2] is a
+\t * physical word inside the kernel window that this firmware reads directly, so
+\t * the value survives regardless of what happened to loader_log.
+\t */
+\tloader_stub_slot[2] = loader_probe_values[5];
 \tloader_jump(0, 0);
 """
 

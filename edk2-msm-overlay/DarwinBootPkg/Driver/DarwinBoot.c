@@ -614,6 +614,13 @@ extern UINT64  DarwinTrapStride;
 // once the kernel comes back, on a framebuffer nothing else will touch.
 //
 STATIC UINT64  mSlotDump[4];
+//
+// The slot's address, kept so the value words can be re-read after the kernel
+// returns. mSlotDump is a copy taken before the branch; the kernel writes
+// slot[2] again on its way out (see LOADER_TAIL_NEW), and that is the number
+// worth showing.
+//
+STATIC UINT64 *mSlotPointer;
 
 STATIC CONST UINT64 mDiagFont[] = GLYPH_FONT;
 
@@ -813,6 +820,19 @@ DarwinShowKernelLog (
                    (UINT64)DarwinSavedContext.Reason,
                    (UINT64)DarwinSavedContext.LogLength);
     DiagDraw (Line, 3);
+  }
+
+  //
+  // slot[2] as the kernel left it. The pre-branch dump only says what the loader
+  // wrote; the kernel overwrites this word with loader_probe_values[5] just
+  // before jumping back, so on the orderly path it names the last vfsconf entry
+  // whose vfs_init() returned.
+  //
+  if (mSlotPointer != NULL) {
+    CHAR16  Line[96];
+    UnicodeSPrint (Line, sizeof (Line), L"SLOT2 %lx (vfs index)",
+                   (UINT64)mSlotPointer[2]);
+    DiagDraw (Line, 2);
   }
 
   if (DarwinSavedContext.Returned == 0) {
@@ -1902,6 +1922,7 @@ Boot (
           Slot[3]
           );
         CopyMem (mSlotDump, Slot, sizeof (mSlotDump));
+        mSlotPointer = Slot;
       }
     }
   }
