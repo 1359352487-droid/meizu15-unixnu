@@ -1405,6 +1405,15 @@ BSD_INIT_ANCHORS = [
 # IOKitInitializeTime, vfsinit's callers, mbinit, socketinit, memorystatus_init,
 # sysctl_mib_init) completed.
 BSD_INIT_STOPS = [
+    # front of bsd_init(), before vfsinit(): the run with 147 requested came back
+    # as reason 0, so the kernel parks somewhere between the function entry (150,
+    # which does fire) and vfsinit().
+    ("\tthrottle_init();\n", 153, "after"),
+    ("\tkauth_init();\n", 154, "after"),
+    ("\tbsd_bufferinit();\n", 155, "after"),
+    ("\tIOKitInitializeTime();\n", 156, "after"),
+    ("\tvfsinit();\n", 157, "before"),
+    # body, after vfsinit()
     ("\tvfsinit();\n", 147, "after"),
     ("\tbsd_autoconf();\n", 148, "before"),
     ("\twhile (TRUE) {\n", 149, "before"),
