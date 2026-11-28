@@ -1420,6 +1420,49 @@ BSD_INIT_STOPS = [
 ]
 
 
+# vfsinit() (bsd/vfs/vfs_init.c) is where 156 returns and 147 never fires, so the
+# park is inside it. It walks the static filesystem table and calls each
+# vfs_init; mockfs is one of those entries. One probe per iteration, numbered
+# 160 + i, so a single kernel can answer "which filesystem" one flash at a time:
+#
+#   160  after the first vfs_init -> asking for 160 stops there
+#   161  after the second, ...
+VFSINIT_LOOP_ANCHOR = "\t\t(*vfsp->vfc_vfsops->vfs_init)(&vfsc);\n"
+
+
+def add_vfsinit_probes(path):
+    """Probe 160 + i after each filesystem's vfs_init() inside vfsinit()."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+    if "extern void loader_checkpoint" not in text:
+        lines = text.splitlines(keepends=True)
+        first = next((i for i, line in enumerate(lines) if line.startswith("#include")), None)
+        if first is None:
+            print("  vfs_init.c: no include block, skipping")
+            return False
+        last = first
+        while last + 1 < len(lines) and (lines[last + 1].startswith("#include")
+                                        or not lines[last + 1].strip()):
+            last += 1
+        lines.insert(last + 1, "\nextern void loader_checkpoint(uint64_t n);\n\n")
+        text = "".join(lines)
+        print("  added extern loader_checkpoint() to vfs_init.c")
+        changed = True
+    probe = "\t\tloader_checkpoint(160 + i);\n"
+    if probe in text:
+        print("  vfsinit loop probe already present")
+    elif text.count(VFSINIT_LOOP_ANCHOR) == 1:
+        text = text.replace(VFSINIT_LOOP_ANCHOR, VFSINIT_LOOP_ANCHOR + probe, 1)
+        print("  added loader_checkpoint(160 + i) after each vfs_init()")
+        changed = True
+    else:
+        print("  vfsinit loop anchor found %d time(s), left alone"
+              % text.count(VFSINIT_LOOP_ANCHOR))
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 def add_bsd_init_stops(path):
     """Probes 147/148/149 through the body of bsd_init()."""
     text = path.read_text(encoding="utf-8")
@@ -1677,6 +1720,13 @@ def main(argv):
         changed += add_bsd_init_probes(bsd)
         changed += skip_bsd_init_stall(bsd)
         changed += add_bsd_init_stops(bsd)
+    try:
+        vfsinit = find(root, "bsd/vfs/vfs_init.c")
+    except SystemExit:
+        vfsinit = None
+        print("  vfs_init.c not found, skipping vfsinit probes")
+    if vfsinit is not None:
+        changed += add_vfsinit_probes(vfsinit)
     changed += skip_pe_lockdown_iokit(kstartup)
     changed += keep_loader_log_memory(avm)
     changed += skip_kperf_init_early(kstartup)
