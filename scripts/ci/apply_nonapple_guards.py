@@ -1439,6 +1439,46 @@ BSD_INIT_STOPS = [
 VFSINIT_LOOP_ANCHOR = "\t\t(*vfsp->vfc_vfsops->vfs_init)(&vfsc);\n"
 
 
+# The vfsconf table, read out of the kernel (struct vfstable *, stride 0x60,
+# maxvfsslots = 9), with the probe numbers the loop now carries:
+#
+#   160 devfs    161 bindfs   162 ramfs   163 hfs   164 apfs
+#   165 mockfs   166 routefs  167 <unassigned>  168 <unassigned>
+#
+# Hardware said devfs, bindfs and ramfs return and hfs does not, and 165 (mockfs)
+# cannot be reached while hfs parks the loop. hfs is the one Apple filesystem in
+# this table this port has no use for: P2 mounts mockfs via rd=md0. So its
+# vfs_init() is skipped, the same way PE_init_iokit and platform_stall were.
+#
+# Skipping the call only leaves hfs uninitialised; the entry stays in the table,
+# so mount_hfs() would fail cleanly rather than walk a half-built state.
+HFS_SKIP = """\t\t/*
+\t\t * meizu15: hfs never returns from vfs_init() on this board (probe 163
+\t\t * fires nowhere while 160/161/162 do). It is not used here -- the root
+\t\t * volume comes from mockfs via rd=md0 -- and leaving it uninitialised
+\t\t * only makes mount_hfs() fail, which is what it does anyway.
+\t\t */
+\t\tif (memcmp(vfsp->vfc_name, "hfs", 4) == 0) {
+\t\t\tcontinue;
+\t\t}
+"""
+
+
+def skip_hfs_vfsinit(path):
+    """Leave hfs out of vfsinit()'s registration loop."""
+    text = path.read_text(encoding="utf-8")
+    if "meizu15: hfs never returns" in text:
+        print("  hfs already skipped in vfsinit()")
+        return False
+    anchor = "\t\t(*vfsp->vfc_vfsops->vfs_init)(&vfsc);\n"
+    if text.count(anchor) != 1:
+        print("  hfs skip: anchor found %d time(s), left alone" % text.count(anchor))
+        return False
+    path.write_text(text.replace(anchor, HFS_SKIP + anchor, 1), encoding="utf-8")
+    print("  hfs skipped in vfsinit()")
+    return True
+
+
 def add_vfsinit_probes(path):
     """Probe 160 + i after each filesystem's vfs_init() inside vfsinit()."""
     text = path.read_text(encoding="utf-8")
@@ -1743,6 +1783,7 @@ def main(argv):
         print("  vfs_init.c not found, skipping vfsinit probes")
     if vfsinit is not None:
         changed += add_vfsinit_probes(vfsinit)
+        changed += skip_hfs_vfsinit(vfsinit)
     changed += skip_pe_lockdown_iokit(kstartup)
     changed += keep_loader_log_memory(avm)
     changed += skip_kperf_init_early(kstartup)
