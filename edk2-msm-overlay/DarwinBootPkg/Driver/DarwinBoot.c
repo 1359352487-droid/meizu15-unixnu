@@ -830,9 +830,9 @@ DarwinShowKernelLog (
   //
   if (mSlotPointer != NULL) {
     CHAR16  Line[96];
-    UnicodeSPrint (Line, sizeof (Line), L"SLOT2 %lx (vfs index)",
+    UnicodeSPrint (Line, sizeof (Line), L"MZ15SLOT %lx vfsidx",
                    (UINT64)mSlotPointer[2]);
-    DiagDraw (Line, 2);
+    DiagDraw (Line, 5);
   }
 
   if (DarwinSavedContext.Returned == 0) {
